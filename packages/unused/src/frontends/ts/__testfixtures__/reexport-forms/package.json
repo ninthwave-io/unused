@@ -1,0 +1,1 @@
+{ "name": "fixture-reexport-forms", "private": true, "version": "0.0.0", "type": "module", "main": "./src/ns.ts" }

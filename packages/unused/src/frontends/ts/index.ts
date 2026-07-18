@@ -8,6 +8,14 @@
  * this narrow surface — keep it small and documented.
  */
 export { discover } from "./discover.js";
+export {
+  detectProductionEntrypoints,
+  type EmitInput,
+  type EntrypointHit,
+  type EntrypointOptions,
+  emitIR,
+  type PackageJsonLike,
+} from "./emit.js";
 export type {
   DynamicImport,
   ExportRecord,

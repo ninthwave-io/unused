@@ -155,6 +155,42 @@ export function extract(
     });
   }
 
+  /**
+   * Record a `TSImportEqualsDeclaration`. FP-critical: `import x = require("./m")`
+   * is a literal, statically-resolvable module edge — T2.1 previously dropped the
+   * whole subtree, so a file imported *only* this way got no incoming edge and was
+   * flagged a confident false "unused". We record it as a require-form module
+   * reference (resolve + emit then give the target a keep-alive edge). The entity
+   * form `import x = A.B` is a value alias to the root identifier `A`. The
+   * import-equals hazard is still emitted (confidence cap for the CJS mechanism).
+   */
+  function recordImportEquals(node: RawNode, inType: boolean): void {
+    const moduleRef = prop(node, "moduleReference");
+    if (isNode(moduleRef) && moduleRef.type === "TSExternalModuleReference") {
+      const expr = prop(moduleRef, "expression");
+      if (isNode(expr) && expr.type === "Literal") {
+        const raw = prop(expr, "value");
+        if (typeof raw === "string") {
+          requires.push({
+            source: raw,
+            computed: false,
+            argSpan: li.span(expr.start, expr.end),
+            span: li.span(node.start, node.end),
+          });
+        }
+      }
+    } else if (isNode(moduleRef)) {
+      const root = qualifierRoot(moduleRef);
+      if (root !== null) recordReference(root, inType ? "type" : "value", moduleRef);
+    }
+    hazards.push({
+      kind: "import-equals",
+      detail:
+        "TS `import x = require(...)` / `import x = A.B` (CJS interop, not statically modelled)",
+      span: li.span(node.start, node.end),
+    });
+  }
+
   function walk(node: RawNode, inType: boolean): void {
     const kind = scopeKindFor(node);
     // The module frame is pushed once above; don't re-push it here.
@@ -185,14 +221,13 @@ export function extract(
           recordTypeImport(node, inType);
           break;
         case "TSImportEqualsDeclaration":
-          hazards.push({
-            kind: "import-equals",
-            detail:
-              "TS `import x = require(...)` / `import x = A.B` (CJS interop, not statically modelled)",
-            span: li.span(node.start, node.end),
-          });
+          recordImportEquals(node, inType);
           break;
         case "TSExportAssignment":
+          // `export = expr` — the expression subtree is walked normally below, so
+          // a value reference to a local/imported binding (`export = imported`) is
+          // recorded like any other use-site. The hazard still caps confidence for
+          // the CJS-interop mechanism (declaration merging etc.).
           hazards.push({
             kind: "export-assignment",
             detail: "TS `export = ...` (CJS interop, not statically modelled)",

@@ -1,0 +1,1207 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`IR snapshots (corpus) > basic-dead-export 1`] = `
+{
+  "edges": [
+    {
+      "from": "file:src/index.ts",
+      "kind": "references",
+      "name": "add",
+      "referenceKind": "static",
+      "site": {
+        "file": "src/index.ts",
+        "span": {
+          "end": 12,
+          "endLine": 1,
+          "start": 9,
+          "startLine": 1,
+        },
+      },
+      "to": "symbol:src/math.ts#add",
+    },
+    {
+      "from": "file:src/math.ts",
+      "kind": "contains",
+      "name": "add",
+      "site": {
+        "file": "src/math.ts",
+        "span": {
+          "end": 69,
+          "endLine": 3,
+          "start": 7,
+          "startLine": 1,
+        },
+      },
+      "to": "symbol:src/math.ts#add",
+    },
+    {
+      "from": "file:src/math.ts",
+      "kind": "exports",
+      "name": "add",
+      "site": {
+        "file": "src/math.ts",
+        "span": {
+          "end": 69,
+          "endLine": 3,
+          "start": 7,
+          "startLine": 1,
+        },
+      },
+      "to": "symbol:src/math.ts#add",
+    },
+    {
+      "from": "file:src/math.ts",
+      "kind": "contains",
+      "name": "subtract",
+      "site": {
+        "file": "src/math.ts",
+        "span": {
+          "end": 233,
+          "endLine": 8,
+          "start": 166,
+          "startLine": 6,
+        },
+      },
+      "to": "symbol:src/math.ts#subtract",
+    },
+    {
+      "from": "file:src/math.ts",
+      "kind": "exports",
+      "name": "subtract",
+      "site": {
+        "file": "src/math.ts",
+        "span": {
+          "end": 233,
+          "endLine": 8,
+          "start": 166,
+          "startLine": 6,
+        },
+      },
+      "to": "symbol:src/math.ts#subtract",
+    },
+  ],
+  "hazards": [],
+  "nodes": [
+    {
+      "entryKind": "production",
+      "file": "src/index.ts",
+      "id": "entrypoint:production:src/index.ts",
+      "kind": "entrypoint",
+      "reason": "main",
+    },
+    {
+      "id": "file:src/index.ts",
+      "kind": "file",
+      "path": "src/index.ts",
+    },
+    {
+      "id": "file:src/math.ts",
+      "kind": "file",
+      "path": "src/math.ts",
+    },
+    {
+      "exportedName": "add",
+      "file": "src/math.ts",
+      "id": "symbol:src/math.ts#add",
+      "isDefault": false,
+      "kind": "symbol",
+      "local": true,
+      "span": {
+        "end": 69,
+        "endLine": 3,
+        "start": 7,
+        "startLine": 1,
+      },
+      "typeOnly": false,
+    },
+    {
+      "exportedName": "subtract",
+      "file": "src/math.ts",
+      "id": "symbol:src/math.ts#subtract",
+      "isDefault": false,
+      "kind": "symbol",
+      "local": true,
+      "span": {
+        "end": 233,
+        "endLine": 8,
+        "start": 166,
+        "startLine": 6,
+      },
+      "typeOnly": false,
+    },
+  ],
+}
+`;
+
+exports[`IR snapshots (corpus) > entrypoint-exports-map 1`] = `
+{
+  "edges": [
+    {
+      "from": "file:src/index.ts",
+      "kind": "references",
+      "name": "helperA",
+      "referenceKind": "static",
+      "site": {
+        "file": "src/index.ts",
+        "span": {
+          "end": 78,
+          "endLine": 2,
+          "start": 71,
+          "startLine": 2,
+        },
+      },
+      "to": "symbol:src/shared.ts#helperA",
+    },
+    {
+      "from": "file:src/shared.ts",
+      "kind": "contains",
+      "name": "helperA",
+      "site": {
+        "file": "src/shared.ts",
+        "span": {
+          "end": 51,
+          "endLine": 3,
+          "start": 7,
+          "startLine": 1,
+        },
+      },
+      "to": "symbol:src/shared.ts#helperA",
+    },
+    {
+      "from": "file:src/shared.ts",
+      "kind": "exports",
+      "name": "helperA",
+      "site": {
+        "file": "src/shared.ts",
+        "span": {
+          "end": 51,
+          "endLine": 3,
+          "start": 7,
+          "startLine": 1,
+        },
+      },
+      "to": "symbol:src/shared.ts#helperA",
+    },
+    {
+      "from": "file:src/shared.ts",
+      "kind": "contains",
+      "name": "helperB",
+      "site": {
+        "file": "src/shared.ts",
+        "span": {
+          "end": 104,
+          "endLine": 7,
+          "start": 60,
+          "startLine": 5,
+        },
+      },
+      "to": "symbol:src/shared.ts#helperB",
+    },
+    {
+      "from": "file:src/shared.ts",
+      "kind": "exports",
+      "name": "helperB",
+      "site": {
+        "file": "src/shared.ts",
+        "span": {
+          "end": 104,
+          "endLine": 7,
+          "start": 60,
+          "startLine": 5,
+        },
+      },
+      "to": "symbol:src/shared.ts#helperB",
+    },
+    {
+      "from": "file:src/shared.ts",
+      "kind": "contains",
+      "name": "helperC",
+      "site": {
+        "file": "src/shared.ts",
+        "span": {
+          "end": 212,
+          "endLine": 12,
+          "start": 168,
+          "startLine": 10,
+        },
+      },
+      "to": "symbol:src/shared.ts#helperC",
+    },
+    {
+      "from": "file:src/shared.ts",
+      "kind": "exports",
+      "name": "helperC",
+      "site": {
+        "file": "src/shared.ts",
+        "span": {
+          "end": 212,
+          "endLine": 12,
+          "start": 168,
+          "startLine": 10,
+        },
+      },
+      "to": "symbol:src/shared.ts#helperC",
+    },
+    {
+      "from": "file:src/worker.ts",
+      "kind": "references",
+      "name": "helperB",
+      "referenceKind": "static",
+      "site": {
+        "file": "src/worker.ts",
+        "span": {
+          "end": 141,
+          "endLine": 3,
+          "start": 134,
+          "startLine": 3,
+        },
+      },
+      "to": "symbol:src/shared.ts#helperB",
+    },
+  ],
+  "hazards": [],
+  "nodes": [
+    {
+      "entryKind": "production",
+      "file": "src/index.ts",
+      "id": "entrypoint:production:src/index.ts",
+      "kind": "entrypoint",
+      "reason": "exports",
+    },
+    {
+      "entryKind": "production",
+      "file": "src/worker.ts",
+      "id": "entrypoint:production:src/worker.ts",
+      "kind": "entrypoint",
+      "reason": "exports",
+    },
+    {
+      "id": "file:src/index.ts",
+      "kind": "file",
+      "path": "src/index.ts",
+    },
+    {
+      "id": "file:src/shared.ts",
+      "kind": "file",
+      "path": "src/shared.ts",
+    },
+    {
+      "id": "file:src/worker.ts",
+      "kind": "file",
+      "path": "src/worker.ts",
+    },
+    {
+      "exportedName": "helperA",
+      "file": "src/shared.ts",
+      "id": "symbol:src/shared.ts#helperA",
+      "isDefault": false,
+      "kind": "symbol",
+      "local": true,
+      "span": {
+        "end": 51,
+        "endLine": 3,
+        "start": 7,
+        "startLine": 1,
+      },
+      "typeOnly": false,
+    },
+    {
+      "exportedName": "helperB",
+      "file": "src/shared.ts",
+      "id": "symbol:src/shared.ts#helperB",
+      "isDefault": false,
+      "kind": "symbol",
+      "local": true,
+      "span": {
+        "end": 104,
+        "endLine": 7,
+        "start": 60,
+        "startLine": 5,
+      },
+      "typeOnly": false,
+    },
+    {
+      "exportedName": "helperC",
+      "file": "src/shared.ts",
+      "id": "symbol:src/shared.ts#helperC",
+      "isDefault": false,
+      "kind": "symbol",
+      "local": true,
+      "span": {
+        "end": 212,
+        "endLine": 12,
+        "start": 168,
+        "startLine": 10,
+      },
+      "typeOnly": false,
+    },
+  ],
+}
+`;
+
+exports[`IR snapshots (corpus) > export-star-chain 1`] = `
+{
+  "edges": [
+    {
+      "from": "file:src/api.ts",
+      "kind": "references",
+      "name": "*",
+      "referenceKind": "re-export",
+      "site": {
+        "file": "src/api.ts",
+        "span": {
+          "end": 61,
+          "endLine": 2,
+          "start": 51,
+          "startLine": 2,
+        },
+      },
+      "to": "file:src/mid.ts",
+    },
+    {
+      "from": "file:src/index.ts",
+      "kind": "references",
+      "name": "widgetA",
+      "referenceKind": "static",
+      "site": {
+        "file": "src/index.ts",
+        "span": {
+          "end": 16,
+          "endLine": 1,
+          "start": 9,
+          "startLine": 1,
+        },
+      },
+      "to": "file:src/api.ts",
+    },
+    {
+      "from": "file:src/internal/widgets.ts",
+      "kind": "contains",
+      "name": "widgetA",
+      "site": {
+        "file": "src/internal/widgets.ts",
+        "span": {
+          "end": 58,
+          "endLine": 3,
+          "start": 7,
+          "startLine": 1,
+        },
+      },
+      "to": "symbol:src/internal/widgets.ts#widgetA",
+    },
+    {
+      "from": "file:src/internal/widgets.ts",
+      "kind": "exports",
+      "name": "widgetA",
+      "site": {
+        "file": "src/internal/widgets.ts",
+        "span": {
+          "end": 58,
+          "endLine": 3,
+          "start": 7,
+          "startLine": 1,
+        },
+      },
+      "to": "symbol:src/internal/widgets.ts#widgetA",
+    },
+    {
+      "from": "file:src/internal/widgets.ts",
+      "kind": "contains",
+      "name": "widgetB",
+      "site": {
+        "file": "src/internal/widgets.ts",
+        "span": {
+          "end": 198,
+          "endLine": 8,
+          "start": 147,
+          "startLine": 6,
+        },
+      },
+      "to": "symbol:src/internal/widgets.ts#widgetB",
+    },
+    {
+      "from": "file:src/internal/widgets.ts",
+      "kind": "exports",
+      "name": "widgetB",
+      "site": {
+        "file": "src/internal/widgets.ts",
+        "span": {
+          "end": 198,
+          "endLine": 8,
+          "start": 147,
+          "startLine": 6,
+        },
+      },
+      "to": "symbol:src/internal/widgets.ts#widgetB",
+    },
+    {
+      "from": "file:src/mid.ts",
+      "kind": "references",
+      "name": "*",
+      "referenceKind": "re-export",
+      "site": {
+        "file": "src/mid.ts",
+        "span": {
+          "end": 74,
+          "endLine": 2,
+          "start": 51,
+          "startLine": 2,
+        },
+      },
+      "to": "file:src/internal/widgets.ts",
+    },
+  ],
+  "hazards": [],
+  "nodes": [
+    {
+      "entryKind": "production",
+      "file": "src/index.ts",
+      "id": "entrypoint:production:src/index.ts",
+      "kind": "entrypoint",
+      "reason": "main",
+    },
+    {
+      "id": "file:src/api.ts",
+      "kind": "file",
+      "path": "src/api.ts",
+    },
+    {
+      "id": "file:src/index.ts",
+      "kind": "file",
+      "path": "src/index.ts",
+    },
+    {
+      "id": "file:src/internal/widgets.ts",
+      "kind": "file",
+      "path": "src/internal/widgets.ts",
+    },
+    {
+      "id": "file:src/mid.ts",
+      "kind": "file",
+      "path": "src/mid.ts",
+    },
+    {
+      "exportedName": "widgetA",
+      "file": "src/internal/widgets.ts",
+      "id": "symbol:src/internal/widgets.ts#widgetA",
+      "isDefault": false,
+      "kind": "symbol",
+      "local": true,
+      "span": {
+        "end": 58,
+        "endLine": 3,
+        "start": 7,
+        "startLine": 1,
+      },
+      "typeOnly": false,
+    },
+    {
+      "exportedName": "widgetB",
+      "file": "src/internal/widgets.ts",
+      "id": "symbol:src/internal/widgets.ts#widgetB",
+      "isDefault": false,
+      "kind": "symbol",
+      "local": true,
+      "span": {
+        "end": 198,
+        "endLine": 8,
+        "start": 147,
+        "startLine": 6,
+      },
+      "typeOnly": false,
+    },
+  ],
+}
+`;
+
+exports[`IR snapshots (corpus) > re-export-chain 1`] = `
+{
+  "edges": [
+    {
+      "from": "file:src/barrel.ts",
+      "kind": "exports",
+      "name": "unusedThing",
+      "site": {
+        "file": "src/barrel.ts",
+        "span": {
+          "end": 146,
+          "endLine": 3,
+          "start": 135,
+          "startLine": 3,
+        },
+      },
+      "to": "symbol:src/barrel.ts#unusedThing",
+    },
+    {
+      "from": "file:src/barrel.ts",
+      "kind": "exports",
+      "name": "usedThing",
+      "site": {
+        "file": "src/barrel.ts",
+        "span": {
+          "end": 96,
+          "endLine": 2,
+          "start": 87,
+          "startLine": 2,
+        },
+      },
+      "to": "symbol:src/barrel.ts#usedThing",
+    },
+    {
+      "from": "file:src/index.ts",
+      "kind": "references",
+      "name": "usedThing",
+      "referenceKind": "static",
+      "site": {
+        "file": "src/index.ts",
+        "span": {
+          "end": 18,
+          "endLine": 1,
+          "start": 9,
+          "startLine": 1,
+        },
+      },
+      "to": "symbol:src/barrel.ts#usedThing",
+    },
+    {
+      "from": "file:src/lib/unusedThing.ts",
+      "kind": "contains",
+      "name": "unusedThing",
+      "site": {
+        "file": "src/lib/unusedThing.ts",
+        "span": {
+          "end": 60,
+          "endLine": 3,
+          "start": 7,
+          "startLine": 1,
+        },
+      },
+      "to": "symbol:src/lib/unusedThing.ts#unusedThing",
+    },
+    {
+      "from": "file:src/lib/unusedThing.ts",
+      "kind": "exports",
+      "name": "unusedThing",
+      "site": {
+        "file": "src/lib/unusedThing.ts",
+        "span": {
+          "end": 60,
+          "endLine": 3,
+          "start": 7,
+          "startLine": 1,
+        },
+      },
+      "to": "symbol:src/lib/unusedThing.ts#unusedThing",
+    },
+    {
+      "from": "file:src/lib/usedThing.ts",
+      "kind": "contains",
+      "name": "usedThing",
+      "site": {
+        "file": "src/lib/usedThing.ts",
+        "span": {
+          "end": 56,
+          "endLine": 3,
+          "start": 7,
+          "startLine": 1,
+        },
+      },
+      "to": "symbol:src/lib/usedThing.ts#usedThing",
+    },
+    {
+      "from": "file:src/lib/usedThing.ts",
+      "kind": "exports",
+      "name": "usedThing",
+      "site": {
+        "file": "src/lib/usedThing.ts",
+        "span": {
+          "end": 56,
+          "endLine": 3,
+          "start": 7,
+          "startLine": 1,
+        },
+      },
+      "to": "symbol:src/lib/usedThing.ts#usedThing",
+    },
+    {
+      "from": "symbol:src/barrel.ts#unusedThing",
+      "kind": "references",
+      "name": "unusedThing",
+      "referenceKind": "re-export",
+      "site": {
+        "file": "src/barrel.ts",
+        "span": {
+          "end": 176,
+          "endLine": 3,
+          "start": 154,
+          "startLine": 3,
+        },
+      },
+      "to": "symbol:src/lib/unusedThing.ts#unusedThing",
+    },
+    {
+      "from": "symbol:src/barrel.ts#usedThing",
+      "kind": "references",
+      "name": "usedThing",
+      "referenceKind": "re-export",
+      "site": {
+        "file": "src/barrel.ts",
+        "span": {
+          "end": 124,
+          "endLine": 2,
+          "start": 104,
+          "startLine": 2,
+        },
+      },
+      "to": "symbol:src/lib/usedThing.ts#usedThing",
+    },
+  ],
+  "hazards": [],
+  "nodes": [
+    {
+      "entryKind": "production",
+      "file": "src/index.ts",
+      "id": "entrypoint:production:src/index.ts",
+      "kind": "entrypoint",
+      "reason": "main",
+    },
+    {
+      "id": "file:src/barrel.ts",
+      "kind": "file",
+      "path": "src/barrel.ts",
+    },
+    {
+      "id": "file:src/index.ts",
+      "kind": "file",
+      "path": "src/index.ts",
+    },
+    {
+      "id": "file:src/lib/unusedThing.ts",
+      "kind": "file",
+      "path": "src/lib/unusedThing.ts",
+    },
+    {
+      "id": "file:src/lib/usedThing.ts",
+      "kind": "file",
+      "path": "src/lib/usedThing.ts",
+    },
+    {
+      "exportedName": "unusedThing",
+      "file": "src/barrel.ts",
+      "id": "symbol:src/barrel.ts#unusedThing",
+      "isDefault": false,
+      "kind": "symbol",
+      "local": false,
+      "span": {
+        "end": 146,
+        "endLine": 3,
+        "start": 135,
+        "startLine": 3,
+      },
+      "typeOnly": false,
+    },
+    {
+      "exportedName": "usedThing",
+      "file": "src/barrel.ts",
+      "id": "symbol:src/barrel.ts#usedThing",
+      "isDefault": false,
+      "kind": "symbol",
+      "local": false,
+      "span": {
+        "end": 96,
+        "endLine": 2,
+        "start": 87,
+        "startLine": 2,
+      },
+      "typeOnly": false,
+    },
+    {
+      "exportedName": "unusedThing",
+      "file": "src/lib/unusedThing.ts",
+      "id": "symbol:src/lib/unusedThing.ts#unusedThing",
+      "isDefault": false,
+      "kind": "symbol",
+      "local": true,
+      "span": {
+        "end": 60,
+        "endLine": 3,
+        "start": 7,
+        "startLine": 1,
+      },
+      "typeOnly": false,
+    },
+    {
+      "exportedName": "usedThing",
+      "file": "src/lib/usedThing.ts",
+      "id": "symbol:src/lib/usedThing.ts#usedThing",
+      "isDefault": false,
+      "kind": "symbol",
+      "local": true,
+      "span": {
+        "end": 56,
+        "endLine": 3,
+        "start": 7,
+        "startLine": 1,
+      },
+      "typeOnly": false,
+    },
+  ],
+}
+`;
+
+exports[`IR snapshots (corpus) > side-effect-import 1`] = `
+{
+  "edges": [
+    {
+      "from": "file:src/index.ts",
+      "kind": "references",
+      "referenceKind": "side-effect",
+      "site": {
+        "file": "src/index.ts",
+        "span": {
+          "end": 89,
+          "endLine": 2,
+          "start": 74,
+          "startLine": 2,
+        },
+      },
+      "to": "file:src/polyfill.ts",
+    },
+    {
+      "from": "file:src/polyfill.ts",
+      "kind": "contains",
+      "name": "unusedHelper",
+      "site": {
+        "file": "src/polyfill.ts",
+        "span": {
+          "end": 324,
+          "endLine": 8,
+          "start": 276,
+          "startLine": 6,
+        },
+      },
+      "to": "symbol:src/polyfill.ts#unusedHelper",
+    },
+    {
+      "from": "file:src/polyfill.ts",
+      "kind": "exports",
+      "name": "unusedHelper",
+      "site": {
+        "file": "src/polyfill.ts",
+        "span": {
+          "end": 324,
+          "endLine": 8,
+          "start": 276,
+          "startLine": 6,
+        },
+      },
+      "to": "symbol:src/polyfill.ts#unusedHelper",
+    },
+  ],
+  "hazards": [],
+  "nodes": [
+    {
+      "entryKind": "production",
+      "file": "src/index.ts",
+      "id": "entrypoint:production:src/index.ts",
+      "kind": "entrypoint",
+      "reason": "main",
+    },
+    {
+      "id": "file:src/index.ts",
+      "kind": "file",
+      "path": "src/index.ts",
+    },
+    {
+      "id": "file:src/polyfill.ts",
+      "kind": "file",
+      "path": "src/polyfill.ts",
+    },
+    {
+      "exportedName": "unusedHelper",
+      "file": "src/polyfill.ts",
+      "id": "symbol:src/polyfill.ts#unusedHelper",
+      "isDefault": false,
+      "kind": "symbol",
+      "local": true,
+      "span": {
+        "end": 324,
+        "endLine": 8,
+        "start": 276,
+        "startLine": 6,
+      },
+      "typeOnly": false,
+    },
+  ],
+}
+`;
+
+exports[`IR snapshots (corpus) > string-computed-import 1`] = `
+{
+  "edges": [
+    {
+      "from": "file:src/mods/alpha.ts",
+      "kind": "contains",
+      "name": "run",
+      "site": {
+        "file": "src/mods/alpha.ts",
+        "span": {
+          "end": 51,
+          "endLine": 3,
+          "start": 7,
+          "startLine": 1,
+        },
+      },
+      "to": "symbol:src/mods/alpha.ts#run",
+    },
+    {
+      "from": "file:src/mods/alpha.ts",
+      "kind": "exports",
+      "name": "run",
+      "site": {
+        "file": "src/mods/alpha.ts",
+        "span": {
+          "end": 51,
+          "endLine": 3,
+          "start": 7,
+          "startLine": 1,
+        },
+      },
+      "to": "symbol:src/mods/alpha.ts#run",
+    },
+    {
+      "from": "file:src/mods/beta.ts",
+      "kind": "contains",
+      "name": "run",
+      "site": {
+        "file": "src/mods/beta.ts",
+        "span": {
+          "end": 50,
+          "endLine": 3,
+          "start": 7,
+          "startLine": 1,
+        },
+      },
+      "to": "symbol:src/mods/beta.ts#run",
+    },
+    {
+      "from": "file:src/mods/beta.ts",
+      "kind": "exports",
+      "name": "run",
+      "site": {
+        "file": "src/mods/beta.ts",
+        "span": {
+          "end": 50,
+          "endLine": 3,
+          "start": 7,
+          "startLine": 1,
+        },
+      },
+      "to": "symbol:src/mods/beta.ts#run",
+    },
+    {
+      "from": "file:src/unrelated.ts",
+      "kind": "contains",
+      "name": "neverUsed",
+      "site": {
+        "file": "src/unrelated.ts",
+        "span": {
+          "end": 192,
+          "endLine": 5,
+          "start": 125,
+          "startLine": 3,
+        },
+      },
+      "to": "symbol:src/unrelated.ts#neverUsed",
+    },
+    {
+      "from": "file:src/unrelated.ts",
+      "kind": "exports",
+      "name": "neverUsed",
+      "site": {
+        "file": "src/unrelated.ts",
+        "span": {
+          "end": 192,
+          "endLine": 5,
+          "start": 125,
+          "startLine": 3,
+        },
+      },
+      "to": "symbol:src/unrelated.ts#neverUsed",
+    },
+  ],
+  "hazards": [
+    {
+      "detail": "dynamic import() with a computed (non-string-literal) specifier",
+      "file": "file:src/index.ts",
+      "hazardClass": "computed-dynamic-import",
+      "site": {
+        "file": "src/index.ts",
+        "span": {
+          "end": 265,
+          "endLine": 4,
+          "start": 246,
+          "startLine": 4,
+        },
+      },
+    },
+  ],
+  "nodes": [
+    {
+      "entryKind": "production",
+      "file": "src/index.ts",
+      "id": "entrypoint:production:src/index.ts",
+      "kind": "entrypoint",
+      "reason": "main",
+    },
+    {
+      "id": "file:src/index.ts",
+      "kind": "file",
+      "path": "src/index.ts",
+    },
+    {
+      "id": "file:src/mods/alpha.ts",
+      "kind": "file",
+      "path": "src/mods/alpha.ts",
+    },
+    {
+      "id": "file:src/mods/beta.ts",
+      "kind": "file",
+      "path": "src/mods/beta.ts",
+    },
+    {
+      "id": "file:src/unrelated.ts",
+      "kind": "file",
+      "path": "src/unrelated.ts",
+    },
+    {
+      "exportedName": "run",
+      "file": "src/mods/alpha.ts",
+      "id": "symbol:src/mods/alpha.ts#run",
+      "isDefault": false,
+      "kind": "symbol",
+      "local": true,
+      "span": {
+        "end": 51,
+        "endLine": 3,
+        "start": 7,
+        "startLine": 1,
+      },
+      "typeOnly": false,
+    },
+    {
+      "exportedName": "run",
+      "file": "src/mods/beta.ts",
+      "id": "symbol:src/mods/beta.ts#run",
+      "isDefault": false,
+      "kind": "symbol",
+      "local": true,
+      "span": {
+        "end": 50,
+        "endLine": 3,
+        "start": 7,
+        "startLine": 1,
+      },
+      "typeOnly": false,
+    },
+    {
+      "exportedName": "neverUsed",
+      "file": "src/unrelated.ts",
+      "id": "symbol:src/unrelated.ts#neverUsed",
+      "isDefault": false,
+      "kind": "symbol",
+      "local": true,
+      "span": {
+        "end": 192,
+        "endLine": 5,
+        "start": 125,
+        "startLine": 3,
+      },
+      "typeOnly": false,
+    },
+  ],
+}
+`;
+
+exports[`IR snapshots (corpus) > tsconfig-paths-alias 1`] = `
+{
+  "edges": [
+    {
+      "from": "file:src/app/orphan.ts",
+      "kind": "contains",
+      "name": "orphanFn",
+      "site": {
+        "file": "src/app/orphan.ts",
+        "span": {
+          "end": 187,
+          "endLine": 5,
+          "start": 137,
+          "startLine": 3,
+        },
+      },
+      "to": "symbol:src/app/orphan.ts#orphanFn",
+    },
+    {
+      "from": "file:src/app/orphan.ts",
+      "kind": "exports",
+      "name": "orphanFn",
+      "site": {
+        "file": "src/app/orphan.ts",
+        "span": {
+          "end": 187,
+          "endLine": 5,
+          "start": 137,
+          "startLine": 3,
+        },
+      },
+      "to": "symbol:src/app/orphan.ts#orphanFn",
+    },
+    {
+      "from": "file:src/app/util.ts",
+      "kind": "contains",
+      "name": "helper",
+      "site": {
+        "file": "src/app/util.ts",
+        "span": {
+          "end": 274,
+          "endLine": 6,
+          "start": 226,
+          "startLine": 4,
+        },
+      },
+      "to": "symbol:src/app/util.ts#helper",
+    },
+    {
+      "from": "file:src/app/util.ts",
+      "kind": "exports",
+      "name": "helper",
+      "site": {
+        "file": "src/app/util.ts",
+        "span": {
+          "end": 274,
+          "endLine": 6,
+          "start": 226,
+          "startLine": 4,
+        },
+      },
+      "to": "symbol:src/app/util.ts#helper",
+    },
+    {
+      "from": "file:src/app/util.ts",
+      "kind": "contains",
+      "name": "siblingUnused",
+      "site": {
+        "file": "src/app/util.ts",
+        "span": {
+          "end": 493,
+          "endLine": 12,
+          "start": 430,
+          "startLine": 10,
+        },
+      },
+      "to": "symbol:src/app/util.ts#siblingUnused",
+    },
+    {
+      "from": "file:src/app/util.ts",
+      "kind": "exports",
+      "name": "siblingUnused",
+      "site": {
+        "file": "src/app/util.ts",
+        "span": {
+          "end": 493,
+          "endLine": 12,
+          "start": 430,
+          "startLine": 10,
+        },
+      },
+      "to": "symbol:src/app/util.ts#siblingUnused",
+    },
+    {
+      "from": "file:src/index.ts",
+      "kind": "references",
+      "name": "helper",
+      "referenceKind": "static",
+      "site": {
+        "file": "src/index.ts",
+        "span": {
+          "end": 15,
+          "endLine": 1,
+          "start": 9,
+          "startLine": 1,
+        },
+      },
+      "to": "symbol:src/app/util.ts#helper",
+    },
+  ],
+  "hazards": [],
+  "nodes": [
+    {
+      "entryKind": "production",
+      "file": "src/index.ts",
+      "id": "entrypoint:production:src/index.ts",
+      "kind": "entrypoint",
+      "reason": "main",
+    },
+    {
+      "id": "file:src/app/orphan.ts",
+      "kind": "file",
+      "path": "src/app/orphan.ts",
+    },
+    {
+      "id": "file:src/app/util.ts",
+      "kind": "file",
+      "path": "src/app/util.ts",
+    },
+    {
+      "id": "file:src/index.ts",
+      "kind": "file",
+      "path": "src/index.ts",
+    },
+    {
+      "exportedName": "orphanFn",
+      "file": "src/app/orphan.ts",
+      "id": "symbol:src/app/orphan.ts#orphanFn",
+      "isDefault": false,
+      "kind": "symbol",
+      "local": true,
+      "span": {
+        "end": 187,
+        "endLine": 5,
+        "start": 137,
+        "startLine": 3,
+      },
+      "typeOnly": false,
+    },
+    {
+      "exportedName": "helper",
+      "file": "src/app/util.ts",
+      "id": "symbol:src/app/util.ts#helper",
+      "isDefault": false,
+      "kind": "symbol",
+      "local": true,
+      "span": {
+        "end": 274,
+        "endLine": 6,
+        "start": 226,
+        "startLine": 4,
+      },
+      "typeOnly": false,
+    },
+    {
+      "exportedName": "siblingUnused",
+      "file": "src/app/util.ts",
+      "id": "symbol:src/app/util.ts#siblingUnused",
+      "isDefault": false,
+      "kind": "symbol",
+      "local": true,
+      "span": {
+        "end": 493,
+        "endLine": 12,
+        "start": 430,
+        "startLine": 10,
+      },
+      "typeOnly": false,
+    },
+  ],
+}
+`;

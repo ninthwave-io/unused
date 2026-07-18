@@ -192,9 +192,26 @@ describe("hazards for CJS/TS interop", () => {
     expect(r.hazards.map((h) => h.kind)).toContain("import-equals");
   });
 
+  it("`import x = require('./m')` ALSO records the module reference (keep-alive edge; FP fix)", () => {
+    // Previously the whole TSImportEqualsDeclaration subtree was dropped, so a
+    // file imported only this way got no incoming edge → confident false "unused".
+    const r = rec(`import util = require('./util.js');`);
+    expect(r.requires).toEqual([expect.objectContaining({ source: "./util.js", computed: false })]);
+    expect(r.hazards.map((h) => h.kind)).toContain("import-equals");
+  });
+
   it("`export = x` emits an export-assignment hazard", () => {
     const r = rec(`const api = {};\nexport = api;`);
     expect(r.hazards.map((h) => h.kind)).toContain("export-assignment");
+  });
+
+  it("`export = imported` records a value reference to the imported binding", () => {
+    // The re-exported binding is a real use-site: the value reference keeps the
+    // imported name live (its import already carries the source edge).
+    const r = rec(`import { thing } from './x.js';\nexport = thing;`);
+    expect(r.references).toContainEqual(
+      expect.objectContaining({ localName: "thing", position: "value" }),
+    );
   });
 });
 
