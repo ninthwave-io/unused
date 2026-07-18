@@ -16,6 +16,7 @@ import { loadLabelCase } from "./labels.js";
 import {
   gateNoConfidenceViolations,
   gateNoHighConfidenceFalsePositives,
+  gateNoUnlabelledHighConfidence,
   gatePrecisionNonDecreasing,
   scoreCorpus,
 } from "./metrics.js";
@@ -81,6 +82,38 @@ const evilConfidenceViolatorAnalyzer: Analyzer = {
     );
     if (!hazardSubject) return [];
     return [claimForLabel(hazardSubject, "high")];
+  },
+};
+
+/**
+ * A test double that claims a subject **no fixture labels** dead at `high` — a
+ * permanent proof Gate D catches an unlabelled high-confidence claim (a silent
+ * escape past Gate A, which only fires on claims joining an `alive` label).
+ */
+const evilUnlabelledHighAnalyzer: Analyzer = {
+  name: "evil-unlabelled-high",
+  async analyze() {
+    const subject = {
+      kind: "export",
+      name: "__ghost_unlabelled_subject__",
+      loc: { file: "src/__ghost__.ts", span: [1, 1] },
+    } as Subject;
+    return [
+      {
+        id: computeClaimId(subject),
+        subject,
+        verdict: "unused",
+        confidence: "high",
+        evidence: [
+          {
+            type: "static-reachability",
+            detail: "planted unlabelled high-confidence claim",
+            source: "gates.test.ts",
+          },
+        ],
+        provenance: { analyzer: "evil", version: "0.0.0", generatedAt: "2026-01-01T00:00:00.000Z" },
+      } as Claim,
+    ];
   },
 };
 
@@ -233,6 +266,34 @@ describe("Gate C — corpus-wide precision never decreases vs the committed scor
       }
       await rm(tmpDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("Gate D — no unlabelled high-confidence claims (M3 reviewer-inherited)", () => {
+  it("passes against the stub analyzer (vacuous: it emits no claims)", async () => {
+    const { caseInputs } = await runCorpus(allAliveAnalyzer);
+    const metrics = scoreCorpus(caseInputs);
+    expect(gateNoUnlabelledHighConfidence(metrics).pass).toBe(true);
+  });
+
+  it("passes against the real analyzer (every high-confidence claim joins a label)", async () => {
+    const { caseInputs } = await runCorpus(realAnalyzer);
+    const metrics = scoreCorpus(caseInputs);
+    const gate = gateNoUnlabelledHighConfidence(metrics);
+    // If this fails, the reason lists every unlabelled high claim — either the
+    // subject needs a label or the analyzer over-claimed.
+    expect(gate.pass, gate.reason).toBe(true);
+  });
+
+  it("rejects a planted unlabelled high-confidence claim (permanent proof, not a manual demo)", async () => {
+    const { caseInputs } = await runCorpus(evilUnlabelledHighAnalyzer);
+    const metrics = scoreCorpus(caseInputs);
+
+    expect(metrics.unlabelledClaims.some((c) => c.confidence === "high")).toBe(true);
+
+    const gate = gateNoUnlabelledHighConfidence(metrics);
+    expect(gate.pass).toBe(false);
+    expect(gate.reason).toMatch(/unlabelled high-confidence claim/);
   });
 });
 

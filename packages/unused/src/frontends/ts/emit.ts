@@ -46,11 +46,12 @@
  */
 
 import { readFileSync } from "node:fs";
-import { join, relative, resolve as resolvePath, sep } from "node:path";
+import { join, posix, relative, resolve as resolvePath, sep } from "node:path";
 import {
   dependencyId,
   type EntrypointNode,
   fileId,
+  type HazardClass,
   type IREdge,
   IRGraph,
   type ReferenceKind,
@@ -424,14 +425,22 @@ export function emitIR(input: EmitInput): IRGraph {
     }
 
     // 2f. parse/extract hazards already captured on the record (computed-*,
-    // import-equals, export-assignment, parse-error). Suppressions were attached
-    // to their symbol nodes in phase 1.
+    // computed-cjs-exports, import-equals, export-assignment, parse-error).
+    // Suppressions were attached to their symbol nodes in phase 1. For the
+    // `directory-subtree`-scoped computed classes, resolve the source-relative
+    // static prefix against the importing file into the repo-relative
+    // `subtreePrefix` the claim engine matches file paths against (M3 registry).
     for (const hz of record.hazards) {
+      const subtreePrefix =
+        hz.kind === "computed-dynamic-import" || hz.kind === "computed-require"
+          ? resolveSubtreePrefix(fileRel, hz.scopePrefix ?? "")
+          : undefined;
       graph.addHazard({
         file: fileNode,
         hazardClass: hz.kind,
         detail: hz.detail,
         site: site(fileRel, hz.span),
+        ...(subtreePrefix !== undefined ? { subtreePrefix } : {}),
       });
     }
   }
@@ -612,7 +621,7 @@ function hazardEdge(
   from: string,
   to: string,
   site: Site,
-  hazardClass: string,
+  hazardClass: HazardClass,
   name: string | undefined,
   typeOnly: boolean,
 ): IREdge {
@@ -672,4 +681,30 @@ function suppressionsByName(
 /** Absolute path → POSIX, repo/project-relative. */
 function toPosixRel(root: string, abs: string): string {
   return relative(root, abs).split(sep).join("/");
+}
+
+/**
+ * Resolve a computed specifier's source-relative static prefix against the
+ * importing file into a repo-relative path prefix the claim engine matches with
+ * `startsWith` (the `directory-subtree` hazard scope, M3 registry). A trailing
+ * `/` (a directory prefix like `./mods/`) is preserved so the match respects the
+ * directory boundary; a non-directory stem (`./route-`) is kept verbatim. An
+ * empty prefix ⇒ `""` ⇒ the importer's whole package (matches every file).
+ *
+ * **FP-critical (reviewer):** when the prefix resolves to the **repo root** —
+ * `` import(`./${x}.js`) `` in a root-level file, or `` import(`../${x}.js`) ``
+ * one directory down — `posix.join` yields `"."`, and a naive `"./"` prefix
+ * matches NO repo-relative path (they never start with `./`). That would cap
+ * ZERO files and leak every dynamically-reachable dead file as a *high*-
+ * confidence claim. Root resolution therefore collapses to `""` (whole-package
+ * scope). A prefix that escapes the project (`".."`) is left as-is: it correctly
+ * matches no in-project file, because its targets genuinely live outside.
+ */
+function resolveSubtreePrefix(importerRel: string, rawPrefix: string): string {
+  if (rawPrefix === "") return "";
+  const slash = importerRel.lastIndexOf("/");
+  const importerDir = slash === -1 ? "" : importerRel.slice(0, slash);
+  const combined = posix.join(importerDir, rawPrefix);
+  if (combined === "." || combined === "" || combined === "./") return ""; // repo root ⇒ whole package
+  return rawPrefix.endsWith("/") && !combined.endsWith("/") ? `${combined}/` : combined;
 }

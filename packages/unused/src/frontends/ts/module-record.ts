@@ -241,6 +241,7 @@ export interface ReferenceSite {
 export type HazardKind =
   | "computed-dynamic-import"
   | "computed-require"
+  | "computed-cjs-exports"
   | "import-equals"
   | "export-assignment"
   | "parse-error"
@@ -251,6 +252,14 @@ export interface HazardMarker {
   /** One-line human-readable description (feeds the M3 report/why-path). */
   detail: string;
   span: Span;
+  /**
+   * For a computed `import()`/`require()` (the `directory-subtree`-scoped
+   * hazards, M3 registry): the **static prefix** of the specifier as written in
+   * source — e.g. `"./mods/"` for `` import(`./mods/${x}.js`) ``. The IR layer
+   * resolves it against the importing file to a repo-relative `subtreePrefix`.
+   * Absent ⇒ no static prefix ⇒ the importer's whole package is in scope.
+   */
+  scopePrefix?: string;
 }
 
 // ---------------------------------------------------------------------------

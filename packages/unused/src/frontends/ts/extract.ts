@@ -94,10 +94,12 @@ export function extract(
     }
     dynamicImports.push({ source: value, computed, argSpan, span: li.span(node.start, node.end) });
     if (computed) {
+      const scopePrefix = staticSpecifierPrefix(source);
       hazards.push({
         kind: "computed-dynamic-import",
         detail: "dynamic import() with a computed (non-string-literal) specifier",
         span: argSpan,
+        ...(scopePrefix !== null ? { scopePrefix } : {}),
       });
     }
   }
@@ -123,12 +125,58 @@ export function extract(
     const argSpan = li.span(arg0.start, arg0.end);
     requires.push({ source: value, computed, argSpan, span: li.span(node.start, node.end) });
     if (computed) {
+      const scopePrefix = staticSpecifierPrefix(arg0);
       hazards.push({
         kind: "computed-require",
         detail: "require() with a computed (non-string-literal) argument",
         span: argSpan,
+        ...(scopePrefix !== null ? { scopePrefix } : {}),
       });
     }
+  }
+
+  /**
+   * Detect a computed CommonJS export — `module.exports[k] = …` or
+   * `exports[k] = …` under a **runtime** key (architecture.md §4). The key may
+   * re-expose any of the file's exports under a name static analysis cannot
+   * enumerate, so the file's exports are capped (symbol-set scope, M3 registry).
+   * A *literal-string* key (`exports["foo"] = …`) is a statically-known export
+   * name and is NOT a hazard.
+   */
+  function recordComputedCjsExport(node: RawNode): void {
+    const left = prop(node, "left");
+    if (!isNode(left) || left.type !== "MemberExpression" || !isComputed(left)) return;
+    const key = prop(left, "property");
+    if (isNode(key) && key.type === "Literal" && typeof prop(key, "value") === "string") return;
+    if (!isExportsTarget(prop(left, "object"))) return;
+    hazards.push({
+      kind: "computed-cjs-exports",
+      detail:
+        "computed CommonJS export assignment (`module.exports[k]` / `exports[k]`) under a runtime key",
+      span: li.span(node.start, node.end),
+    });
+  }
+
+  /** `exports` (bare) or `module.exports`, with the CJS root binding unshadowed. */
+  function isExportsTarget(node: unknown): boolean {
+    if (!isNode(node)) return false;
+    if (node.type === "Identifier") {
+      return str(node, "name") === "exports" && !isShadowed("exports", "value");
+    }
+    if (node.type === "MemberExpression" && !isComputed(node)) {
+      const obj = prop(node, "object");
+      const member = prop(node, "property");
+      return (
+        isNode(obj) &&
+        obj.type === "Identifier" &&
+        str(obj, "name") === "module" &&
+        !isShadowed("module", "value") &&
+        isNode(member) &&
+        member.type === "Identifier" &&
+        str(member, "name") === "exports"
+      );
+    }
+    return false;
   }
 
   /**
@@ -217,6 +265,9 @@ export function extract(
         case "CallExpression":
           recordRequire(node);
           break;
+        case "AssignmentExpression":
+          recordComputedCjsExport(node);
+          break;
         case "TSImportType":
           recordTypeImport(node, inType);
           break;
@@ -259,6 +310,36 @@ export function extract(
 
   walk(program, false);
   return { references, dynamicImports, requires, typeImports, hazards };
+}
+
+/**
+ * The **static prefix** of a computed module specifier, for `directory-subtree`
+ * hazard scoping (M3 registry). A template literal contributes its leading
+ * quasi (`` `./mods/${x}.js` `` ⇒ `"./mods/"`); a `"lit" + expr` concatenation
+ * contributes its leftmost string literal; anything else (a bare identifier, a
+ * call) has no static prefix ⇒ `null` ⇒ the importer's whole package.
+ */
+function staticSpecifierPrefix(node: unknown): string | null {
+  if (!isNode(node)) return null;
+  if (node.type === "Literal") {
+    const raw = prop(node, "value");
+    return typeof raw === "string" && raw.length > 0 ? raw : null;
+  }
+  if (node.type === "TemplateLiteral") {
+    const first = nodeArray(prop(node, "quasis"))[0];
+    if (first === undefined) return null;
+    const value = prop(first, "value");
+    if (value === null || typeof value !== "object") return null;
+    const rec = value as Record<string, unknown>;
+    const cooked = rec["cooked"];
+    const raw = rec["raw"];
+    const text = typeof cooked === "string" ? cooked : typeof raw === "string" ? raw : null;
+    return text !== null && text.length > 0 ? text : null;
+  }
+  if (node.type === "BinaryExpression" && str(node, "operator") === "+") {
+    return staticSpecifierPrefix(prop(node, "left"));
+  }
+  return null;
 }
 
 /** Leftmost identifier of a `TSImportType` qualifier (`A` in `A.B`); `null` if absent. */

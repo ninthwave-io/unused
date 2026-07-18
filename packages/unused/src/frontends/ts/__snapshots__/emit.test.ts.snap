@@ -944,6 +944,7 @@ exports[`IR snapshots (corpus) > string-computed-import 1`] = `
           "startLine": 4,
         },
       },
+      "subtreePrefix": "src/mods/",
     },
   ],
   "nodes": [

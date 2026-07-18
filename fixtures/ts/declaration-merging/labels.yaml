@@ -1,0 +1,27 @@
+case: declaration-merging
+description: An interface declared in one module and augmented (declaration-merged) via `declare module` in a second module, consumed only in a type position from the entry — both declaration sites must stay alive even though no import/export edge connects the augmenting member to any consumer.
+subjects:
+  - kind: export
+    name: Config
+    file: src/config.ts
+    expected: alive
+    because: >-
+      the base declaration, consumed via a type annotation (`config: Config`) in src/index.ts — a
+      real, statically-resolved type-position reference (architecture §4 inverse rule).
+  - kind: export
+    name: Config
+    file: src/config-augment.ts
+    expected: alive
+    because: >-
+      the augmenting declaration merges `port` onto the same Config interface declared in
+      src/config.ts; `src/index.ts` reads `config.port`, which only typechecks because of this
+      merge. No import/export edge names this declaration specifically — the file is reached only
+      via a side-effect import — so an analyzer that treats declaration merging as invisible would
+      have no evidence this contribution is used at all. This is the checker-only-relationship FP
+      trap architecture §4 calls out.
+  - kind: export
+    name: neverUsed
+    file: src/config.ts
+    expected: dead
+    minConfidence: high
+    because: never referenced anywhere, in type position or otherwise; no hazard applies, so this is claimable at high confidence.

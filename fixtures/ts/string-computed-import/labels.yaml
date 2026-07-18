@@ -18,4 +18,15 @@ subjects:
     file: src/unrelated.ts
     expected: dead
     minConfidence: high
-    because: src/unrelated.ts sits outside mods/ and no dynamic-reference hazard is nearby; it is never imported statically or dynamically by anything, so it is claimable at high confidence.
+    because: src/unrelated.ts sits outside mods/ and no dynamic-reference hazard is nearby; it is never imported statically or dynamically by anything, so it is claimable at high confidence. (Known structural miss — the analyzer claims at file granularity, subsuming this export; kept because the label is true. Subsumption-aware label matching is a candidate M4 harness improvement.)
+  - kind: file
+    name: src/unrelated.ts
+    file: src/unrelated.ts
+    expected: dead
+    minConfidence: high
+    because: >-
+      the whole file has no static or dynamic importers and sits outside the
+      ./mods/ computed-import hazard scope; the analyzer claims dead files at
+      file granularity (subsuming their exports), so this file subject is what
+      gates the high-confidence claim (added so it does not ride unlabelled
+      past Gate A/D).

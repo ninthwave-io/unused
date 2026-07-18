@@ -53,7 +53,16 @@ const H = (kind: "export" | "file", name: string, file: string): Shape => ({
   verdict: "unused",
 });
 
-/** case → the exact claims M2 emits (hand-verified, corpus-scored). */
+/** A medium-confidence shape: a subject a modelled hazard's scope caps (T3.1). */
+const M = (kind: "export" | "file", name: string, file: string): Shape => ({
+  kind,
+  name,
+  file,
+  confidence: "medium",
+  verdict: "unused",
+});
+
+/** case → the exact claims the analyzer emits (hand-verified, corpus-scored). */
 const EXPECTED: Record<string, Shape[]> = {
   "basic-dead-export": [H("export", "subtract", "src/math.ts")],
   "broken-paths-alias": [H("export", "neverUsed", "src/app/util.ts")],
@@ -67,14 +76,29 @@ const EXPECTED: Record<string, Shape[]> = {
     H("file", "src/app/orphan.ts", "src/app/orphan.ts"),
   ],
   "type-position-inverse": [H("export", "UnusedShape", "src/types.ts")],
-  // keep-alive / recall-debt cases: no claim in M2 (documented misses).
   "ambient-dts": [],
   "basic-alive-export": [],
-  "config-referenced-file": [],
+  // T3.1 scoped-hazard cases: dead subjects a modelled hazard reaches are now
+  // CLAIMED at the registry cap (medium) instead of blanket-suppressed.
+  "config-referenced-file": [M("file", "src/test-setup.ts", "src/test-setup.ts")],
+  "computed-cjs-exports": [M("export", "dynamicHandler", "src/handlers.ts")],
+  "require-expression": [
+    // `require(resolvePluginPath())` has no static prefix ⇒ whole-package scope,
+    // so both orphan plugins are capped medium (unused.ts's label ceiling is
+    // high; medium is tolerated under-confidence, not a violation).
+    M("file", "src/plugins/core.ts", "src/plugins/core.ts"),
+    M("file", "src/plugins/unused.ts", "src/plugins/unused.ts"),
+  ],
+  "string-computed-import": [
+    // `import(`./mods/${x}.js`)` ⇒ subtree src/mods/ capped medium; a file
+    // outside the subtree stays a plain high-confidence dead claim.
+    M("file", "src/mods/alpha.ts", "src/mods/alpha.ts"),
+    M("file", "src/mods/beta.ts", "src/mods/beta.ts"),
+    H("file", "src/unrelated.ts", "src/unrelated.ts"),
+  ],
+  // recall-debt cases unrelated to this class group: still no claim.
   "import-equals": [],
   "re-export-chain": [],
-  "require-expression": [],
-  "string-computed-import": [],
 };
 
 describe("analyzeProject — exact claims over the corpus", () => {
@@ -87,7 +111,12 @@ describe("analyzeProject — exact claims over the corpus", () => {
         ),
       );
       // Wire format sanity: schema version, tool, provenance, evidence.
-      expect(run.summary.byConfidence.high).toBe(expected.length);
+      expect(run.summary.byConfidence.high).toBe(
+        expected.filter((s) => s.confidence === "high").length,
+      );
+      expect(run.summary.byConfidence.medium).toBe(
+        expected.filter((s) => s.confidence === "medium").length,
+      );
       for (const claim of run.claims) {
         expect(claim.id).toMatch(/^(exp|fil)_[0-9a-f]{16}$/);
         expect(claim.evidence).toHaveLength(1);
@@ -140,22 +169,35 @@ describe("analyzeProject — entrypoint/keep-alive FP regressions (T2.4 review)"
     expect(run.claims).toEqual([]);
   });
 
-  it("P5/P3: config roots + their string-path references stay alive; a real orphan still flags", async () => {
-    // vite.config.ts (config root) seeds build.ts; jest.config.js's setupFiles
-    // string keeps test-setup.ts alive; src/dead.ts is a genuine orphan.
+  it("P5/P3: config ROOTS + real-edge deps stay alive; a config-referenced file is capped medium; a real orphan flags high", async () => {
+    // vite.config.ts (config root) seeds build.ts via a real import edge (stays
+    // alive); jest.config.js's setupFiles STRING makes test-setup a
+    // config-referenced-file hazard — now a medium claim, not blanket-alive
+    // (T3.1); src/dead.ts is a genuine orphan flagged high.
     const run = await analyzeProject(testfx("config-root"), { now: FIXED_CLOCK });
+    expect(shapes(run.claims)).toEqual([
+      H("file", "src/dead.ts", "src/dead.ts"),
+      M("file", "src/test-setup.ts", "src/test-setup.ts"),
+    ]);
+    // Config roots and code reachable through real edges from them are never claimed.
     const names = shapes(run.claims).map((c) => `${c.kind}:${c.name}`);
-    expect(names).toEqual(["file:src/dead.ts"]);
-    // None of the config machinery is ever claimed.
-    for (const forbidden of [
-      "vite.config.ts",
-      "jest.config.js",
-      "src/build.ts",
-      "src/test-setup.ts",
-      "src/app.ts",
-    ]) {
+    for (const forbidden of ["vite.config.ts", "jest.config.js", "src/build.ts", "src/app.ts"]) {
       expect(names.some((n) => n.endsWith(forbidden))).toBe(false);
     }
+  });
+});
+
+describe("analyzeProject — computed-import root resolution (reviewer, FP-critical)", () => {
+  it("`import(`./${x}.js`)` in a ROOT file caps the whole package (medium), not zero files", async () => {
+    // Without the root-resolution fix the prefix would be `./` (matches nothing)
+    // and mod.ts would leak as a HIGH-confidence claim.
+    const run = await analyzeProject(testfx("computed-import-root"), { now: FIXED_CLOCK });
+    expect(shapes(run.claims)).toEqual([M("file", "mod.ts", "mod.ts")]);
+  });
+
+  it("`import(`../${x}.js`)` in src/ resolves to root ⇒ whole-package cap (medium)", async () => {
+    const run = await analyzeProject(testfx("computed-import-parent"), { now: FIXED_CLOCK });
+    expect(shapes(run.claims)).toEqual([M("file", "sibling.ts", "sibling.ts")]);
   });
 });
 

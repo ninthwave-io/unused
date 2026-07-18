@@ -21,9 +21,12 @@
  *  4. **Stable identity**: node ids are `kind + canonical identity`
  *     (POSIX-relative path, plus the export name for symbols) so construction
  *     and serialisation are deterministic across machines.
- *  5. **Hazard classes** are open strings here (the M3 registry formalises the
- *     vocabulary); core stores whatever class a frontend cites and never blocks
- *     on an unknown one (degrade toward alive).
+ *  5. **Hazard classes** are a **closed enum** ({@link HazardClass}) — the M3
+ *     close-the-vocabulary item (T3.1). The scope/cap policy for each lives in
+ *     the registry (`core/analysis/hazard-registry.ts`); this file owns only the
+ *     vocabulary the IR is expressed in. The claim engine still degrades toward
+ *     alive on any class the registry does not know (project-scope no-claim +
+ *     a loud warning) — closure is compile-time, safety is runtime.
  */
 
 // ---------------------------------------------------------------------------
@@ -47,6 +50,31 @@ export interface Site {
     endLine: number;
   };
 }
+
+// ---------------------------------------------------------------------------
+// Hazard vocabulary (closed enum — M3 T3.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * The closed set of hazard classes the IR is expressed in (architecture.md §4).
+ * A frontend cites one of these on a {@link HazardAnnotation} or a `hazard`
+ * {@link IREdge}; the scope/cap policy for each lives in the registry
+ * (`core/analysis/hazard-registry.ts`), which is typed against this enum so a
+ * class can never be added here without a registry entry. Runtime code still
+ * degrades toward alive on any string outside this set (see the registry).
+ */
+export type HazardClass =
+  | "computed-dynamic-import"
+  | "computed-require"
+  | "computed-cjs-exports"
+  | "config-referenced-file"
+  | "unresolvable-import"
+  | "outside-project"
+  | "internal-declaration"
+  | "declaration-companion"
+  | "parse-error"
+  | "import-equals"
+  | "export-assignment";
 
 // ---------------------------------------------------------------------------
 // Nodes
@@ -192,8 +220,8 @@ export interface IREdge {
   readonly name?: string;
   /** `true` for a type-only reference (annotation, `import type`, `TSImportType`). */
   readonly typeOnly?: boolean;
-  /** Present iff `referenceKind === "hazard"` — the cited hazard class (open). */
-  readonly hazardClass?: string;
+  /** Present iff `referenceKind === "hazard"` — the cited hazard class (closed enum). */
+  readonly hazardClass?: HazardClass;
 }
 
 // ---------------------------------------------------------------------------
@@ -210,11 +238,19 @@ export interface IREdge {
 export interface HazardAnnotation {
   /** Node id of the file the hazard attaches to. */
   readonly file: string;
-  /** Open hazard-class string (formalised by the M3 registry). */
-  readonly hazardClass: string;
+  /** Cited hazard class (closed enum; scope/cap in the M3 registry). */
+  readonly hazardClass: HazardClass;
   /** One-line human-readable "why" (feeds the M3 report/why-path). */
   readonly detail: string;
   readonly site: Site;
+  /**
+   * The concrete target of a `directory-subtree`-scoped hazard (registry): the
+   * repo-relative path **prefix** every in-scope file starts with — e.g.
+   * `"src/mods/"` for `import(`./mods/${x}.js`)` in `src/index.ts`. Absent (or
+   * `""`) ⇒ the importer's whole package (no static prefix). Meaningless for
+   * other scopes and ignored there.
+   */
+  readonly subtreePrefix?: string;
 }
 
 // ---------------------------------------------------------------------------

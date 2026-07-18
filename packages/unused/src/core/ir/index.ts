@@ -21,6 +21,7 @@ export {
   type FileNode,
   fileId,
   type HazardAnnotation,
+  type HazardClass,
   type IREdge,
   type IRNode,
   type NodeKind,

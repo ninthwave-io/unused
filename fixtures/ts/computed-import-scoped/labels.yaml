@@ -1,0 +1,20 @@
+case: computed-import-scoped
+description: A computed dynamic import with a static directory prefix (`import(`./plugins/${name}.js`)`) scopes its hazard to files under ./plugins/ only — a file outside that directory with no importer at all must stay claimable at high confidence, not swept into blanket project-wide suppression.
+subjects:
+  - kind: file
+    name: src/index.ts
+    file: src/index.ts
+    expected: alive
+    because: the production entrypoint (package.json "main"); entrypoints are the complete public API surface and are never claimed dead regardless of any hazard they contain.
+  - kind: file
+    name: src/plugins/extra.ts
+    file: src/plugins/extra.ts
+    expected: dead
+    minConfidence: medium
+    because: reachable only through the computed dynamic import `./plugins/${name}.js` in src/index.ts, whose static "./plugins/" prefix places it inside that hazard's scope (architecture §4 hazard registry "scope of effect"); static analysis cannot prove the runtime value of `name`, so it must not be claimed above medium confidence.
+  - kind: file
+    name: src/reporting.ts
+    file: src/reporting.ts
+    expected: dead
+    minConfidence: high
+    because: sits outside the "./plugins/" directory the hazard's static prefix scopes to, and is never imported statically or dynamically by anything — a correctly scoped hazard registry entry must not suppress this claim down from high confidence just because an unrelated computed import exists elsewhere in the project; that blanket whole-project suppression is exactly what M3 scoping replaces.

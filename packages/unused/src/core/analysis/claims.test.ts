@@ -3,12 +3,12 @@
  * rule and each hazard keep-alive class (`core/analysis` must not import a
  * frontend — ADR 0003). The real-fixture join is in `frontends/ts/analyze.test.ts`.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Claim, Provenance } from "../claims/types.js";
 import {
   entrypointId,
   fileId,
-  type HazardAnnotation,
+  type HazardClass,
   IRGraph,
   type ReferenceKind,
   type Site,
@@ -94,14 +94,19 @@ function ref(g: IRGraph, fromRel: string, toId: string, kind: ReferenceKind, nam
   });
 }
 
-function hazard(g: IRGraph, fileRel: string, hazardClass: string): void {
-  const annotation: HazardAnnotation = {
+function hazard(
+  g: IRGraph,
+  fileRel: string,
+  hazardClass: HazardClass,
+  subtreePrefix?: string,
+): void {
+  g.addHazard({
     file: fileId(fileRel),
     hazardClass,
     detail: `test hazard ${hazardClass}`,
     site: site(fileRel),
-  };
-  g.addHazard(annotation);
+    ...(subtreePrefix !== undefined ? { subtreePrefix } : {}),
+  });
 }
 
 function run(g: IRGraph, fileLineCounts?: Map<string, number>): Claim[] {
@@ -129,6 +134,11 @@ function shape(claims: Claim[]): Array<{
     verdict: c.verdict,
     confidence: c.confidence,
   }));
+}
+
+/** `shape`, but deterministically ordered by `kind:name` (claim ids are hashes). */
+function sorted(claims: Claim[]): ReturnType<typeof shape> {
+  return shape(claims).sort((a, b) => `${a.kind}:${a.name}`.localeCompare(`${b.kind}:${b.name}`));
 }
 
 describe("export claims", () => {
@@ -229,37 +239,118 @@ describe("file claims", () => {
   });
 });
 
-describe("hazard keep-alive (rule 3)", () => {
-  it("emits NO claims for a project carrying an unscoped computed-import hazard", () => {
+describe("hazard registry — scoped effects (T3.1)", () => {
+  it("computed-dynamic-import caps ONLY the static-prefix subtree; out-of-scope files stay high", () => {
     const g = new IRGraph();
     addEntry(g, "src/index.ts");
-    addSymbol(g, "src/lib.ts", "used");
-    addSymbol(g, "src/lib.ts", "dead");
-    ref(g, "src/index.ts", symbolId("src/lib.ts", "used"), "static", "used");
-    hazard(g, "src/index.ts", "computed-dynamic-import");
+    addFile(g, "src/mods/alpha.ts"); // under the subtree ⇒ capped
+    addFile(g, "src/mods/beta.ts"); // under the subtree ⇒ capped
+    addFile(g, "src/unrelated.ts"); // outside the subtree ⇒ unaffected
+    hazard(g, "src/index.ts", "computed-dynamic-import", "src/mods/");
 
-    expect(run(g)).toEqual([]);
+    expect(sorted(run(g))).toEqual([
+      {
+        kind: "file",
+        name: "src/mods/alpha.ts",
+        file: "src/mods/alpha.ts",
+        verdict: "unused",
+        confidence: "medium",
+      },
+      {
+        kind: "file",
+        name: "src/mods/beta.ts",
+        file: "src/mods/beta.ts",
+        verdict: "unused",
+        confidence: "medium",
+      },
+      {
+        kind: "file",
+        name: "src/unrelated.ts",
+        file: "src/unrelated.ts",
+        verdict: "unused",
+        confidence: "high",
+      },
+    ]);
   });
 
-  it("emits NO claims for a project carrying a computed-require hazard", () => {
+  it("a prefix respects the directory boundary — `src/mods/` does not cap `src/modsX.ts`", () => {
     const g = new IRGraph();
     addEntry(g, "src/index.ts");
-    addFile(g, "src/orphan.ts");
-    hazard(g, "src/index.ts", "computed-require");
+    addFile(g, "src/mods/alpha.ts"); // in scope
+    addFile(g, "src/modsX.ts"); // NOT in scope (prefix has a trailing slash)
+    hazard(g, "src/index.ts", "computed-dynamic-import", "src/mods/");
 
-    expect(run(g)).toEqual([]);
+    expect(sorted(run(g)).map((c) => `${c.name}:${c.confidence}`)).toEqual([
+      "src/mods/alpha.ts:medium",
+      "src/modsX.ts:high",
+    ]);
   });
 
-  it("keeps a config-referenced file alive (no file claim on it)", () => {
+  it("computed-require with no static prefix caps the importer's whole package (medium)", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addFile(g, "src/a.ts");
+    addFile(g, "src/deep/b.ts");
+    hazard(g, "src/index.ts", "computed-require"); // no subtreePrefix ⇒ "" ⇒ whole package
+
+    expect(sorted(run(g)).map((c) => `${c.name}:${c.confidence}`)).toEqual([
+      "src/a.ts:medium",
+      "src/deep/b.ts:medium",
+    ]);
+  });
+
+  it("config-referenced-file yields a file claim at medium (scoped, not suppressed)", () => {
     const g = new IRGraph();
     addEntry(g, "src/index.ts");
     addFile(g, "src/test-setup.ts");
     hazard(g, "src/test-setup.ts", "config-referenced-file");
 
-    expect(run(g)).toEqual([]);
+    expect(shape(run(g))).toEqual([
+      {
+        kind: "file",
+        name: "src/test-setup.ts",
+        file: "src/test-setup.ts",
+        verdict: "unused",
+        confidence: "medium",
+      },
+    ]);
   });
 
-  it("an unresolvable-import hazard affects nothing else — a clean sibling stays claimable", () => {
+  it("computed-cjs-exports caps a file's dead EXPORTS to medium; the file's own liveness is unaffected", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addSymbol(g, "src/lib.ts", "used");
+    addSymbol(g, "src/lib.ts", "dead");
+    ref(g, "src/index.ts", symbolId("src/lib.ts", "used"), "static", "used");
+    hazard(g, "src/lib.ts", "computed-cjs-exports");
+    // An orphan file that also carries the hazard: the symbol-set scope does not
+    // touch the FILE claim, so it stays high.
+    addFile(g, "src/orphan.ts");
+    hazard(g, "src/orphan.ts", "computed-cjs-exports");
+
+    expect(sorted(run(g))).toEqual([
+      { kind: "export", name: "dead", file: "src/lib.ts", verdict: "unused", confidence: "medium" },
+      {
+        kind: "file",
+        name: "src/orphan.ts",
+        file: "src/orphan.ts",
+        verdict: "unused",
+        confidence: "high",
+      },
+    ]);
+  });
+
+  it("parse-error suppresses only its own file (no-claim); a sibling orphan stays claimable", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addFile(g, "src/broken.ts");
+    addFile(g, "src/orphan.ts");
+    hazard(g, "src/broken.ts", "parse-error");
+
+    expect(shape(run(g)).map((c) => c.name)).toEqual(["src/orphan.ts"]);
+  });
+
+  it("an unresolvable-import hazard (scope: none) affects nothing — a clean sibling stays claimable", () => {
     const g = new IRGraph();
     addEntry(g, "src/index.ts");
     addSymbol(g, "src/lib.ts", "used");
@@ -268,6 +359,31 @@ describe("hazard keep-alive (rule 3)", () => {
     hazard(g, "src/index.ts", "unresolvable-import");
 
     expect(shape(run(g)).map((c) => c.name)).toEqual(["dead"]);
+  });
+
+  it("a capped claim explains the downgrade from the hazard SITE in its evidence detail", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addFile(g, "src/mods/alpha.ts");
+    // Hazard site is src/loader.ts (the importer), the subtree is src/mods/.
+    hazard(g, "src/loader.ts", "computed-dynamic-import", "src/mods/");
+
+    const [claim] = run(g);
+    expect(claim?.confidence).toBe("medium");
+    expect(claim?.evidence).toHaveLength(1);
+    expect(claim?.evidence[0]?.type).toBe("static-reachability");
+    expect(claim?.evidence[0]?.detail).toContain("capped medium");
+    expect(claim?.evidence[0]?.detail).toContain("src/loader.ts:1");
+  });
+
+  it("the strongest cap wins when several hazards cover one file (no-claim beats medium)", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addFile(g, "src/x.ts");
+    hazard(g, "src/index.ts", "computed-require"); // whole package ⇒ x.ts medium
+    hazard(g, "src/x.ts", "parse-error"); // file scope no-claim ⇒ suppresses x.ts
+
+    expect(run(g)).toEqual([]);
   });
 
   it("still claims a suppressed symbol, carrying its suppression reason (PRD §4/§6)", () => {
@@ -282,6 +398,26 @@ describe("hazard keep-alive (rule 3)", () => {
     const claims = run(g);
     expect(claims).toHaveLength(1);
     expect(claims[0]?.suppression).toEqual({ reason: "legacy shim, remove in v2" });
+  });
+});
+
+describe("hazard registry — the unmodelled-class invariant (degrade toward alive)", () => {
+  it("an UNREGISTERED hazard class ⇒ NO claims at all + a loud internal warning", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addFile(g, "src/orphan.ts");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // A class outside the closed vocabulary — planted via a cast (a bug, or a
+      // frontend citing a class core has not modelled). The engine must not
+      // silently claim; it suppresses the whole project and warns.
+      hazard(g, "src/index.ts", "totally-unmodelled-hazard" as HazardClass);
+      expect(run(g)).toEqual([]);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain("unregistered hazard class");
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

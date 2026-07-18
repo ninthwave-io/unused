@@ -16,15 +16,15 @@ describe("loadLabelCases against the real corpus", () => {
     expect(defaultFixturesRoot()).toMatch(/\/fixtures\/ts$/);
   });
 
-  it("loads all 16 fixture cases", async () => {
+  it("loads all 19 fixture cases", async () => {
     const cases = await loadLabelCases();
-    expect(cases).toHaveLength(16);
+    expect(cases).toHaveLength(19);
   });
 
-  it("parses 39 subjects total across the corpus", async () => {
+  it("parses 49 subjects total across the corpus", async () => {
     const cases = await loadLabelCases();
     const total = cases.reduce((sum, c) => sum + c.subjects.length, 0);
-    expect(total).toBe(39);
+    expect(total).toBe(49);
   });
 
   it("returns cases sorted by directory name", async () => {

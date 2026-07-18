@@ -1,0 +1,19 @@
+case: computed-cjs-exports
+description: A file with a static named export consumed by the entry also assigns a second declared export onto `module.exports` under a runtime-computed property key — a CJS computed-export hazard that must cap confidence on that second export even though it has zero static importers.
+subjects:
+  - kind: export
+    name: staticHandler
+    file: src/handlers.ts
+    expected: alive
+    because: imported by name and called in src/index.ts — a real, statically-resolved reference; the unrelated computed module.exports loop elsewhere in the file does not touch this export.
+  - kind: export
+    name: dynamicHandler
+    file: src/handlers.ts
+    expected: dead
+    minConfidence: medium
+    because: no static import or reference reaches dynamicHandler anywhere in the project, but the same file assigns it onto `module.exports[key]` under a runtime-computed key (architecture §4 computed-CJS-export hazard) — it may be re-exposed under a key static analysis cannot enumerate, so it must not be claimed above medium confidence.
+  - kind: file
+    name: src/handlers.ts
+    file: src/handlers.ts
+    expected: alive
+    because: imported by src/index.ts for staticHandler — a real inbound reference keeps the file itself alive regardless of the computed-export hazard inside it.

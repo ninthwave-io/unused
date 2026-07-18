@@ -1,25 +1,25 @@
 {
   "analyzer": "ts-reference-graph",
   "corpus": {
-    "cases": 16,
-    "subjects": 39
+    "cases": 19,
+    "subjects": 49
   },
   "precision": 1,
-  "recall": 0.5555555555555556,
+  "recall": 0.8695652173913043,
   "falsePositives": 0,
   "confidenceViolations": 0,
-  "misses": 8,
+  "misses": 3,
   "unlabelledClaims": 0,
   "byConfidenceTier": {
     "high": {
-      "claims": 10,
-      "truePositives": 10,
+      "claims": 13,
+      "truePositives": 13,
       "falsePositives": 0,
       "confidenceViolations": 0
     },
     "medium": {
-      "claims": 0,
-      "truePositives": 0,
+      "claims": 7,
+      "truePositives": 7,
       "falsePositives": 0,
       "confidenceViolations": 0
     },
@@ -76,19 +76,52 @@
       "unlabelledClaims": 0
     },
     {
+      "case": "computed-cjs-exports",
+      "subjects": 3,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "computed-import-scoped",
+      "subjects": 3,
+      "deadLabels": 2,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
       "case": "config-referenced-file",
       "subjects": 2,
       "deadLabels": 1,
       "precision": 1,
-      "recall": 0,
+      "recall": 1,
       "falsePositives": 0,
       "confidenceViolations": 0,
-      "misses": 1,
+      "misses": 0,
       "unlabelledClaims": 0
     },
     {
       "case": "dead-file",
       "subjects": 2,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "declaration-merging",
+      "subjects": 3,
       "deadLabels": 1,
       "precision": 1,
       "recall": 1,
@@ -157,10 +190,10 @@
       "subjects": 3,
       "deadLabels": 2,
       "precision": 1,
-      "recall": 0,
+      "recall": 1,
       "falsePositives": 0,
       "confidenceViolations": 0,
-      "misses": 2,
+      "misses": 0,
       "unlabelledClaims": 0
     },
     {
@@ -176,13 +209,13 @@
     },
     {
       "case": "string-computed-import",
-      "subjects": 3,
-      "deadLabels": 3,
+      "subjects": 4,
+      "deadLabels": 4,
       "precision": 1,
-      "recall": 0,
+      "recall": 0.75,
       "falsePositives": 0,
       "confidenceViolations": 0,
-      "misses": 3,
+      "misses": 1,
       "unlabelledClaims": 0
     },
     {

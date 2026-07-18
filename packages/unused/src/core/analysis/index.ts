@@ -10,6 +10,14 @@
 
 export { type EmitClaimsInput, emitClaims } from "./claims.js";
 export {
+  type ConfidenceCap,
+  capIsStrongerOrEqual,
+  HAZARD_REGISTRY,
+  type HazardClassEntry,
+  type HazardScope,
+  lookupHazard,
+} from "./hazard-registry.js";
+export {
   computeReachability,
   type Predecessor,
   type Reachability,
