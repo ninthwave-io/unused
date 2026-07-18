@@ -227,16 +227,24 @@ export interface ReferenceSite {
 // ---------------------------------------------------------------------------
 
 /**
- * Parse-level hazard classes emitted by T2.1. The full hazard *registry*
+ * Parse- and resolution-level hazard classes. The full hazard *registry*
  * (downgrade semantics + confidence caps) is M3 (T3.1); these markers are the
  * frontend's raw signals that syntax cannot prove a reference absent here.
+ *
+ * `computed-*`/`import-equals`/`export-assignment`/`parse-error` are emitted by
+ * T2.1 (parse/extract). `unresolvable-import` is emitted by T2.2 (resolution)
+ * when a static, string-literal specifier cannot be resolved to a file or a
+ * package: the import edge cannot be dropped (its target is unknown, not
+ * absent), so it degrades toward alive with the import-site span
+ * (see {@link file resolve.ts} `unresolvableToHazard`).
  */
 export type HazardKind =
   | "computed-dynamic-import"
   | "computed-require"
   | "import-equals"
   | "export-assignment"
-  | "parse-error";
+  | "parse-error"
+  | "unresolvable-import";
 
 export interface HazardMarker {
   kind: HazardKind;

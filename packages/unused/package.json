@@ -14,7 +14,9 @@
     "dist"
   ],
   "dependencies": {
-    "oxc-parser": "0.140.0"
+    "get-tsconfig": "4.14.0",
+    "oxc-parser": "0.140.0",
+    "oxc-resolver": "11.24.2"
   },
   "devDependencies": {
     "@types/node": "^22.10.1",

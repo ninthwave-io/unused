@@ -5,5 +5,7 @@
     "rootDir": "src",
     "types": ["node"]
   },
-  "include": ["src"]
+  "include": ["src"],
+  "//": "Test-only resolution fixtures are real mini-projects with intentionally unresolvable / alias imports — they are read as text by resolve.test.ts, never part of this program.",
+  "exclude": ["src/**/__testfixtures__/**"]
 }

@@ -1,0 +1,10 @@
+{
+  "name": "@acme/dts-pkg",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    "./comp": { "types": "./src/comp.d.ts", "import": "./src/comp.ts" },
+    "./only-dts": { "types": "./src/only.d.ts" }
+  }
+}
