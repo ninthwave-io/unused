@@ -1,0 +1,21 @@
+case: string-computed-import
+description: A template-literal computed dynamic import (`import(`./mods/${name}.js`)`) makes every file under mods/ a hazard target; an unrelated file elsewhere stays a plain dead export.
+subjects:
+  - kind: file
+    name: src/mods/alpha.ts
+    file: src/mods/alpha.ts
+    expected: dead
+    minConfidence: medium
+    because: reachable only through a template-literal computed dynamic import in src/index.ts; static analysis cannot prove the runtime value of `name`, so this is a string/computed-import hazard target (architecture §4) and must not be claimed above medium confidence.
+  - kind: file
+    name: src/mods/beta.ts
+    file: src/mods/beta.ts
+    expected: dead
+    minConfidence: medium
+    because: same computed-import hazard as alpha.ts — the analyzer cannot rule out `name` resolving to "beta" at runtime, so this must not be claimed above medium confidence either.
+  - kind: export
+    name: neverUsed
+    file: src/unrelated.ts
+    expected: dead
+    minConfidence: high
+    because: src/unrelated.ts sits outside mods/ and no dynamic-reference hazard is nearby; it is never imported statically or dynamically by anything, so it is claimable at high confidence.

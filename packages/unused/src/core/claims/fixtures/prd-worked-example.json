@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "1.0.0",
+  "tool": { "name": "unused", "version": "0.1.0" },
+  "run": {
+    "root": "/Users/rob/code/acme-web",
+    "commit": "3f1a9c2",
+    "configHash": "9e1b6f2a9d4c",
+    "startedAt": "2026-07-18T09:12:03.000Z",
+    "durationMs": 4210
+  },
+  "claims": [
+    {
+      "id": "exp_7c1a4e2f9b0d3c6a",
+      "subject": {
+        "kind": "export",
+        "name": "formatCurrency",
+        "loc": { "file": "src/utils/currency.ts", "span": [12, 24] }
+      },
+      "verdict": "unused",
+      "confidence": "high",
+      "evidence": [
+        {
+          "type": "static-reachability",
+          "detail": "0 inbound references to `formatCurrency` from any production or test entrypoint in the reference graph.",
+          "source": "reference-graph"
+        }
+      ],
+      "provenance": {
+        "analyzer": "ts-reference-graph",
+        "version": "0.1.0",
+        "generatedAt": "2026-07-18T09:12:07.210Z"
+      }
+    }
+  ],
+  "summary": {
+    "byKind": { "export": 1, "file": 0, "dependency": 0, "endpoint": 0, "test": 0 },
+    "byConfidence": { "high": 1, "medium": 0, "low": 0 },
+    "estDeletableLoc": 13
+  }
+}

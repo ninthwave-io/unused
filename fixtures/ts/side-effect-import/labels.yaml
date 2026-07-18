@@ -1,0 +1,14 @@
+case: side-effect-import
+description: An `import "./polyfill.js"` with no bindings keeps the file alive; an export inside that same file is still individually flaggable.
+subjects:
+  - kind: file
+    name: src/polyfill.ts
+    file: src/polyfill.ts
+    expected: alive
+    because: imported for its side effects (`import "./polyfill.js"`) by src/index.ts, the package entrypoint; a side-effect import is a first-class IR edge (architecture §3) that keeps the file alive even though it binds no symbol.
+  - kind: export
+    name: unusedHelper
+    file: src/polyfill.ts
+    expected: dead
+    minConfidence: high
+    because: the file is kept alive only by the side-effect import; unusedHelper is never imported or referenced by any other file, so the side-effect edge does not bind this symbol and it stays individually flaggable (architecture §3).

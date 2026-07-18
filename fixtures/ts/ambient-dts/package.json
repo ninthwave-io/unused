@@ -1,0 +1,7 @@
+{
+  "name": "fixture-ambient-dts",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "src/index.ts"
+}

@@ -1,0 +1,14 @@
+case: basic-dead-export
+description: One export is reached from the entry chain; a sibling export is exported but never imported by anything.
+subjects:
+  - kind: export
+    name: add
+    file: src/math.ts
+    expected: alive
+    because: imported and called by src/index.ts, which is the package entrypoint (package.json "main").
+  - kind: export
+    name: subtract
+    file: src/math.ts
+    expected: dead
+    minConfidence: high
+    because: exported but never imported by any file in the reference graph; no dynamic-reference hazard is present, so this must be claimable at high confidence.

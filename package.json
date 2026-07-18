@@ -1,0 +1,24 @@
+{
+  "name": "unused-workspace",
+  "private": true,
+  "description": "Workspace root for unused — liveness oracle for software.",
+  "license": "MIT",
+  "packageManager": "pnpm@10.30.3",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p packages/unused/tsconfig.json",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "boundaries": "depcruise --config .dependency-cruiser.cjs packages/unused/src",
+    "test": "vitest run",
+    "ci": "pnpm run typecheck && pnpm run lint && pnpm run boundaries && pnpm run test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.4",
+    "dependency-cruiser": "^18.1.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  }
+}

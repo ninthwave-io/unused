@@ -1,0 +1,17 @@
+case: type-position-inverse
+description: An interface referenced only in a type annotation (never as a value) must stay alive — the classic false-positive trap for analyzers that only track value-level usage.
+subjects:
+  - kind: export
+    name: Point
+    file: src/types.ts
+    expected: alive
+    because: >-
+      referenced only in a type annotation (`p: Point`) in src/index.ts — an AST-visible
+      type-position reference is a real reference per the inverse rule (architecture §4) and
+      must not be flagged dead despite zero value-position usage.
+  - kind: export
+    name: UnusedShape
+    file: src/types.ts
+    expected: dead
+    minConfidence: high
+    because: never referenced anywhere, in type position or otherwise; no hazard applies to type-only declarations, so this is claimable at high confidence.

@@ -1,0 +1,6 @@
+{
+  "name": "fixture-require-expression",
+  "private": true,
+  "version": "0.0.0",
+  "main": "src/index.ts"
+}

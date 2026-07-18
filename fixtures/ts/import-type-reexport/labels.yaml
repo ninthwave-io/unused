@@ -1,0 +1,18 @@
+case: import-type-reexport
+description: A type-only re-export chain (`import type {T}` then `export type {T}`) consumed as a type downstream; a sibling type that is never re-exported stays dead.
+subjects:
+  - kind: export
+    name: User
+    file: src/model.ts
+    expected: alive
+    because: >-
+      re-exported as a type via `import type { User }` / `export type { User }` in
+      src/types.ts and consumed downstream as a type annotation (`u: User`) in src/index.ts;
+      the type-only re-export chain is a real reference path, not a hazard (architecture §4
+      inverse rule).
+  - kind: export
+    name: Address
+    file: src/model.ts
+    expected: dead
+    minConfidence: high
+    because: never re-exported and never referenced, in type position or otherwise; no hazard applies to type-only declarations, so this is claimable at high confidence.

@@ -1,0 +1,19 @@
+case: entrypoint-exports-map
+description: A package.json "exports" map with two entries; one symbol is reachable only via the non-primary condition, another is reachable via neither.
+subjects:
+  - kind: export
+    name: helperA
+    file: src/shared.ts
+    expected: alive
+    because: reachable from the "." entrypoint (src/index.ts) declared in package.json "exports".
+  - kind: export
+    name: helperB
+    file: src/shared.ts
+    expected: alive
+    because: reachable only from the "./worker" entrypoint (src/worker.ts) declared in package.json "exports" — every exports-map condition is a distinct entrypoint, not just the primary "." entry (PRD §8, "a library's exports map counts as entrypoints").
+  - kind: export
+    name: helperC
+    file: src/shared.ts
+    expected: dead
+    minConfidence: high
+    because: not reachable from either declared exports-map entrypoint; no hazard applies, so this is claimable at high confidence.

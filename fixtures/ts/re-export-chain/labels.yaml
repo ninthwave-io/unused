@@ -1,0 +1,19 @@
+case: re-export-chain
+description: A barrel file (`export { x } from`) re-exports two symbols; only one is ever imported through the barrel.
+subjects:
+  - kind: file
+    name: src/barrel.ts
+    file: src/barrel.ts
+    expected: alive
+    because: imported by src/index.ts to reach usedThing through the re-export.
+  - kind: export
+    name: usedThing
+    file: src/lib/usedThing.ts
+    expected: alive
+    because: re-exported through src/barrel.ts and imported+called by src/index.ts via that barrel; the re-export edge (architecture §3) makes the chain traversable.
+  - kind: export
+    name: unusedThing
+    file: src/lib/unusedThing.ts
+    expected: dead
+    minConfidence: high
+    because: re-exported through src/barrel.ts, but the barrel's `unusedThing` binding is never imported by any consumer; the re-export edge terminates with zero inbound references, and no hazard applies.

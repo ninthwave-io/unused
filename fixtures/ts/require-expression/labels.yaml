@@ -1,0 +1,20 @@
+case: require-expression
+description: A CJS `require(pathVar)` call whose argument is an expression (not a literal) is a hazard target; a `require("literal")` call right next to it is statically resolvable and not a hazard.
+subjects:
+  - kind: file
+    name: src/plugins/core.ts
+    file: src/plugins/core.ts
+    expected: dead
+    minConfidence: medium
+    because: reachable only through `require(resolvePluginPath())` in src/index.ts, where the argument is a variable expression; static analysis cannot prove the runtime return value of resolvePluginPath(), so this is a require(expr) hazard target (architecture §4) and must not be claimed above medium confidence.
+  - kind: file
+    name: src/plugins/named.ts
+    file: src/plugins/named.ts
+    expected: alive
+    because: required via `require("./plugins/named.js")` — a literal string argument, which is statically resolvable exactly like a static import; no hazard applies to a literal require target.
+  - kind: file
+    name: src/plugins/unused.ts
+    file: src/plugins/unused.ts
+    expected: dead
+    minConfidence: high
+    because: never required, literally or dynamically, by anything in this fixture; no hazard is nearby, so this is claimable at high confidence.

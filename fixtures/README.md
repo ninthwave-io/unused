@@ -1,0 +1,137 @@
+# Fixture corpus
+
+This is the golden-fixture corpus described in `docs/adr/0009-test-strategy.md`
+and `docs/architecture.md` §1/§4. It is the enforcement mechanism for the
+top quality metric in `CLAUDE.md`: **false-positive rate**. A false-positive
+regression against this corpus blocks merge, no exceptions.
+
+No analyzer exists yet (M1). This directory holds hand-labelled ground
+truth that the fixture harness (T1.3, `docs/phasing.md` M1) will load,
+run the analyzer against, and score for precision/recall by confidence
+tier. Nothing here is wired to a test runner yet — that harness is a
+separate task.
+
+## Layout
+
+```
+fixtures/<language>/<case>/
+  package.json     # minimal, own manifest — not a workspace member
+  tsconfig.json     # minimal, self-contained
+  src/               # the fixture's source files
+  labels.yaml        # ground truth for every labelled subject
+```
+
+Each case is a **minimal mini-repo** exercising **one mechanism**. Cases are
+never deleted, only added or corrected via reviewed label changes (ADR 0009).
+
+## `labels.yaml` format
+
+```yaml
+case: <kebab-name>
+description: <one line>
+subjects:
+  - kind: export | file | dependency
+    name: <symbol name, or repo-relative path for file, or package name for dependency>
+    file: <repo-relative file the subject lives in>   # for dependency: package.json
+    expected: dead | alive
+    minConfidence: high | medium | low   # ONLY when expected: dead
+    because: <why this label is true — one sentence>
+```
+
+- `kind` — what's being judged: an `export` (a named symbol), a `file`
+  (whole-file liveness, e.g. a dead file or an ambient `.d.ts`), or a
+  `dependency` (an npm package).
+- `name` — the export's symbol name; the repo-relative path for a `file`
+  subject; the package name for a `dependency` subject.
+- `file` — the repo-relative file the subject lives in (for a `file`
+  subject this is the same path as `name`; for a `dependency` subject
+  this is `package.json`).
+- `expected` — `alive` or `dead`. **Alive labels are not decoration** —
+  they are the primary defence against false positives, which is the
+  product's top quality metric. A case that only ever labels dead code
+  can never catch an analyzer that is dead-happy.
+- `because` — mandatory on every subject, dead or alive. Explains *why*
+  the label is true in one sentence, so a human reviewing a label (or a
+  disagreement) doesn't have to re-derive the reasoning from the source.
+
+### The `minConfidence` rule
+
+`minConfidence` is present **only** on subjects with `expected: dead`. It
+means two different things depending on whether a dynamic-reference
+hazard (architecture §4) is in play for that subject:
+
+- **Hazard subjects** (e.g. a string/computed-import target, a
+  `require(expr)` target, a config-referenced file): `minConfidence` is a
+  **ceiling**. If the analyzer flags the subject dead at all, its
+  confidence must be **at most** this tier — e.g. `medium` means "high
+  confidence is a bug here; medium or low is acceptable." This encodes
+  the PRD §4 confidence contract: a modelled hazard forces a downgrade
+  from `high`.
+- **Clean subjects** (no hazard nearby): `minConfidence` is `high`, and
+  it means the analyzer's confidence **must be exactly** `high`. A clean,
+  unambiguous dead export that only gets scored `medium` or `low` is a
+  recall bug worth flagging, even though it isn't a false positive — the
+  corpus expects the analyzer to be as confident as the evidence allows.
+
+In both readings, a confidence **higher** than `minConfidence` on a dead
+claim is a hard failure (a false-positive-adjacent overclaim); the
+difference is only in whether an *under*-confident claim is tolerated
+(hazard subjects: yes, that's the point) or flagged (clean subjects: no).
+
+`expected: alive` subjects never carry `minConfidence` — there is no
+confidence tier for a claim that must not be emitted at all. If the
+analyzer emits any `dead` verdict for an `alive`-labelled subject, at
+any confidence, that is a false positive, full stop.
+
+## Adding a case
+
+1. Pick **one mechanism** to test (one hazard class, one IR edge type, or
+   one inverse/FP-trap scenario). Do not combine mechanisms in a single
+   case — it makes failures ambiguous to diagnose.
+2. Create `fixtures/<language>/<case-kebab-name>/` with its own minimal
+   `package.json` and `tsconfig.json` (or the language's equivalent),
+   plus a `src/` tree. Keep it as small as the mechanism allows.
+3. Write `labels.yaml`. Label every subject that matters to the
+   mechanism, dead or alive, each with a `because:`. Prefer including at
+   least one `alive` subject per case — it is what catches the analyzer
+   being wrong in the dangerous direction.
+4. Verify the fixture is syntactically valid for its language (e.g. it
+   parses/typechecks with a standard toolchain) even though it is
+   deliberately weird in shape.
+5. If a case is informed by a publicly documented Knip/Fallow issue or
+   test (see below), note the mechanism in the case's `description`, not
+   the incumbent's name or wording — the case itself must be re-derived,
+   not copied.
+
+## Never edit a label to make a test pass
+
+Labels are ground truth (ADR 0009). If the harness disagrees with a
+label and the label looks right, the analyzer has a bug — fix the
+analyzer. If a label looks wrong, **do not edit it to make a run go
+green**: escalate it to the orchestrator with the reasoning for why it
+looks wrong. A label change is a reviewed decision, not a side effect of
+a failing run.
+
+## Incumbent-study policy
+
+Per `CLAUDE.md` ("study the incumbents, never copy them"), fixture
+scenarios may be **informed by** publicly documented false-positive
+classes from Knip (ISC) and Fallow (MIT) — their test suites and issue
+trackers are useful for enumerating hazard scenarios we might otherwise
+miss. Every case here is **re-derived from scratch**: no fixture or
+source file is copied from either project. If anything is ever directly
+adapted rather than re-derived, the upstream license attribution must be
+carried alongside it. Milestone smoke-triage tasks separately run a
+differential comparison against Knip on real repos (`docs/phasing.md`,
+M3 onward) — that is a different mechanism from this corpus and does not
+license copying fixtures either.
+
+## Why fixtures live outside `packages/`
+
+`fixtures/` is intentionally **not** a pnpm workspace member (the
+workspace glob in `pnpm-workspace.yaml` is `packages/*` only) and is
+excluded from the root `typecheck`, `boundaries`, and `lint` scopes — see
+the root `CLAUDE.md`/architecture notes on tooling scope. Each fixture's
+own `package.json`/`tsconfig.json` exists so a future harness (or a
+human) can point a real toolchain at the mini-repo in isolation; it does
+not participate in this repo's own build.

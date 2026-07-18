@@ -1,0 +1,7 @@
+{
+  "name": "fixture-export-star-chain",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "src/index.ts"
+}

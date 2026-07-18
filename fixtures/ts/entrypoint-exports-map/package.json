@@ -1,0 +1,14 @@
+{
+  "name": "fixture-entrypoint-exports-map",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts"
+    },
+    "./worker": {
+      "import": "./src/worker.ts"
+    }
+  }
+}

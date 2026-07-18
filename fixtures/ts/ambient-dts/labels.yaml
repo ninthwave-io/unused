@@ -1,0 +1,8 @@
+case: ambient-dts
+description: An ambient `declare global` .d.ts file has zero importers but must stay alive because it is part of the TS program via tsconfig "include".
+subjects:
+  - kind: file
+    name: src/globals.d.ts
+    file: src/globals.d.ts
+    expected: alive
+    because: an ambient declaration file with `declare global` augments the global scope for the whole project; it has zero importers but is part of the TS program via tsconfig "include" and must stay alive (ambient/global .d.ts hazard class, architecture §4) even though nothing statically imports it.

@@ -1,0 +1,13 @@
+case: basic-alive-export
+description: Two-hop transitive import chain from the entrypoint; both exports are reached indirectly.
+subjects:
+  - kind: export
+    name: greet
+    file: src/greet.ts
+    expected: alive
+    because: imported and called by src/index.ts, the package entrypoint (package.json "main").
+  - kind: export
+    name: formatName
+    file: src/format.ts
+    expected: alive
+    because: imported and called by src/greet.ts, which is itself reached from the entrypoint; reachability must hold across a two-hop static import chain, not just a direct one.

@@ -1,0 +1,21 @@
+case: config-referenced-file
+description: A file named only as a string inside a JSON config file's (jest-like) "setupFiles" entry; a normally-imported sibling stays a clean alive case.
+subjects:
+  - kind: export
+    name: ping
+    file: src/util.ts
+    expected: alive
+    because: imported and called by src/index.ts, the package entrypoint (package.json "main").
+  - kind: file
+    name: src/test-setup.ts
+    file: src/test-setup.ts
+    expected: dead
+    minConfidence: medium
+    because: >-
+      the only mention of this file anywhere is the string "./src/test-setup.ts" inside
+      jest.config.json's "setupFiles" array — a config-data string, not a parsed import edge.
+      The analyzer cannot prove whether an external test runner loads it, so if flagged dead
+      the confidence must not exceed medium (config-referenced-file hazard, architecture §4).
+      This is distinct from the "config root" partition rule (architecture §3), which covers
+      code reached via real import edges from a designated config *entrypoint file* (e.g.
+      next.config.js), not a bare path string sitting inside a config file's JSON data.

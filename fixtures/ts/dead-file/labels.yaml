@@ -1,0 +1,14 @@
+case: dead-file
+description: One file is reached from the entrypoint; a sibling file has no importer at all (file-level subject, not export-level).
+subjects:
+  - kind: file
+    name: src/used.ts
+    file: src/used.ts
+    expected: alive
+    because: imported by src/index.ts, the package entrypoint (package.json "main").
+  - kind: file
+    name: src/orphan.ts
+    file: src/orphan.ts
+    expected: dead
+    minConfidence: high
+    because: no file in the fixture imports src/orphan.ts, statically or via side effect; nothing keeps it reachable from any entrypoint, and no hazard mechanism is present.

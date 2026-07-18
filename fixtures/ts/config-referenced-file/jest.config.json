@@ -1,0 +1,3 @@
+{
+  "setupFiles": ["./src/test-setup.ts"]
+}

@@ -1,0 +1,14 @@
+case: export-star-chain
+description: A two-level `export * from` chain (api.ts -> mid.ts -> internal/widgets.ts); one symbol is consumed through both levels, its sibling is not.
+subjects:
+  - kind: export
+    name: widgetA
+    file: src/internal/widgets.ts
+    expected: alive
+    because: reachable through two chained `export * from` re-exports (src/mid.ts then src/api.ts) and imported+called by src/index.ts; export-star edges must be traversed transitively, not just one level deep.
+  - kind: export
+    name: widgetB
+    file: src/internal/widgets.ts
+    expected: dead
+    minConfidence: high
+    because: re-exported through both export-star levels exactly like widgetA, but never imported by any consumer; the chain being traversable does not by itself make every symbol at the end of it alive.
