@@ -52,7 +52,7 @@ export interface Reachability {
   readonly surfaceLiveFiles: ReadonlySet<string>;
   /** Reachable symbol node ids. */
   readonly reachableSymbols: ReadonlySet<string>;
-  /** File node ids that are roots of ANY kind (production or config) — never claimed. */
+  /** File node ids that are roots of ANY kind (production, config, or test) — never claimed. */
   readonly entrypointFiles: ReadonlySet<string>;
   /**
    * File node ids that are **production** roots specifically. When empty, no
@@ -238,11 +238,19 @@ export function computeReachability(graph: IRGraph): Reachability {
     }
   };
 
-  // --- seed: every production AND config root, surface-live -------------------
-  // Production roots anchor liveness; config roots (architecture.md §3) keep
-  // their reachable code alive but do not, on their own, license a dead claim.
+  // --- seed: every production, config AND test root, surface-live ------------
+  // Production roots anchor liveness; config roots (architecture.md §3) and
+  // test roots (M3-interim, ahead of full tier-2/M5) keep their reachable code
+  // alive but do not, on their own, license a dead claim. So code reachable
+  // only from a test is ALIVE, never claimed at any confidence — the `test-only`
+  // verdict and the production/test partition report stay M5.
   for (const entry of graph.entrypoints()) {
-    if (entry.entryKind !== "production" && entry.entryKind !== "config") continue;
+    if (
+      entry.entryKind !== "production" &&
+      entry.entryKind !== "config" &&
+      entry.entryKind !== "test"
+    )
+      continue;
     entrypointFiles.add(fileId(entry.file));
     if (entry.entryKind === "production") productionEntrypointFiles.add(fileId(entry.file));
     markSurfaceLive(entry.file, {

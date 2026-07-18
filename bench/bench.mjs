@@ -168,6 +168,43 @@ function machineMetadata() {
   };
 }
 
+/**
+ * Time every tool against one target directory, appending to `results`.
+ * Shared by the fixture-corpus loop (`config.targets`, relative to
+ * `fixturesRoot`) and the M3 smoke-repo loop (`config.smokeTargets`,
+ * machine-local absolute paths, T3.5) so both go through identical
+ * warm-up/timed-run/pending-result handling.
+ */
+function benchTarget(config, targetName, targetDir, targetRelPath, runs, results) {
+  if (!existsSync(targetDir)) {
+    results.push({
+      target: targetName,
+      path: targetRelPath,
+      tool: "knip",
+      ...pendingResult(`target directory not found: ${targetRelPath}`),
+    });
+    return;
+  }
+
+  for (const toolName of ["knip", "unused"]) {
+    const tool = config.tools[toolName];
+    const binAbs = resolveToolBin(tool);
+    if (tool.kind === "repo-cli" && !existsSync(binAbs)) {
+      results.push({
+        target: targetName,
+        path: targetRelPath,
+        tool: toolName,
+        ...pendingResult(
+          `${tool.bin} not built yet — T2.5 wires the unused CLI; this hook activates automatically once it exists`,
+        ),
+      });
+      continue;
+    }
+    const outcome = benchOne(process.execPath, [binAbs, ...tool.args], targetDir, runs);
+    results.push({ target: targetName, path: targetRelPath, tool: toolName, ...outcome });
+  }
+}
+
 function runBench(runs) {
   const config = JSON.parse(readFileSync(join(BENCH_DIR, "targets.json"), "utf8"));
   const pinnedKnip = JSON.parse(readFileSync(join(BENCH_DIR, "package.json"), "utf8"))
@@ -177,33 +214,16 @@ function runBench(runs) {
   for (const targetName of config.targets) {
     const targetDir = join(REPO_ROOT, config.fixturesRoot, targetName);
     const targetRelPath = `${config.fixturesRoot}/${targetName}`;
-    if (!existsSync(targetDir)) {
-      results.push({
-        target: targetName,
-        path: targetRelPath,
-        tool: "knip",
-        ...pendingResult(`target directory not found: ${targetRelPath}`),
-      });
-      continue;
-    }
+    benchTarget(config, targetName, targetDir, targetRelPath, runs, results);
+  }
 
-    for (const toolName of ["knip", "unused"]) {
-      const tool = config.tools[toolName];
-      const binAbs = resolveToolBin(tool);
-      if (tool.kind === "repo-cli" && !existsSync(binAbs)) {
-        results.push({
-          target: targetName,
-          path: targetRelPath,
-          tool: toolName,
-          ...pendingResult(
-            `${tool.bin} not built yet — T2.5 wires the unused CLI; this hook activates automatically once it exists`,
-          ),
-        });
-        continue;
-      }
-      const outcome = benchOne(process.execPath, [binAbs, ...tool.args], targetDir, runs);
-      results.push({ target: targetName, path: targetRelPath, tool: toolName, ...outcome });
-    }
+  // M3 smoke repos (T3.5): machine-local scratch clones, absolute paths,
+  // not relative to fixturesRoot. Optional key — absent on a fresh clone
+  // of this repo, so this loop is a no-op until targets.json#smokeTargets
+  // is populated (never committed with real paths; see targets.json's
+  // smokeTargetsNote).
+  for (const smokeTarget of config.smokeTargets ?? []) {
+    benchTarget(config, smokeTarget.name, smokeTarget.path, smokeTarget.path, runs, results);
   }
 
   return {

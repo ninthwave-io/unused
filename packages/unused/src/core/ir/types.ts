@@ -10,8 +10,10 @@
  * ## The five invariants this file encodes
  *  1. **Nodes** are `symbol | file | dependency | endpoint | entrypoint`
  *     (architecture.md §3). `endpoint` is present but never constructed in v1;
- *     `entrypoint` carries `kind: production | test | config`, and M2 emits only
- *     `production` (partitioning is M5).
+ *     `entrypoint` carries `kind: production | test | config`. M2 emitted only
+ *     `production`; M3 additionally emits `config` roots and (interim, ahead of
+ *     M5) `test` roots — test-reachable code is simply kept alive, never claimed.
+ *     The full production/test/config partition + `test-only` verdict remain M5.
  *  2. **Edges** are `references` (with a `referenceKind`) plus `exports`,
  *     `contains`, and a reserved `consumes` that is never emitted yet.
  *  3. **Provenance**: every edge AND every hazard annotation carries the
@@ -79,6 +81,7 @@ export type HazardClass =
   | "emit-decorator-metadata"
   | "conditional-exports-divergence"
   | "project-references"
+  | "unresolvable-entrypoint-target"
   | "jsx-runtime-dependency";
 
 // ---------------------------------------------------------------------------
@@ -87,7 +90,12 @@ export type HazardClass =
 
 export type NodeKind = "symbol" | "file" | "dependency" | "endpoint" | "entrypoint";
 
-/** Production/test/config roots (architecture.md §3). M2 emits only `production`. */
+/**
+ * Production/test/config roots (architecture.md §3). All three are emitted in
+ * M3: `production` anchors dead-code claims; `config` and `test` roots keep
+ * their reachable code alive but never, on their own, license a dead claim
+ * (test partitioning + the `test-only` verdict are M5).
+ */
 export type EntrypointKind = "production" | "test" | "config";
 
 /** A discovered, analyzable source file. Identity: its POSIX repo-relative path. */

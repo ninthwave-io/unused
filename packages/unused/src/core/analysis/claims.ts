@@ -241,7 +241,14 @@ function buildHazardCaps(graph: IRGraph): HazardCaps {
       case "none":
         break; // provenance only
       case "project":
-        projectNoClaim = projectNoClaim || entry.cap === "no-claim";
+        // `no-claim` suppresses the whole project; a `medium`/`low` project cap
+        // instead lowers every file's ceiling (file claim AND its export claims),
+        // exactly like a directory-subtree hazard with an empty prefix.
+        if (entry.cap === "no-claim") {
+          projectNoClaim = true;
+        } else {
+          for (const f of fileNodes) mergeCap(fileCap, f.id, applied);
+        }
         break;
       case "file":
         mergeCap(fileCap, hazard.file, applied);

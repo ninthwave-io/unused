@@ -1,5 +1,5 @@
 {
-  "description": "Bench targets v1 — the fixtures/ts corpus mini-repos (T2.6). Real-scale targets arrive with the M3 smoke repos; see docs/phasing.md.",
+  "description": "Bench targets v1 \u2014 the fixtures/ts corpus mini-repos (T2.6). Real-scale targets arrive with the M3 smoke repos; see docs/phasing.md.",
   "fixturesRoot": "fixtures/ts",
   "targets": [
     "ambient-dts",
@@ -16,6 +16,8 @@
     "string-computed-import",
     "type-position-inverse"
   ],
+  "smokeTargetsNote": "Machine-local clone paths for smoke-repo benching; populated locally per docs/smoke, never committed with paths.",
+  "smokeTargets": [],
   "tools": {
     "knip": {
       "kind": "pinned-bin",

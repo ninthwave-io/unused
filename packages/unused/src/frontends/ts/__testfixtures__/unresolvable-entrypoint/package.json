@@ -1,0 +1,17 @@
+{
+  "name": "fixture-unresolvable-entrypoint",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./dist/cjs/index.cjs",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/cjs/index.cjs"
+    },
+    "./sub": {
+      "import": "./dist/sub.js"
+    }
+  }
+}

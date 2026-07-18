@@ -461,11 +461,32 @@ export function emitIR(input: EmitInput): IRGraph {
   // --- Phase 3: production entrypoints ------------------------------------
   const pkg = input.packageJson === undefined ? readPackageJson(root) : input.packageJson;
   const recordRels = new Set(input.records.map((r) => rel(r.filePath)));
-  for (const hit of detectProductionEntrypoints(pkg, root, input.resolver, {
+  const detection = detectProductionEntrypointsWithDiagnostics(pkg, root, input.resolver, {
     fallbackFiles: recordRels,
-  })) {
+  });
+  for (const hit of detection.hits) {
     ensureFile(hit.file);
     graph.addNode(entrypointNode(hit.file, hit.reason));
+  }
+
+  // T3.6 (the hono trap): a declared entrypoint target that resolved to nothing
+  // internal — even after the `dist/**`→`src/**` remap — means the declared
+  // public API is incomplete (typically an unbuilt `dist/`). Emit a project-scope
+  // `unresolvable-entrypoint-target` hazard (whole-package medium cap): with the
+  // public-API surface broken, no file can be confidently proven dead. This
+  // replaces M2's silent collapse to a single `index.*` fallback.
+  if (detection.unresolvedTargets.length > 0) {
+    const [first] = detection.unresolvedTargets;
+    graph.addHazard({
+      file: fileId("package.json"),
+      hazardClass: "unresolvable-entrypoint-target",
+      detail:
+        `${detection.unresolvedTargets.length} declared package.json entrypoint target(s) ` +
+        `could not be resolved to a project file (e.g. \`${first}\`) — the declared public ` +
+        "API is incomplete (unbuilt dist/? misconfigured exports?), so no file can be proven " +
+        "dead. Whole-package cap: medium.",
+      site: { file: "package.json", span: { ...ENTRY_SPAN } },
+    });
   }
 
   return graph;
@@ -492,7 +513,31 @@ export interface EntrypointOptions {
 /** Candidate fallback files, in preference order (documented zero-config contract). */
 const FALLBACK_CANDIDATES = ["index.ts", "src/index.ts", "index.js", "src/index.js"] as const;
 
+/** Source extensions tried when remapping a `dist/**` entrypoint target to `src/**` (T3.6). */
+const SRC_REMAP_EXTENSIONS = [
+  ".ts",
+  ".tsx",
+  ".mts",
+  ".cts",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+] as const;
+
 const ENTRY_SPAN: Span = { start: 0, end: 0, startLine: 1, endLine: 1 };
+
+/**
+ * Diagnostics from entrypoint detection (T3.6): the resolved entrypoint hits
+ * plus the declared targets that resolved to nothing internal (even after the
+ * `dist/**`→`src/**` remap). A non-empty {@link unresolvedTargets} means the
+ * declared public API is incomplete — the caller raises an
+ * `unresolvable-entrypoint-target` hazard.
+ */
+export interface EntrypointDetection {
+  readonly hits: EntrypointHit[];
+  readonly unresolvedTargets: string[];
+}
 
 /**
  * Resolve a project's production entrypoints (spec T2.3.1). Reads `main`,
@@ -501,12 +546,16 @@ const ENTRY_SPAN: Span = { start: 0, end: 0, startLine: 1, endLine: 1 };
  * file becomes an entrypoint. De-duplicated by file, first field wins
  * (main → module → exports → bin) for a stable `reason`.
  *
- * **Zero-config fallback**: with no resolvable entry field, the first of
+ * **Zero-config fallback**: with no declared entry field at all, the first of
  * `index.ts`, `src/index.ts`, `index.js`, `src/index.js` present in the analyzed
  * set is the entrypoint. With none, the project has **no** entrypoints — T2.4
  * treats an entrypoint-less package conservatively (nothing is a confident root,
  * so exports are not proven dead). Wildcard (`*`) exports subpaths are skipped in
  * M2 (glob expansion is M4).
+ *
+ * This thin wrapper returns only the hits; callers needing the unbuilt-entrypoint
+ * signal use {@link detectProductionEntrypointsWithDiagnostics} (T3.6), which also
+ * applies the `dist/**`→`src/**` remap and reports unresolved declared targets.
  */
 export function detectProductionEntrypoints(
   pkg: PackageJsonLike | null,
@@ -514,10 +563,39 @@ export function detectProductionEntrypoints(
   resolver: Resolver,
   options?: EntrypointOptions,
 ): EntrypointHit[] {
+  return detectProductionEntrypointsWithDiagnostics(pkg, projectRoot, resolver, options).hits;
+}
+
+/**
+ * Like {@link detectProductionEntrypoints}, but also reports the declared
+ * targets that could not be resolved (T3.6). Resolution order per target:
+ *  1. resolve the declared specifier normally;
+ *  2. if that fails and the target is under `dist/`, try the same subpath under
+ *     `src/` with source extensions (a documented, deliberately-narrow heuristic
+ *     for the common "analyzed before `npm run build`" case — `dist/` is absent
+ *     but its `src/` sources are present); a remapped hit is a production
+ *     entrypoint;
+ *  3. otherwise the target is unresolved.
+ *
+ * **No silent fallback on a broken entry (T3.6):** the zero-config `index.*`
+ * fallback fires ONLY when the package declared no resolvable/unresolvable entry
+ * targets at all (a genuinely entrypoint-less package). When declared targets
+ * existed but failed to resolve, we do NOT quietly collapse to `index.*` (M2's
+ * bug — it discarded the rest of a multi-subpath `exports` map); the caller
+ * raises the `unresolvable-entrypoint-target` hazard instead.
+ */
+export function detectProductionEntrypointsWithDiagnostics(
+  pkg: PackageJsonLike | null,
+  projectRoot: string,
+  resolver: Resolver,
+  options?: EntrypointOptions,
+): EntrypointDetection {
   const root = resolvePath(projectRoot);
   const rel = (abs: string): string => toPosixRel(root, abs);
   const from = join(root, "package.json");
+  const fallbackFiles = options?.fallbackFiles;
   const hits: EntrypointHit[] = [];
+  const unresolvedTargets: string[] = [];
   const seen = new Set<string>();
 
   const add = (fileRel: string, reason: string): void => {
@@ -527,11 +605,18 @@ export function detectProductionEntrypoints(
   };
   const tryTarget = (target: unknown, reason: string): void => {
     const norm = normalizeEntryTarget(target);
-    if (norm === null) return;
+    if (norm === null) return; // wildcard / non-string: not a declared resolvable target
     const outcome = resolver.resolve(norm, from, ENTRY_SPAN, "import").outcome;
     if (outcome.kind === "internal" || outcome.kind === "internal-declaration") {
       add(rel(outcome.path), reason);
+      return;
     }
+    const remapped = remapDistTargetToSrc(norm, fallbackFiles);
+    if (remapped !== null) {
+      add(remapped, `${reason}:remapped-src`);
+      return;
+    }
+    unresolvedTargets.push(typeof target === "string" ? target : String(target));
   };
 
   if (pkg !== null) {
@@ -541,16 +626,43 @@ export function detectProductionEntrypoints(
     for (const target of collectBinTargets(pkg.bin)) tryTarget(target, "bin");
   }
 
-  if (hits.length === 0 && options?.fallbackFiles !== undefined) {
+  // Zero-config fallback only when nothing was declared at all (no hit AND no
+  // unresolved declared target). A declared-but-broken entry is NOT masked here.
+  if (hits.length === 0 && unresolvedTargets.length === 0 && fallbackFiles !== undefined) {
     for (const cand of FALLBACK_CANDIDATES) {
-      if (options.fallbackFiles.has(cand)) {
+      if (fallbackFiles.has(cand)) {
         add(cand, `fallback:${cand}`);
         break;
       }
     }
   }
 
-  return hits;
+  return { hits, unresolvedTargets };
+}
+
+/**
+ * The `dist/**`→`src/**` remap (T3.6, documented heuristic). A declared target
+ * `./dist/helper/accepts/index.js` becomes the first of
+ * `src/helper/accepts/index.{ts,tsx,mts,cts,js,…}` that exists in the analyzed
+ * file set. Only the leading `dist/` segment is swapped and only the source-file
+ * extension varies — a deliberately narrow rewrite, never a fuzzy search. `.d.ts`
+ * (a `types` condition) is stripped too, so its source `.ts` can be recovered.
+ * Returns the matched repo-relative path, or `null` when no candidate exists.
+ */
+function remapDistTargetToSrc(
+  norm: string,
+  fallbackFiles: ReadonlySet<string> | undefined,
+): string | null {
+  if (fallbackFiles === undefined) return null;
+  const relTarget = norm.replace(/^\.\//, "");
+  if (!relTarget.startsWith("dist/")) return null;
+  const underSrc = `src/${relTarget.slice("dist/".length)}`;
+  const stem = underSrc.replace(/\.d\.[cm]?ts$/i, "").replace(/\.[cm]?[jt]sx?$/i, "");
+  for (const ext of SRC_REMAP_EXTENSIONS) {
+    const candidate = stem + ext;
+    if (fallbackFiles.has(candidate)) return candidate;
+  }
+  return null;
 }
 
 /** Every string leaf of a package.json `exports` value (all subpaths + conditions). */

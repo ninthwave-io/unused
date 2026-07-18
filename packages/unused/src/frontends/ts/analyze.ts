@@ -42,6 +42,17 @@
  * tsconfig top-level array ⇒ a whole-package `project-references` cap), and
  * `conditional-exports-divergence` (package.json `exports` conditions / a
  * top-level `browser` remap whose non-selected branch's target files keep-alive).
+ *
+ * ## T3.6 — smoke-triage false-positive fixes (M3-gate)
+ * Two of the four T3.6 fixes are composed here (the other two live in the
+ * frontend `extract.ts`/`emit.ts` and core `claims.ts`/`reachability.ts`):
+ *  - **Interim test-file recognition** — {@link isTestFilePath} seeds a `test`
+ *    reachability root for every zero-config test file. Test-reachable code is
+ *    kept alive (never claimed); the `test-only` verdict + partition report are
+ *    M5. This is the M3-interim staging of tier-2, not tier-2 itself.
+ *  - **Tool-invoked config-root widening** — {@link TOOL_CONFIG_ROOT_RE} adds
+ *    `gulpfile`/`Gruntfile`/`webpack.config`/`rollup.config`/`karma.conf` to the
+ *    config-root set (loaded by a tool by filename convention, not an import).
  */
 
 import { createHash } from "node:crypto";
@@ -74,6 +85,19 @@ const CONFIG_FILE_SIZE_CAP = 4 * 1024 * 1024;
 const CONFIG_ROOT_RE = /\.config\.(js|ts|mjs|cjs|mts|cts)$/i;
 /** `.eslintrc.js`, `.babelrc.cjs` etc. (hidden ⇒ not discovered today, kept for completeness). */
 const DOTRC_RE = /^\.[^./]*rc\.(js|cjs|mjs)$/i;
+/**
+ * Tool-invoked config roots loaded by a tool by filename convention, not by an
+ * import edge (T3.6 widening): `gulpfile.*`, `Gruntfile.*`, `webpack.config.*`,
+ * `rollup.config.*`, `karma.conf.*` (incl. `.babel`/`.dev`-infixed variants like
+ * `gulpfile.babel.js`, `webpack.config.dev.ts`). `webpack.config.js` /
+ * `rollup.config.js` already match {@link CONFIG_ROOT_RE}; listing them keeps the
+ * intent explicit and covers the infixed forms it misses. Anchored at `^` so
+ * `gulpfilehelper.js` (no boundary) is not a config root; the trailing `.` (or a
+ * lone basename) requires a real extension boundary.
+ */
+const TOOL_CONFIG_ROOT_RE = /^(gulpfile|gruntfile|webpack\.config|rollup\.config|karma\.conf)\./i;
+/** A `*.test.*` / `*.spec.*` basename (the `test`/`spec` segment right before the ext). */
+const TEST_FILE_RE = /\.(test|spec|e2e|cy)\.[^.]+$/i;
 /** Quoted string literals in JS/TS source (single/double, escape-aware; template strings skipped). */
 const STRING_LITERAL_RE = /(['"])((?:\\.|(?!\1)[^\\\r\n])*)\1/g;
 
@@ -169,6 +193,24 @@ export async function analyzeProject(
       entryKind: "config",
       file: rel,
       reason: "config-root",
+    });
+  }
+
+  // T3.6: interim test-file recognition (ahead of full tier-2 / M5). Files
+  // matching zero-config test conventions become `test` reachability roots —
+  // everything reachable from them is kept alive and they are never claimed, so
+  // nothing reachable only from a test is flagged at any confidence. The
+  // `test-only` verdict and the production/test partition report stay M5.
+  const packageRootRels = new Set([...packageRootDirs].map((dir) => toPosixRel(root, dir)));
+  for (const file of files) {
+    const rel = toPosixRel(root, file);
+    if (!isTestFilePath(rel, packageRootRels)) continue;
+    graph.addNode({
+      kind: "entrypoint",
+      id: entrypointId("test", rel),
+      entryKind: "test",
+      file: rel,
+      reason: "test-file",
     });
   }
 
@@ -272,7 +314,33 @@ async function readRootPackageJson(root: string): Promise<PackageJsonLike | null
 // ---------------------------------------------------------------------------
 
 function isConfigRootName(name: string): boolean {
-  return CONFIG_ROOT_RE.test(name) || DOTRC_RE.test(name);
+  return CONFIG_ROOT_RE.test(name) || DOTRC_RE.test(name) || TOOL_CONFIG_ROOT_RE.test(name);
+}
+
+/**
+ * Zero-config test-file recognition (T3.6, interim). A repo-relative POSIX path
+ * is a test root when its basename matches `*.test.*` / `*.spec.*` / `*.e2e.*` /
+ * `*.cy.*`, or it lives under a `__tests__/` or `cypress/` directory (anywhere —
+ * both conventions are distinctive enough to trust at any depth), or under a
+ * `test/`, `tests/`, `spec/`, or `e2e/` directory that sits directly at a
+ * package root. The root-anchored names are anchored so an unrelated
+ * `src/test/` utility directory is not mistaken for a test tree. Over-recognition is safe here — a test
+ * root only keeps code alive, never flags it — so this errs toward keep-alive.
+ */
+function isTestFilePath(rel: string, packageRootRels: ReadonlySet<string>): boolean {
+  const segs = rel.split("/");
+  const base = segs[segs.length - 1] ?? "";
+  if (TEST_FILE_RE.test(base)) return true;
+  // Directory segments only (exclude the filename at segs.length - 1).
+  for (let i = 0; i < segs.length - 1; i++) {
+    const seg = segs[i];
+    if (seg === "__tests__" || seg === "cypress") return true;
+    if (seg === "test" || seg === "tests" || seg === "spec" || seg === "e2e") {
+      const prefix = segs.slice(0, i).join("/");
+      if (packageRootRels.has(prefix)) return true;
+    }
+  }
+  return false;
 }
 
 /** Walk the project tree once: collect `*.json` config files and package-root dirs. */

@@ -1,7 +1,7 @@
 <!-- GENERATED FILE — do not edit by hand. Regenerate with `pnpm run assumptions`.
      Source: packages/unused/src/core/analysis/assumption-set.ts + hazard-registry.ts. -->
 
-# Analysis assumption set (v1.0.0)
+# Analysis assumption set (v1.1.0)
 
 `unused`'s `high`-confidence verdicts hold under the assumptions enumerated
 here (PRD §4): `high` means "safe to act without re-deriving the reference
@@ -17,7 +17,11 @@ Specifiers are resolved exactly as the TypeScript/Node toolchain would: the proj
 
 ### Declared entrypoints are the complete public API
 
-The reachability roots are the package.json `main`/`module`/`exports`/`bin` targets (every condition's target, and wildcard `exports` subpaths expanded against the file set), plus a zero-config `index` fallback and detected config roots (e.g. `vite.config.ts`). Everything reachable from a root is alive; a library's `exports` surface is therefore never flagged. A package with no resolvable entrypoint anchors no liveness at all — the analyzer proves nothing rather than flag the whole codebase.
+The reachability roots are the package.json `main`/`module`/`exports`/`bin` targets (every condition's target, and wildcard `exports` subpaths expanded against the file set), plus a zero-config `index` fallback and detected config roots (e.g. `vite.config.ts`). Everything reachable from a root is alive; a library's `exports` surface is therefore never flagged. A declared target that points into an unbuilt `dist/` is first remapped to the same subpath under `src/` (a narrow heuristic for analyzing before a build); any declared target that still cannot be resolved raises the `unresolvable-entrypoint-target` hazard and caps the whole package at medium rather than silently collapsing to a single `index.*` fallback. A package with no declared entrypoint at all anchors no liveness — the analyzer proves nothing rather than flag the whole codebase.
+
+### Test files are reachability roots (interim, ahead of M5)
+
+Files matching zero-config test conventions — a `*.test.*`, `*.spec.*`, `*.e2e.*`, or `*.cy.*` basename, a file under a `__tests__/` or `cypress/` directory anywhere, or a file under a `test/`, `tests/`, `spec/`, or `e2e/` directory at a package root — are treated as `test` reachability roots. Everything reachable from a test root is alive; the test files themselves are never claimed. This is the M3-interim staging of tier-2: test-reachable code is simply kept alive, with no `unused` claim at any confidence. Consequently nothing reachable only from tests is ever flagged in this milestone, trading the (future) test-only signal for a hard zero-false-positive guarantee on production dead code. The full tier-2 semantics — the `test-only` verdict, the production/test/config partition, and the zombie-test report — remain M5.
 
 ### Bundler-only aliases are out of scope unless configured
 
@@ -144,6 +148,13 @@ A file the parser could not fully read: its references cannot be enumerated, so 
 - **Confidence cap:** medium
 
 A tsconfig with `references` composes this project with sibling TypeScript projects that may consume its files across the project boundary — a cross-project use the single-project reference graph cannot see. Until real cross-project analysis lands (post-v1), the whole package is capped at medium rather than claimed dead. This is deliberately blunt: every claim in a project-referenced package is downgraded, trading recall for the guarantee that no externally-consumed file is confidently flagged.
+
+### unresolvable-entrypoint-target
+
+- **Scope:** project
+- **Confidence cap:** medium
+
+One or more declared package.json entrypoint targets (`main`/`module`/`exports`/`bin`) could not be resolved to a project file, even after a conservative `dist/**`→`src/**` remap — the declared public API could not be resolved, so the entrypoint assumption (that the declared entrypoints are the complete public API) is broken. This is the common `npx`-on-an-unbuilt-checkout case (targets point into a `dist/` that has not been built). With the public-API surface incomplete, any file could still be reachable from the missing entry, so no file can be confidently proven dead: the whole package is capped at medium rather than flagged. Deliberately blunt (every claim downgraded) — the precise fix is to build the project or configure the entrypoints so they resolve.
 
 ### unresolvable-import
 

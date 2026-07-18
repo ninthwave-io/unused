@@ -378,12 +378,22 @@ export function extract(
  * quasi (`` `./mods/${x}.js` `` ⇒ `"./mods/"`); a `"lit" + expr` concatenation
  * contributes its leftmost string literal; anything else (a bare identifier, a
  * call) has no static prefix ⇒ `null` ⇒ the importer's whole package.
+ *
+ * **FP-critical (T3.6, axios `file://` shape):** a computed specifier whose
+ * leading literal is not a **relative path** — `` `'file://' + path.join(…)` ``,
+ * `` `require('@scope/' + x)` ``, a bare `http…` URL — is NOT a directory
+ * prefix. Returning it verbatim yields a bogus `subtreePrefix` (`"file://"`)
+ * that matches ZERO repo-relative paths, so the hazard caps nothing and every
+ * dynamically-reachable dead file leaks as a *high*-confidence claim. Any
+ * extracted prefix that does not start with `./` or `../` therefore collapses to
+ * `null` ⇒ the importer's whole package (the safe, strictly-more-conservative
+ * scope), not an unmatchable subtree.
  */
 function staticSpecifierPrefix(node: unknown): string | null {
   if (!isNode(node)) return null;
   if (node.type === "Literal") {
     const raw = prop(node, "value");
-    return typeof raw === "string" && raw.length > 0 ? raw : null;
+    return typeof raw === "string" ? relativePathPrefix(raw) : null;
   }
   if (node.type === "TemplateLiteral") {
     const first = nodeArray(prop(node, "quasis"))[0];
@@ -394,12 +404,23 @@ function staticSpecifierPrefix(node: unknown): string | null {
     const cooked = rec["cooked"];
     const raw = rec["raw"];
     const text = typeof cooked === "string" ? cooked : typeof raw === "string" ? raw : null;
-    return text !== null && text.length > 0 ? text : null;
+    return text !== null ? relativePathPrefix(text) : null;
   }
   if (node.type === "BinaryExpression" && str(node, "operator") === "+") {
     return staticSpecifierPrefix(prop(node, "left"));
   }
   return null;
+}
+
+/**
+ * A non-empty string is a usable directory-subtree prefix only when it is a
+ * **relative path** (`./…` or `../…`). Anything else — a URL scheme, a bare
+ * package specifier, an absolute path — is not a project subtree and collapses
+ * to `null` (whole-package scope). See {@link staticSpecifierPrefix}.
+ */
+function relativePathPrefix(text: string): string | null {
+  if (text.length === 0) return null;
+  return text.startsWith("./") || text.startsWith("../") ? text : null;
 }
 
 /** Leftmost identifier of a `TSImportType` qualifier (`A` in `A.B`); `null` if absent. */

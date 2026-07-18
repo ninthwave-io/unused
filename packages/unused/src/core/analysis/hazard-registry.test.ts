@@ -29,6 +29,7 @@ const ALL_CLASSES: readonly HazardClass[] = [
   "emit-decorator-metadata",
   "conditional-exports-divergence",
   "project-references",
+  "unresolvable-entrypoint-target",
   "jsx-runtime-dependency",
 ];
 
@@ -94,6 +95,10 @@ describe("HAZARD_REGISTRY — scope/cap per class group (T3.1a)", () => {
 
   it("project-references is directory-subtree, cap medium (whole-package, conservative)", () => {
     expectEntry("project-references", { scope: "directory-subtree", cap: "medium" });
+  });
+
+  it("unresolvable-entrypoint-target is project scope, cap medium (whole-package, unbuilt-entry safe)", () => {
+    expectEntry("unresolvable-entrypoint-target", { scope: "project", cap: "medium" });
   });
 
   it("jsx-runtime-dependency is scope none (note-only; activates at M4)", () => {

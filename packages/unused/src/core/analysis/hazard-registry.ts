@@ -31,9 +31,11 @@ import type { HazardClass } from "../ir/index.js";
 
 /**
  * Which subjects a hazard can plausibly affect.
- *  - `project`          — the whole project (only reached via the unregistered-
- *                         class fallback in `claims.ts`; no registered class
- *                         uses it, but it is a valid, future-proof scope).
+ *  - `project`          — the whole project. With a `no-claim` cap this is the
+ *                         unregistered-class fallback in `claims.ts` (whole-
+ *                         project suppression); with a `medium`/`low` cap it
+ *                         caps every file (and its exports) at that ceiling —
+ *                         used by `unresolvable-entrypoint-target`.
  *  - `directory-subtree`— every file whose repo-relative path starts with the
  *                         annotation's `subtreePrefix` (absent ⇒ `""` ⇒ the
  *                         importer's whole package). Caps the file claim AND any
@@ -170,6 +172,13 @@ export const HAZARD_REGISTRY: Readonly<Record<HazardClass, HazardClassEntry>> = 
     cap: "medium",
     rationale:
       "A tsconfig with `references` composes this project with sibling TypeScript projects that may consume its files across the project boundary — a cross-project use the single-project reference graph cannot see. Until real cross-project analysis lands (post-v1), the whole package is capped at medium rather than claimed dead. This is deliberately blunt: every claim in a project-referenced package is downgraded, trading recall for the guarantee that no externally-consumed file is confidently flagged.",
+  },
+  "unresolvable-entrypoint-target": {
+    hazardClass: "unresolvable-entrypoint-target",
+    scope: "project",
+    cap: "medium",
+    rationale:
+      "One or more declared package.json entrypoint targets (`main`/`module`/`exports`/`bin`) could not be resolved to a project file, even after a conservative `dist/**`→`src/**` remap — the declared public API could not be resolved, so the entrypoint assumption (that the declared entrypoints are the complete public API) is broken. This is the common `npx`-on-an-unbuilt-checkout case (targets point into a `dist/` that has not been built). With the public-API surface incomplete, any file could still be reachable from the missing entry, so no file can be confidently proven dead: the whole package is capped at medium rather than flagged. Deliberately blunt (every claim downgraded) — the precise fix is to build the project or configure the entrypoints so they resolve.",
   },
   "jsx-runtime-dependency": {
     hazardClass: "jsx-runtime-dependency",
