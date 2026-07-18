@@ -1,14 +1,14 @@
 {
   "analyzer": "all-alive-stub",
   "corpus": {
-    "cases": 13,
-    "subjects": 29
+    "cases": 15,
+    "subjects": 35
   },
   "precision": 1,
   "recall": 0,
   "falsePositives": 0,
   "confidenceViolations": 0,
-  "misses": 14,
+  "misses": 17,
   "unlabelledClaims": 0,
   "byConfidenceTier": {
     "high": {
@@ -55,6 +55,17 @@
     },
     {
       "case": "basic-dead-export",
+      "subjects": 2,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 0,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 1,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "broken-paths-alias",
       "subjects": 2,
       "deadLabels": 1,
       "precision": 1,
@@ -161,6 +172,17 @@
       "falsePositives": 0,
       "confidenceViolations": 0,
       "misses": 3,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "tsconfig-paths-alias",
+      "subjects": 4,
+      "deadLabels": 2,
+      "precision": 1,
+      "recall": 0,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 2,
       "unlabelledClaims": 0
     },
     {

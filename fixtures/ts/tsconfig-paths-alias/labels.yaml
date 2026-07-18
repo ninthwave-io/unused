@@ -1,0 +1,30 @@
+case: tsconfig-paths-alias
+description: >-
+  A tsconfig.json "@app/*" path alias (declared in tsconfig.base.json and
+  reached only through an `extends` chain) is the sole way src/index.ts
+  reaches src/app/util.ts. A resolver that ignores tsconfig `paths`/`extends`
+  would see no relative import into src/app/ at all and wrongly flag the
+  whole alias root dead — the alive labels here are the false-positive trap.
+subjects:
+  - kind: file
+    name: src/app/util.ts
+    file: src/app/util.ts
+    expected: alive
+    because: imported by src/index.ts through the "@app/*" path alias declared in tsconfig.base.json and inherited by tsconfig.json via `extends`; nothing imports this file through a relative specifier, so alias-chain resolution is the only edge that keeps it reachable.
+  - kind: export
+    name: helper
+    file: src/app/util.ts
+    expected: alive
+    because: imported (as `@app/util`'s `helper`) and called by src/index.ts; the path-alias import edge must resolve to this specific export for liveness to hold.
+  - kind: export
+    name: siblingUnused
+    file: src/app/util.ts
+    expected: dead
+    minConfidence: high
+    because: exported from the same aliased file as helper, but no import — aliased or relative — ever references siblingUnused; the file's liveness does not blanket-cover every export in it, and no hazard applies here.
+  - kind: file
+    name: src/app/orphan.ts
+    file: src/app/orphan.ts
+    expected: dead
+    minConfidence: high
+    because: sits under the "@app/*" alias root but is never imported by any specifier, aliased or relative; an analyzer that treats the whole alias root as reachable merely because one sibling file is imported would wrongly spare this file, and no hazard applies.

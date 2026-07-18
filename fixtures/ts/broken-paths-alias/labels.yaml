@@ -1,0 +1,23 @@
+case: broken-paths-alias
+description: >-
+  A "@app/*" tsconfig path alias resolves one import (`@app/util`) normally
+  while a sibling import in the same entry file targets `@app/missing`, a
+  file that does not exist under the alias root — a genuinely dangling
+  alias import. Exercises the unresolved-import-to-hazard path
+  (docs/phasing.md T2.2: "unresolved import ⇒ hazard annotation, never a
+  crash"): the missing target carries no labelled subject here (there is no
+  claim kind for an unresolvable specifier itself), but liveness analysis
+  must continue past it undisturbed for the rest of the file and the alias
+  root.
+subjects:
+  - kind: export
+    name: helper
+    file: src/app/util.ts
+    expected: alive
+    because: imported and called by src/index.ts via the resolvable "@app/util" alias import; the adjacent dangling "@app/missing" import in the same file must not poison this edge.
+  - kind: export
+    name: neverUsed
+    file: src/app/util.ts
+    expected: dead
+    minConfidence: high
+    because: never imported by anything, aliased or relative; the dangling "@app/missing" hazard (if modelled) is scoped to that unresolved specifier, not to this unrelated sibling export, so this stays claimable at high confidence.
