@@ -1,0 +1,1 @@
+{ "name": "@bun/consumer", "main": "index.ts", "dependencies": { "@bun/dep": "workspace:*" } }

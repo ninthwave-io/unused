@@ -1,0 +1,4 @@
+packages:
+  - 'packages/*'
+  # never a member:
+  - '!packages/excluded'

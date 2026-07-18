@@ -31,6 +31,9 @@ const NO_ENTRYPOINTS_FIXTURE = join(
   PACKAGE_ROOT,
   "src/frontends/ts/__testfixtures__/no-entrypoints",
 );
+const TESTFIXTURES = join(PACKAGE_ROOT, "src/frontends/ts/__testfixtures__");
+const PNP_FIXTURE = join(TESTFIXTURES, "workspace-pnp"); // Yarn PnP → refused
+const WORKSPACE_FIXTURE = join(TESTFIXTURES, "workspace-pnpm"); // pnpm monorepo
 
 function readSchema(): object {
   return JSON.parse(
@@ -139,6 +142,27 @@ describe("unused CLI — zero production entrypoints", () => {
   it("does NOT warn on a clean fixture that has a real entrypoint", () => {
     const result = runCli(["--json", "--cwd", CLEAN_FIXTURE]);
     expect(result.stderr).not.toMatch(/no production entrypoints detected/);
+  });
+});
+
+describe("unused CLI — monorepo workspaces (T4.2)", () => {
+  it("refuses a Yarn PnP project: exit 2 with the unsupported message surfaced", () => {
+    const result = runCli(["--cwd", PNP_FIXTURE]);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(/Plug'n'Play is unsupported/);
+    expect(result.stdout).toBe("");
+  });
+
+  it("analyzes a pnpm monorepo: schema-valid --json with per-package claims", () => {
+    const result = runCli(["--json", "--cwd", WORKSPACE_FIXTURE]);
+    expect(result.status).toBe(0);
+    const parsed: unknown = JSON.parse(result.stdout);
+    const validate = compileSchema();
+    expect(validate(parsed), JSON.stringify(validate.errors)).toBe(true);
+    const claims = (parsed as { claims: { subject: { loc: { package?: string } } }[] }).claims;
+    expect(claims.length).toBeGreaterThan(0);
+    // Every workspace claim is tagged with its owning package.
+    expect(claims.every((c) => typeof c.subject.loc.package === "string")).toBe(true);
   });
 });
 

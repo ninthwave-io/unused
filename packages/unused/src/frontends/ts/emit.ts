@@ -73,6 +73,22 @@ export interface PackageJsonLike {
   bin?: unknown;
 }
 
+/**
+ * One package whose entrypoints seed liveness (T4.2). In a monorepo the frontend
+ * passes the root package plus every workspace member, so each gets its own
+ * `main`/`module`/`exports`/`bin` entrypoint set inside the one shared graph.
+ * Single-package analysis omits {@link EmitInput.packages} entirely (behaviour is
+ * byte-identical to the pre-T4.2 single-root path).
+ */
+export interface EmitPackageUnit {
+  /** Absolute path to the package directory (base for resolving its entry targets). */
+  readonly dir: string;
+  /** POSIX, root-relative directory (`""` for the root package, else e.g. `packages/app`). */
+  readonly rootRelDir: string;
+  /** The package's parsed `package.json`, or `null` when it declares none. */
+  readonly packageJson: PackageJsonLike | null;
+}
+
 export interface EmitInput {
   /** Absolute path to the analysis (project) root. */
   projectRoot: string;
@@ -94,9 +110,19 @@ export interface EmitInput {
    * `emit-decorator-metadata` candidate marker for every decorated file; that
    * marker only becomes a real hazard annotation when this flag is `true`
    * (decorator metadata is a runtime-reference mechanism only under this option).
-   * Absent/`false` ⇒ decorated files carry no decorator-metadata hazard.
+   * Absent/`false` ⇒ decorated files carry no decorator-metadata hazard. In a
+   * monorepo the composition layer ORs this across all packages' tsconfigs
+   * (over-approximating the keep-alive costs recall, never precision).
    */
   emitDecoratorMetadata?: boolean;
+  /**
+   * The packages whose entrypoints seed liveness (T4.2). In a monorepo: the root
+   * package plus every workspace member (each detected against its own
+   * `package.json`, rooted at its own directory). Omitted for single-package
+   * analysis, where the root `package.json` (or {@link packageJson}) is the sole
+   * entrypoint source — the byte-identical pre-T4.2 path.
+   */
+  packages?: readonly EmitPackageUnit[];
 }
 
 /** Assemble the reference-graph IR for one project. */
@@ -458,15 +484,35 @@ export function emitIR(input: EmitInput): IRGraph {
     }
   }
 
-  // --- Phase 3: production entrypoints ------------------------------------
-  const pkg = input.packageJson === undefined ? readPackageJson(root) : input.packageJson;
+  // --- Phase 3: production entrypoints, per workspace package (T4.2) -------
+  // Each package unit (the root, plus every workspace member in a monorepo) is
+  // detected against its OWN package.json, rooted at its OWN directory, so its
+  // `main`/`module`/`exports`/`bin` targets become entrypoints; the resulting
+  // package-relative hits are re-based to root-relative for the shared graph.
+  // Single-package analysis (no `packages`) is the degenerate one-unit case and
+  // stays byte-identical to the pre-T4.2 single-root path.
   const recordRels = new Set(input.records.map((r) => rel(r.filePath)));
-  const detection = detectProductionEntrypointsWithDiagnostics(pkg, root, input.resolver, {
-    fallbackFiles: recordRels,
-  });
-  for (const hit of detection.hits) {
-    ensureFile(hit.file);
-    graph.addNode(entrypointNode(hit.file, hit.reason));
+  const units: readonly EmitPackageUnit[] = input.packages ?? [
+    {
+      dir: root,
+      rootRelDir: "",
+      packageJson: input.packageJson === undefined ? readPackageJson(root) : input.packageJson,
+    },
+  ];
+  const unresolvedTargets: string[] = [];
+  for (const unit of units) {
+    const detection = detectProductionEntrypointsWithDiagnostics(
+      unit.packageJson,
+      unit.dir,
+      input.resolver,
+      { fallbackFiles: unitRelativeFiles(recordRels, unit.rootRelDir) },
+    );
+    for (const hit of detection.hits) {
+      const fileRel = joinRootRel(unit.rootRelDir, hit.file);
+      ensureFile(fileRel);
+      graph.addNode(entrypointNode(fileRel, hit.reason));
+    }
+    unresolvedTargets.push(...detection.unresolvedTargets);
   }
 
   // T3.6 (the hono trap): a declared entrypoint target that resolved to nothing
@@ -475,13 +521,13 @@ export function emitIR(input: EmitInput): IRGraph {
   // `unresolvable-entrypoint-target` hazard (whole-package medium cap): with the
   // public-API surface broken, no file can be confidently proven dead. This
   // replaces M2's silent collapse to a single `index.*` fallback.
-  if (detection.unresolvedTargets.length > 0) {
-    const [first] = detection.unresolvedTargets;
+  if (unresolvedTargets.length > 0) {
+    const [first] = unresolvedTargets;
     graph.addHazard({
       file: fileId("package.json"),
       hazardClass: "unresolvable-entrypoint-target",
       detail:
-        `${detection.unresolvedTargets.length} declared package.json entrypoint target(s) ` +
+        `${unresolvedTargets.length} declared package.json entrypoint target(s) ` +
         `could not be resolved to a project file (e.g. \`${first}\`) — the declared public ` +
         "API is incomplete (unbuilt dist/? misconfigured exports?), so no file can be proven " +
         "dead. Whole-package cap: medium.",
@@ -806,6 +852,27 @@ function suppressionsByName(
 /** Absolute path → POSIX, repo/project-relative. */
 function toPosixRel(root: string, abs: string): string {
   return relative(root, abs).split(sep).join("/");
+}
+
+/**
+ * Re-base the root-relative record set to a package's own directory (T4.2), so
+ * the zero-config entrypoint fallback (`index.ts`, `src/index.ts`, …) is checked
+ * package-relative. `rootRelDir === ""` (the root package) returns the set
+ * unchanged. Files outside the package are dropped.
+ */
+function unitRelativeFiles(recordRels: ReadonlySet<string>, rootRelDir: string): Set<string> {
+  if (rootRelDir === "") return new Set(recordRels);
+  const prefix = `${rootRelDir}/`;
+  const out = new Set<string>();
+  for (const rel of recordRels) {
+    if (rel.startsWith(prefix)) out.add(rel.slice(prefix.length));
+  }
+  return out;
+}
+
+/** Prefix a package-relative path with its root-relative directory (T4.2). */
+function joinRootRel(rootRelDir: string, fileRel: string): string {
+  return rootRelDir === "" ? fileRel : posix.join(rootRelDir, fileRel);
 }
 
 /**

@@ -1,0 +1,1 @@
+{ "name": "bun-root", "private": true, "workspaces": ["pkgs/*"] }

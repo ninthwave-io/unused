@@ -62,6 +62,7 @@ import { basename, dirname, join, relative, resolve as resolvePath, sep } from "
 import { getTsconfig } from "get-tsconfig";
 import { computeReachability, emitClaims } from "../../core/analysis/index.js";
 import {
+  type Claim,
   type ClaimRun,
   computeSummary,
   type Provenance,
@@ -69,9 +70,10 @@ import {
 } from "../../core/claims/index.js";
 import { entrypointId, fileId, type IRGraph, type Site } from "../../core/ir/index.js";
 import { discover } from "./discover.js";
-import { emitIR, type PackageJsonLike } from "./emit.js";
+import { type EmitPackageUnit, emitIR, type PackageJsonLike } from "./emit.js";
 import { parseSource } from "./parse.js";
 import { Resolver } from "./resolve.js";
+import { detectWorkspaces, type WorkspaceLayout } from "./workspaces.js";
 
 const ANALYZER_NAME = "ts-reference-graph";
 const DEFAULT_TOOL_VERSION = "0.1.0";
@@ -145,8 +147,21 @@ export async function analyzeProject(
   const version = options.toolVersion ?? DEFAULT_TOOL_VERSION;
   const root = resolvePath(rootDir);
 
+  // Workspace auto-detect (T4.2, PRD §6). Throws `UnsupportedProjectError` on a
+  // Yarn PnP layout BEFORE any analysis — a refusal, never a silent mis-answer;
+  // the CLI maps the throw to exit 2 and surfaces the message.
+  const layout = await detectWorkspaces(root);
+
   // discover → read → parse (single read per file, reused for line counts + scan).
-  const files = await discover(root);
+  // Excluded-member subtrees (a would-be workspace member removed by a negative
+  // glob) are dropped from the analyzable set entirely: they get no entrypoints,
+  // so keeping their sources in scope would flag externally-built files as dead.
+  // Out-of-scope like `node_modules`/`dist` — an import of one resolves
+  // outside-project (keep-alive), never a claim.
+  const excludedPrefixes = layout.excludedDirs.map((dir) => `${dir}/`);
+  const files = (await discover(root)).filter(
+    (file) => !isUnderExcluded(toPosixRel(root, file), excludedPrefixes),
+  );
   const contents = await Promise.all(files.map((f) => readFile(f, "utf8")));
   const records = files.map((file, i) => parseSource(file, contents[i] as string));
   const contentByAbs = new Map(files.map((file, i) => [file, contents[i] as string]));
@@ -156,24 +171,48 @@ export async function analyzeProject(
     fileLineCounts.set(fileId(toPosixRel(root, file)), countLines(contents[i] as string));
   });
 
-  // resolve → emit IR (production entrypoints from main/module/exports/bin + fallback).
-  const resolver = new Resolver({ projectRoot: root, discoveredFiles: new Set(files) });
-  const tsconfigOptions = readTsconfigOptions(root);
+  // Package units: the root package plus every workspace member. Each is its own
+  // entrypoint set; all share ONE graph so cross-workspace imports resolve.
+  const rootPkg = await readRootPackageJson(root);
+  const units = buildPackageUnits(root, rootPkg, layout);
+  const isWorkspace = layout.manager !== null;
+  // Sibling-name resolution: `package name → member dir`, so a bare import of a
+  // workspace member classifies internal (its source), never external (T4.2).
+  const workspacePackages = isWorkspace ? buildWorkspaceMap(units) : undefined;
+
+  // resolve → emit IR (per-package production entrypoints from main/module/exports/bin).
+  const resolver = new Resolver({
+    projectRoot: root,
+    discoveredFiles: new Set(files),
+    ...(workspacePackages !== undefined ? { workspacePackages } : {}),
+  });
+  // emitDecoratorMetadata / project `references`: any package's tsconfig triggers
+  // it (over-approximating the keep-alive only costs recall, never precision).
+  const tsconfigOptions = readTsconfigOptionsForUnits(units);
   const graph = emitIR({
     projectRoot: root,
     records,
     resolver,
     emitDecoratorMetadata: tsconfigOptions.emitDecoratorMetadata,
+    // Single-package analysis omits `packages` → emitIR's byte-identical one-unit path.
+    ...(isWorkspace ? { packages: units } : {}),
   });
 
-  // Fix 2: expand wildcard subpath exports into production entrypoints.
-  const pkg = await readRootPackageJson(root);
-  seedWildcardExportEntrypoints(graph, root, files, pkg);
-
-  // T3.1b: files reachable only under a package.json condition/browser branch the
-  // analyzer's single condition set does not select keep-alive (no-claim); a
-  // tsconfig with `references` caps the whole package (medium — see the registry).
-  addConditionalExportsDivergenceHazards(graph, root, resolver, files, pkg);
+  // Fix 2 + T3.1b, per package: expand each unit's wildcard `exports` subpaths into
+  // production entrypoints, and keep-alive files reachable only under a non-selected
+  // package.json condition/browser branch. A tsconfig with `references` anywhere
+  // caps the whole project (medium — see the registry).
+  for (const unit of units) {
+    seedWildcardExportEntrypoints(graph, root, unit.dir, files, unit.packageJson);
+    addConditionalExportsDivergenceHazards(
+      graph,
+      root,
+      unit.dir,
+      resolver,
+      files,
+      unit.packageJson,
+    );
+  }
   if (tsconfigOptions.hasReferences) addProjectReferencesHazard(graph);
 
   // One config-tree walk: JSON config files + the set of package-root directories.
@@ -237,6 +276,11 @@ export async function analyzeProject(
   };
   const claims = emitClaims({ graph, reachability, provenance, fileLineCounts });
 
+  // Populate `subject.loc.package` in a monorepo (schema field; each claim tagged
+  // with its owning workspace package). The claim `id` excludes package, so this
+  // never churns ids — single-package output is byte-identical (no field added).
+  if (isWorkspace) annotateClaimPackages(claims, units);
+
   return {
     schemaVersion: SCHEMA_VERSION,
     tool: { name: "unused", version },
@@ -265,6 +309,7 @@ export async function analyzeProject(
 function seedWildcardExportEntrypoints(
   graph: IRGraph,
   root: string,
+  packageDir: string,
   files: readonly string[],
   pkg: PackageJsonLike | null,
 ): void {
@@ -273,7 +318,9 @@ function seedWildcardExportEntrypoints(
   for (const target of targets) {
     const star = target.indexOf("*");
     const prefixLit = target.slice(0, star);
-    let matchPrefix = resolvePath(root, prefixLit);
+    // Wildcard targets are resolved relative to the OWNING package's directory
+    // (the root in single-package analysis, a member in a monorepo).
+    let matchPrefix = resolvePath(packageDir, prefixLit);
     if (prefixLit.endsWith("/")) matchPrefix += sep;
     for (const file of files) {
       if (file.startsWith(matchPrefix)) {
@@ -307,6 +354,95 @@ async function readRootPackageJson(root: string): Promise<PackageJsonLike | null
   } catch {
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// T4.2 — workspace package units
+// ---------------------------------------------------------------------------
+
+/** A package whose entrypoints seed liveness, plus its name (for the sibling map + claim tagging). */
+interface AnalyzeUnit extends EmitPackageUnit {
+  /** The package's `package.json` `name`, or `null`. */
+  readonly name: string | null;
+}
+
+/**
+ * The package units for a run: the root package first (its `rootRelDir` is `""`),
+ * then every workspace member. In single-package analysis this is just the root.
+ */
+function buildPackageUnits(
+  root: string,
+  rootPkg: PackageJsonLike | null,
+  layout: WorkspaceLayout,
+): AnalyzeUnit[] {
+  const units: AnalyzeUnit[] = [
+    { dir: root, rootRelDir: "", packageJson: rootPkg, name: nameOfPackage(rootPkg) },
+  ];
+  for (const member of layout.members) {
+    units.push({
+      dir: member.dir,
+      rootRelDir: member.rootRelDir,
+      packageJson: member.packageJson,
+      name: member.name,
+    });
+  }
+  return units;
+}
+
+/** `package name → absolute directory` for every named unit (the sibling-resolution map). */
+function buildWorkspaceMap(units: readonly AnalyzeUnit[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const unit of units) {
+    if (unit.name !== null && !map.has(unit.name)) map.set(unit.name, unit.dir);
+  }
+  return map;
+}
+
+/**
+ * `emitDecoratorMetadata` / project `references` across all package units: any
+ * unit's tsconfig enabling either flips it on for the run. Over-approximating the
+ * resulting keep-alive/cap costs recall, never precision — the safe direction.
+ */
+function readTsconfigOptionsForUnits(units: readonly AnalyzeUnit[]): {
+  emitDecoratorMetadata: boolean;
+  hasReferences: boolean;
+} {
+  let emitDecoratorMetadata = false;
+  let hasReferences = false;
+  for (const unit of units) {
+    const opts = readTsconfigOptions(unit.dir);
+    emitDecoratorMetadata = emitDecoratorMetadata || opts.emitDecoratorMetadata;
+    hasReferences = hasReferences || opts.hasReferences;
+  }
+  return { emitDecoratorMetadata, hasReferences };
+}
+
+/**
+ * Tag each claim with the workspace package that owns its file (`subject.loc.package`).
+ * A file is owned by the deepest unit whose directory contains it; a file under no
+ * member falls to the root package (analysed as today). Root-owned files stay
+ * untagged when the root `package.json` declares no `name`.
+ */
+function annotateClaimPackages(claims: readonly Claim[], units: readonly AnalyzeUnit[]): void {
+  const byDepth = [...units].sort((a, b) => b.rootRelDir.length - a.rootRelDir.length);
+  for (const claim of claims) {
+    const file = claim.subject.loc.file;
+    const owner = byDepth.find(
+      (u) => u.rootRelDir === "" || file === u.rootRelDir || file.startsWith(`${u.rootRelDir}/`),
+    );
+    if (owner?.name != null) claim.subject.loc.package = owner.name;
+  }
+}
+
+/** Read a parsed package.json's `name`, or `null`. */
+function nameOfPackage(pkg: PackageJsonLike | null): string | null {
+  const name = (pkg as { name?: unknown } | null)?.name;
+  return typeof name === "string" && name !== "" ? name : null;
+}
+
+/** Is `rel` (root-relative POSIX) inside any excluded-member subtree? */
+function isUnderExcluded(rel: string, excludedPrefixes: readonly string[]): boolean {
+  return excludedPrefixes.some((prefix) => rel.startsWith(prefix));
 }
 
 // ---------------------------------------------------------------------------
@@ -523,6 +659,7 @@ function addProjectReferencesHazard(graph: IRGraph): void {
 function addConditionalExportsDivergenceHazards(
   graph: IRGraph,
   root: string,
+  packageDir: string,
   resolver: Resolver,
   files: readonly string[],
   pkg: PackageJsonLike | null,
@@ -536,7 +673,9 @@ function addConditionalExportsDivergenceHazards(
   if (candidates.size === 0) return;
 
   const discovered = new Set(files);
-  const from = join(root, "package.json");
+  // Condition targets are package-relative — resolve them from the owning
+  // package's package.json (the root in single-package analysis, a member otherwise).
+  const from = join(packageDir, "package.json");
   const seen = new Set<string>();
   for (const spec of candidates) {
     const norm = normalizeRelTarget(spec);

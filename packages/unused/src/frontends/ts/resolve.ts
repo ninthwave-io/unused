@@ -245,6 +245,22 @@ export interface ResolverOptions {
   readonly discoveredFiles?: ReadonlySet<string>;
   /** Override {@link DEFAULT_CONDITIONS}. */
   readonly conditionNames?: readonly string[];
+  /**
+   * Workspace member packages, `package name → absolute member directory`
+   * (T4.2). When a bare specifier's package name matches a member, it is
+   * resolved into that member's own directory (honouring its `exports`/`main`),
+   * landing on the member's **source** — classified `internal`, never `external`.
+   *
+   * This is the fix for the symlinked-workspace-member trap (T2.2 review): in an
+   * installed monorepo `node_modules/@scope/pkg` is a symlink into `packages/pkg`,
+   * and with `symlinks: false` the general resolver keeps the `node_modules` path
+   * and would call the sibling `external` — fabricating a phantom dependency and
+   * leaving the sibling's non-entrypoint files (reachable only across the
+   * workspace) to be flagged as false positives. Intercepting here classifies
+   * them as the internal files they are. Absent ⇒ single-package behaviour,
+   * byte-identical to pre-T4.2.
+   */
+  readonly workspacePackages?: ReadonlyMap<string, string>;
 }
 
 const BUILTIN_SET: ReadonlySet<string> = new Set(builtinModules);
@@ -274,10 +290,13 @@ export class Resolver {
   private readonly sourceFactory: ResolverFactory | null;
   private readonly pathsMatcher: PathsMatcher | null;
   private readonly discovered: ReadonlySet<string> | null;
+  /** Workspace member `package name → absolute dir` (T4.2), or `null` outside a monorepo. */
+  private readonly workspacePackages: ReadonlyMap<string, string> | null;
 
   constructor(options: ResolverOptions) {
     this.projectRoot = resolvePath(options.projectRoot);
     this.discovered = options.discoveredFiles ?? null;
+    this.workspacePackages = options.workspacePackages ?? null;
 
     // Discover the tsconfig via get-tsconfig (walks up, resolving `extends`).
     // Bound it to the project root: a fixture/package with no tsconfig of its
@@ -338,13 +357,65 @@ export class Resolver {
       };
     }
 
-    // 3. Filesystem resolution. oxc-resolver never throws for a miss — it
+    // 3. Workspace sibling (T4.2): a bare specifier whose package name is a
+    //    workspace member resolves into that member's own directory (its
+    //    `exports`/`main`), landing on the member's source — internal, never a
+    //    phantom external dependency. Runs BEFORE general node_modules
+    //    resolution so a symlinked member is not mis-read as `external`.
+    if (this.workspacePackages !== null) {
+      const pkgName = packageNameOf(specifier);
+      const memberDir = pkgName !== null ? this.workspacePackages.get(pkgName) : undefined;
+      if (memberDir !== undefined) {
+        const outcome = this.resolveWorkspacePackage(specifier, memberDir);
+        // Unresolved (e.g. a subpath pointing into an unbuilt dir): keep-alive on
+        // the importer side, never re-read as an external package.
+        return (
+          outcome ?? {
+            kind: "unresolvable",
+            reason: `workspace package specifier '${specifier}' did not resolve to a source file in ${memberDir}`,
+          }
+        );
+      }
+    }
+
+    // 4. Filesystem resolution. oxc-resolver never throws for a miss — it
     //    returns `{ error }` — so this is crash-free by construction.
     const dir = dirname(importer);
     const result = this.factory.sync(dir, specifier);
     const path = result.path ?? null;
     if (path !== null) return this.classifyResolvedPath(specifier, path, dir);
     return this.classifyFailure(specifier, result.error);
+  }
+
+  /**
+   * Resolve a workspace-sibling specifier (`@scope/member` or
+   * `@scope/member/sub`) into the member's own directory (T4.2). Two strategies,
+   * in order:
+   *  1. **self-reference** — `factory.sync(memberDir, specifier)` resolves the
+   *     specifier from *within* the member, honouring its `exports` map (Node's
+   *     self-reference feature); covers both the bare package and mapped subpaths.
+   *  2. **directory/relative fallback** — for a member with no `exports` map
+   *     (self-reference is unavailable), the bare specifier resolves the member
+   *     directory to its `main`/`module`/index, and a subpath resolves as a
+   *     relative import from the member root.
+   * The resolved path is then classified through the same internal / declaration
+   * logic as any other file (`.d.ts` re-resolution, discovered-set authority) —
+   * a workspace path is never `external`. Returns `null` when neither strategy
+   * resolves (the caller keeps the importer alive rather than fabricate a dep).
+   */
+  private resolveWorkspacePackage(specifier: string, memberDir: string): Resolution | null {
+    let path = this.factory.sync(memberDir, specifier).path ?? null;
+    if (path === null) {
+      const subpath = subpathOf(specifier);
+      const request = subpath === null ? "." : `./${subpath}`;
+      path = this.factory.sync(memberDir, request).path ?? null;
+    }
+    if (path === null) return null;
+    // A workspace member's own source is never in node_modules; if resolution
+    // somehow lands there, decline (let the caller keep-alive) rather than fake
+    // an internal file.
+    if (isInNodeModules(path)) return null;
+    return this.classifyResolvedPath(specifier, path, memberDir);
   }
 
   private classifyResolvedPath(specifier: string, path: string, dir: string): Resolution {

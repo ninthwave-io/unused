@@ -1,0 +1,5 @@
+{
+  "name": "@mono/app",
+  "main": "src/index.ts",
+  "dependencies": { "@mono/lib": "workspace:*", "@mono/utils": "workspace:^" }
+}

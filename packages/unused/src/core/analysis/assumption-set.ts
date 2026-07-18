@@ -28,7 +28,7 @@ import { HAZARD_REGISTRY, type HazardClassEntry } from "./hazard-registry.js";
  * wording or the set of globals (a behaviour-affecting change), so a consumer
  * pinning a version can detect it. Independent of the analyzer/tool version.
  */
-export const ASSUMPTION_SET_VERSION = "1.1.0";
+export const ASSUMPTION_SET_VERSION = "1.2.1";
 
 /** One global analysis assumption (independent of any single hazard class). */
 export interface GlobalAssumption {
@@ -69,16 +69,22 @@ export const GLOBAL_ASSUMPTIONS: readonly GlobalAssumption[] = [
       "Remaps that live only in a bundler config — webpack `resolve.alias`, Vite `resolve.alias`, and similar — are not followed, because the analyzer reads tsconfig and package.json, not bundler configs. A module reachable only through such an alias may look unreferenced. Aliases expressed in tsconfig `paths` ARE followed; bundler-specific ones require explicit configuration (deferred) to be modelled.",
   },
   {
+    id: "monorepo-workspaces-per-package",
+    title: "Monorepo workspaces are analyzed per package",
+    detail:
+      "In a monorepo — npm, pnpm, yarn-classic, or bun workspaces, auto-detected from `pnpm-workspace.yaml` or the `workspaces` field — every workspace package contributes its own entrypoints (`main`/`module`/`exports`/`bin`, plus config and test roots) to one shared reference graph, so a symbol used across packages is alive. Cross-workspace imports resolve to a sibling's source — via the `workspace:` protocol, a direct relative import, or a bare/subpath import of a sibling package name (resolved through the sibling's `exports`/`main`) — and are classified internal, never as an external dependency. Each claim is tagged with the workspace package that owns its file (`subject.loc.package`). Root-level files outside every member are analyzed under the root package. A would-be member removed by a negative glob (e.g. `!packages/legacy`) is excluded: its whole subtree is out of scope — discovered but never claimed, and imported as an outside-project keep-alive — so externally-built code under it is not flagged.",
+  },
+  {
     id: "yarn-pnp-unsupported",
     title: "Yarn Plug'n'Play is unsupported in v1",
     detail:
-      "Resolution assumes a `node_modules` layout. Yarn PnP's `.pnp.cjs` resolution table is not consulted, so dependency resolution under a pure-PnP install is not modelled. A workspace M4 will refuse (rather than silently mis-analyze) a detected PnP project; until then, PnP is outside the assumption set that backs `high` confidence.",
+      "Resolution assumes a `node_modules` layout. Yarn PnP's `.pnp.cjs`/`.pnp.mjs` resolution table is not consulted, so a pure-PnP install cannot be resolved correctly. A detected PnP project is therefore refused outright — analysis stops with a clear unsupported message and a non-zero exit — rather than risk a silently-wrong result. Detection also walks up from the analysis root to the repository boundary (a `.git` marker), so running inside a member of a PnP monorepo is refused too. (Workaround: Yarn's `nodeLinker: node-modules`.)",
   },
   {
     id: "symlinks-not-followed",
     title: "Symlinks are not followed",
     detail:
-      "Neither discovery nor resolution follows symlinks (`symlinks: false`): a symlinked directory is not descended and a symlinked file is not collected or `realpath()`-ed. This avoids cycles and escaping the project tree, but means a module reachable only through a symlink (some monorepo layouts) is not analyzed as internal — it degrades toward alive (an outside-project keep-alive), never a confident dead claim.",
+      "Neither discovery nor resolution follows symlinks (`symlinks: false`): a symlinked directory is not descended and a symlinked file is not collected or `realpath()`-ed. This avoids cycles and escaping the project tree. Workspace members are resolved by package name (see above), so a symlinked monorepo layout is handled without following the symlink; a module reachable only through some other symlink still degrades toward alive (an outside-project keep-alive), never a confident dead claim.",
   },
 ];
 

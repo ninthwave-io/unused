@@ -11,6 +11,7 @@ export { discover } from "./discover.js";
 export {
   detectProductionEntrypoints,
   type EmitInput,
+  type EmitPackageUnit,
   type EntrypointHit,
   type EntrypointOptions,
   emitIR,
@@ -56,6 +57,14 @@ export {
   resolveModuleRecord,
   unresolvableToHazard,
 } from "./resolve.js";
+
+export {
+  detectWorkspaces,
+  UnsupportedProjectError,
+  type WorkspaceLayout,
+  type WorkspaceManager,
+  type WorkspaceMember,
+} from "./workspaces.js";
 
 /** Placeholder module marker retained for the boundary/dependency-cruiser smoke test. */
 export const TS_FRONTEND_MODULE = "frontends/ts" as const;

@@ -32,6 +32,7 @@ import { stat } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 import type { Claim, ClaimRun } from "../core/claims/index.js";
 import { analyzeProject } from "../frontends/ts/analyze.js";
+import { UnsupportedProjectError } from "../frontends/ts/workspaces.js";
 
 const EXIT_OK = 0;
 const EXIT_ANALYSIS_ERROR = 2;
@@ -118,7 +119,10 @@ export async function run(argv: readonly string[]): Promise<number> {
     result = await analyzeProject(root);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`unused: analysis failed: ${message}\n`);
+    // A deliberate refusal (e.g. Yarn PnP, PRD §6) is not a failure — surface the
+    // message plainly rather than as an "analysis failed" error, still exit 2.
+    const prefix = err instanceof UnsupportedProjectError ? "unused:" : "unused: analysis failed:";
+    process.stderr.write(`${prefix} ${message}\n`);
     return EXIT_ANALYSIS_ERROR;
   }
 
