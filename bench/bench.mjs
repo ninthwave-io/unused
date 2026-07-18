@@ -223,7 +223,7 @@ function runBench(runs) {
       },
       unused: {
         status: existsSync(resolveToolBin(config.tools.unused)) ? "available" : "pending",
-        note: "placeholder hook reading bench/targets.json#tools.unused; wired for real once T2.5 ships packages/unused/dist/cli.js",
+        note: "reads bench/targets.json#tools.unused; wired since T2.5 shipped packages/unused/dist/cli/index.js — status flips to 'pending' automatically if dist/ isn't built.",
       },
     },
     caveat: CAVEAT,

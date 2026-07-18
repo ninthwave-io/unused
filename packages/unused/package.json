@@ -7,12 +7,16 @@
   "engines": {
     "node": ">=22"
   },
+  "//build": "dist/ is plain per-file tsc output (ADR 0008 defers the single-file bundle decision to M9) — bin points at the compiled cli entry, not a bundle.",
   "bin": {
-    "unused": "./dist/cli.js"
+    "unused": "./dist/cli/index.js"
   },
   "files": [
     "dist"
   ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
   "dependencies": {
     "get-tsconfig": "4.14.0",
     "oxc-parser": "0.140.0",

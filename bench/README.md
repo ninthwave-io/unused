@@ -54,14 +54,13 @@ For every target in `bench/targets.json` (currently: each
   fixture corpus: knip runs cleanly on every target (exit 0 when a fixture
   is genuinely clean, exit 1 whenever it reports unused exports/files —
   the expected "found issues" exit code, not a failure to run).
-- **unused** — a placeholder hook. It reads the command spec from
-  `bench/targets.json#tools.unused` (`packages/unused/dist/cli.js
-  --json`, resolved repo-relative) and checks whether that build output
-  exists yet. Until T2.5 ships the CLI build, every result for this tool
-  is reported as `status: "pending"` with a `note` explaining why — never
-  an error, never a silently-skipped row. Once `dist/cli.js` exists, the
-  hook starts timing it automatically; nothing in this harness needs to
-  change.
+- **unused** — reads the command spec from `bench/targets.json#tools.unused`
+  (`packages/unused/dist/cli/index.js --json`, resolved repo-relative) and
+  checks whether that build output exists yet, timing it the same way as
+  knip when it does. If `dist/` hasn't been built (`pnpm run build` from the
+  repo root), every result for this tool is reported as `status: "pending"`
+  with a `note` explaining why — never an error, never a silently-skipped
+  row — rather than the harness failing outright.
 
 ## The startup-dominated caveat
 

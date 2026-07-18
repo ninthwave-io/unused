@@ -76,14 +76,37 @@ export interface AnalyzeOptions {
 }
 
 /**
- * Analyse the project rooted at `rootDir` and return a full {@link ClaimRun}.
- * Deterministic given a fixed clock: claims are id-sorted and reachability is
- * built from the deterministically-constructed IR.
+ * {@link analyzeProject}'s return value: the PRD §4 wire format plus one
+ * out-of-band, non-schema field callers need to disambiguate `claims: []`.
+ *
+ * An empty `claims` array is genuinely ambiguous on its own: it is the
+ * outcome of (a) a project with production entrypoints where nothing is
+ * dead — a legitimately clean run — as well as (b) a project with **zero**
+ * production entrypoints, where nothing anchors liveness and the analyzer
+ * conservatively proves nothing (see the module docstring above and
+ * `core/analysis/claims.ts`'s `productionEntrypointFiles.size === 0` guard).
+ * Those two cases demand different UX (T2.5): silence for (a), a visible
+ * warning for (b). `productionEntrypointCount` is exactly the
+ * `reachability.productionEntrypointFiles.size` value `claims.ts` itself
+ * guards on, plumbed up so the caller doesn't have to re-detect entrypoints
+ * independently (which would drift from this file's wildcard-export and
+ * config-root handling — see Fix 1/2 above).
+ */
+export interface AnalyzeResult extends ClaimRun {
+  /** Count of production entrypoint files found before claim emission. */
+  readonly productionEntrypointCount: number;
+}
+
+/**
+ * Analyse the project rooted at `rootDir` and return a full {@link
+ * AnalyzeResult} (a {@link ClaimRun} plus the disambiguating entrypoint
+ * count above). Deterministic given a fixed clock: claims are id-sorted and
+ * reachability is built from the deterministically-constructed IR.
  */
 export async function analyzeProject(
   rootDir: string,
   options: AnalyzeOptions = {},
-): Promise<ClaimRun> {
+): Promise<AnalyzeResult> {
   const start = Date.now();
   const now = options.now ?? new Date();
   const version = options.toolVersion ?? DEFAULT_TOOL_VERSION;
@@ -162,6 +185,7 @@ export async function analyzeProject(
     },
     claims,
     summary: computeSummary(claims),
+    productionEntrypointCount: reachability.productionEntrypointFiles.size,
   };
 }
 

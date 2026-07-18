@@ -26,7 +26,7 @@
     "unused": {
       "kind": "repo-cli",
       "binRoot": "repo",
-      "bin": "packages/unused/dist/cli.js",
+      "bin": "packages/unused/dist/cli/index.js",
       "args": ["--json"]
     }
   }
