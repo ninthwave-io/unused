@@ -102,25 +102,114 @@ describe("countByConfidence", () => {
   });
 });
 
-describe("estimateDeletableLoc (PROVISIONAL, T3.4 owns overlap dedup)", () => {
+describe("estimateDeletableLoc", () => {
   it("is zero for an empty run", () => {
     expect(estimateDeletableLoc([])).toBe(0);
   });
 
-  it("sums inclusive span LOC across claims", () => {
+  it("sums inclusive span LOC for a single claim", () => {
     // span [12, 24] -> 13 lines, matching the PRD §4 worked example.
     expect(estimateDeletableLoc([exportClaim()])).toBe(13);
   });
 
-  it("does not dedup overlapping/nested spans (documented provisional behaviour)", () => {
-    const outer = fileClaim({
-      subject: { kind: "file", name: "legacy.ts", loc: { file: "src/legacy.ts", span: [1, 50] } },
+  it("merges a nested span into its covering interval, counted once", () => {
+    const outer = exportClaim({
+      subject: { kind: "export", name: "outer", loc: { file: "src/a.ts", span: [1, 50] } },
     });
     const inner = exportClaim({
+      subject: { kind: "export", name: "inner", loc: { file: "src/a.ts", span: [10, 20] } },
+    });
+    // inner [10,20] is fully inside outer [1,50] -> only the outer 50 lines count.
+    expect(estimateDeletableLoc([outer, inner])).toBe(50);
+  });
+
+  it("merges partially overlapping spans into their union", () => {
+    const first = exportClaim({
+      subject: { kind: "export", name: "first", loc: { file: "src/a.ts", span: [1, 10] } },
+    });
+    const second = exportClaim({
+      subject: { kind: "export", name: "second", loc: { file: "src/a.ts", span: [5, 15] } },
+    });
+    // [1,10] union [5,15] -> [1,15] -> 15 lines, not the naive 10 + 11 = 21.
+    expect(estimateDeletableLoc([first, second])).toBe(15);
+  });
+
+  it("does not merge merely-adjacent, non-overlapping spans", () => {
+    const first = exportClaim({
+      subject: { kind: "export", name: "first", loc: { file: "src/a.ts", span: [1, 5] } },
+    });
+    const second = exportClaim({
+      subject: { kind: "export", name: "second", loc: { file: "src/a.ts", span: [6, 10] } },
+    });
+    expect(estimateDeletableLoc([first, second])).toBe(5 + 5);
+  });
+
+  it("a file claim subsumes every export span inside that file, counted once", () => {
+    const file = fileClaim({
+      subject: { kind: "file", name: "legacy.ts", loc: { file: "src/legacy.ts", span: [1, 50] } },
+    });
+    const nestedExport = exportClaim({
       subject: { kind: "export", name: "helper", loc: { file: "src/legacy.ts", span: [10, 20] } },
     });
-    // 50 (file) + 11 (export nested inside it) double-counts the overlap on purpose.
-    expect(estimateDeletableLoc([outer, inner])).toBe(50 + 11);
+    // The file claim's 50 lines subsume the export claim's — it contributes nothing extra.
+    expect(estimateDeletableLoc([file, nestedExport])).toBe(50);
+  });
+
+  it("excludes a suppressed claim from the estimate", () => {
+    const suppressed = exportClaim({
+      subject: { kind: "export", name: "ignored", loc: { file: "src/b.ts", span: [1, 20] } },
+      suppression: { reason: "used by a codegen plugin" },
+    });
+    expect(estimateDeletableLoc([suppressed])).toBe(0);
+  });
+
+  it("excludes a suppressed claim even when it overlaps a live claim in the same file", () => {
+    const suppressed = exportClaim({
+      subject: { kind: "export", name: "ignored", loc: { file: "src/c.ts", span: [1, 30] } },
+      suppression: { reason: "kept for a plugin API" },
+    });
+    const live = exportClaim({
+      subject: { kind: "export", name: "dead", loc: { file: "src/c.ts", span: [40, 45] } },
+    });
+    // Only the non-suppressed 6-line span counts; the suppressed 30-line span is dropped
+    // entirely rather than merged in.
+    expect(estimateDeletableLoc([suppressed, live])).toBe(6);
+  });
+
+  it("sums merged LOC independently across multiple files (no cross-file merging)", () => {
+    const fileAOuter = exportClaim({
+      subject: { kind: "export", name: "a1", loc: { file: "src/a.ts", span: [1, 20] } },
+    });
+    const fileAInner = exportClaim({
+      subject: { kind: "export", name: "a2", loc: { file: "src/a.ts", span: [5, 10] } },
+    });
+    const fileB = fileClaim({
+      subject: { kind: "file", name: "b.ts", loc: { file: "src/b.ts", span: [1, 30] } },
+    });
+    const fileC = exportClaim({
+      subject: { kind: "export", name: "c1", loc: { file: "src/c.ts", span: [100, 104] } },
+    });
+    // src/a.ts merges to 20, src/b.ts is 30 (file claim), src/c.ts is 5 -> 55 total.
+    expect(estimateDeletableLoc([fileAOuter, fileAInner, fileB, fileC])).toBe(20 + 30 + 5);
+  });
+
+  it("keeps the same relative file path in two different monorepo packages separate", () => {
+    const packageA = exportClaim({
+      subject: {
+        kind: "export",
+        name: "shared",
+        loc: { file: "src/index.ts", package: "pkg-a", span: [1, 10] },
+      },
+    });
+    const packageB = exportClaim({
+      subject: {
+        kind: "export",
+        name: "shared",
+        loc: { file: "src/index.ts", package: "pkg-b", span: [1, 10] },
+      },
+    });
+    // Same relative path in two different packages must not be merged together.
+    expect(estimateDeletableLoc([packageA, packageB])).toBe(10 + 10);
   });
 });
 

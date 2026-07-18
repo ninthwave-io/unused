@@ -275,7 +275,7 @@
         "estDeletableLoc": {
           "type": "integer",
           "minimum": 0,
-          "description": "PROVISIONAL in v1 M1 — no overlap dedup (phasing.md T3.4 owns the real computation)."
+          "description": "Overlap/nesting-aware LOC count across non-suppressed dead-verdict claims (phasing.md T3.4; see summary.ts for the merge rules)."
         }
       }
     }

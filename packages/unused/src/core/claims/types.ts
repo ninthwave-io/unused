@@ -205,7 +205,10 @@ export function isValidKindVerdict(kind: SubjectKind, verdict: Verdict): boolean
 export interface ClaimSummary {
   byKind: Record<SubjectKind, number>;
   byConfidence: Record<Confidence, number>;
-  /** PROVISIONAL in M1 — see `summary.ts`. */
+  /**
+   * Overlap/nesting-aware line count across non-suppressed dead-verdict
+   * claims (phasing.md T3.4) — see `summary.ts` for the merge rules.
+   */
   estDeletableLoc: number;
 }
 
