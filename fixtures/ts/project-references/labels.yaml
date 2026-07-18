@@ -1,0 +1,23 @@
+case: project-references
+description: A tsconfig with `references` to a sibling project directory caps every dead claim in the referencing package at medium (blunt whole-package cap); a genuinely alive cross-project import is unaffected.
+subjects:
+  - kind: export
+    name: deadButMaybeConsumed
+    file: src/util.ts
+    expected: dead
+    minConfidence: medium
+    because: >-
+      never referenced anywhere; in a stand-alone project this would be a clean high-confidence
+      dead export, but this package's tsconfig has a `references` array pointing at ./lib — a
+      sibling TypeScript project that may consume this file across the project boundary, a use the
+      single-project reference graph cannot see. The `project-references` hazard is deliberately
+      blunt (directory-subtree, empty prefix ⇒ the whole package), capping every dead claim in the
+      package at medium (assumption-set.md).
+  - kind: export
+    name: shared
+    file: lib/src/shared.ts
+    expected: alive
+    because: >-
+      imported and called by src/index.ts, the package's production entrypoint — a genuinely alive
+      cross-project reference; the project-references cap only ever downgrades dead claims, it
+      never suppresses a real alive one.

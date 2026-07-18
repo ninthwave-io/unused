@@ -1,0 +1,28 @@
+case: unresolvable-entrypoint
+description: A package.json "main" target under an unbuilt dist/ is remapped to its src/ source (its exports alive, and transitively reached files too); a second declared "bin" target has no src/ counterpart, so the whole package is capped at medium.
+subjects:
+  - kind: export
+    name: run
+    file: src/lib.ts
+    expected: alive
+    because: >-
+      package.json "main" ("dist/lib.js") has no dist/ directory in this unbuilt checkout, so it
+      is remapped to src/lib.ts (the T3.6 dist/**→src/** heuristic; assumption-set.md "Declared
+      entrypoints are the complete public API") and becomes a real production entrypoint.
+  - kind: file
+    name: src/helper.ts
+    file: src/helper.ts
+    expected: alive
+    because: >-
+      imported only by the remapped src/lib.ts entrypoint — proves the dist→src remap seeds a
+      genuine transitive reachability root, not merely a single marked file.
+  - kind: file
+    name: src/orphan.ts
+    file: src/orphan.ts
+    expected: dead
+    minConfidence: medium
+    because: >-
+      genuinely unreferenced by anything, but package.json "bin" ("dist/cli.js") has no
+      `src/cli.*` counterpart to remap to, so it stays unresolved and raises the
+      `unresolvable-entrypoint-target` hazard (assumption-set.md) — a project-scope cap that caps
+      every claim in the package at medium, however clean the individual orphan looks.

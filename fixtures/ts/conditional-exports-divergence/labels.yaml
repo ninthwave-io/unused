@@ -1,0 +1,26 @@
+case: conditional-exports-divergence
+description: A package.json "exports" entry with divergent browser/import targets keeps the non-selected branch's file alive; an unrelated orphan elsewhere still flags dead at high — the divergence hazard's scope is the divergent target files only.
+subjects:
+  - kind: file
+    name: src/impl.browser.ts
+    file: src/impl.browser.ts
+    expected: alive
+    because: >-
+      the "browser" condition's target in package.json "exports" — never selected under the
+      analyzer's single condition set (types → import → node → default), which picks "import"
+      (src/impl.ts) instead. Every exports-map leaf target is also seeded as its own production
+      entrypoint during detection (assumption-set.md conditional-exports-divergence: "Non-selected
+      exports targets are additionally seeded as entrypoints during detection, so this cap is
+      defence-in-depth there"), so this file is alive both via entrypoint seeding and the
+      divergence no-claim cap — it must never be flagged dead at any confidence.
+  - kind: file
+    name: src/dead.ts
+    file: src/dead.ts
+    expected: dead
+    minConfidence: high
+    because: >-
+      genuinely unreferenced by anything and not named by any exports condition; the
+      conditional-exports-divergence hazard's scope is `file` — only the divergent branch targets
+      themselves (assumption-set.md: "Scope: file") — so it does not extend to this unrelated
+      orphan, confirmed against the real analyzer: it stays claimable at high confidence, matching
+      the SPEC rather than any broader (e.g. whole-package) reading.

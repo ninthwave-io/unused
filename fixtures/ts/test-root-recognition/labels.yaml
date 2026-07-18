@@ -1,0 +1,28 @@
+case: test-root-recognition
+description: A file reached only from a root `test/` directory test file stays alive under the M3-interim test-reachability rule, and the test file itself is never claimed; a clean dead export elsewhere still flags high.
+subjects:
+  - kind: file
+    name: src/feature.ts
+    file: src/feature.ts
+    expected: alive
+    because: >-
+      reached only by test/feature.test.ts, a file under a root-level `test/` directory — one of
+      the zero-config test reachability roots (assumption-set.md "Test files are reachability
+      roots (interim, ahead of M5)"). No production file imports it, so a syntax-only analyzer
+      that ignores test roots would flag it dead — the false-positive class (134 real-world FPs)
+      that motivated the M3-interim rule: test-reachable code is kept alive with no `unused`
+      claim at any confidence, rather than a confident wrong "dead".
+  - kind: file
+    name: test/feature.test.ts
+    file: test/feature.test.ts
+    expected: alive
+    because: >-
+      matches the zero-config test-root convention (root `test/` directory and `*.test.*`
+      basename, both independently sufficient) and is therefore itself a reachability root — test
+      files are never claimed, regardless of whether anything imports them.
+  - kind: export
+    name: deadHelper
+    file: src/util.ts
+    expected: dead
+    minConfidence: high
+    because: never referenced anywhere, in production or test code; no hazard applies, so this is claimable at high confidence.

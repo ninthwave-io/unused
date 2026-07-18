@@ -1,0 +1,12 @@
+{
+  "name": "fixture-conditional-exports-divergence",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "browser": "./src/impl.browser.ts",
+      "import": "./src/impl.ts"
+    }
+  }
+}

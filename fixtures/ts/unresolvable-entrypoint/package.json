@@ -1,0 +1,8 @@
+{
+  "name": "fixture-unresolvable-entrypoint",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "dist/lib.js",
+  "bin": "dist/cli.js"
+}

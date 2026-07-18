@@ -1,0 +1,40 @@
+case: decorator-metadata
+description: Under tsconfig emitDecoratorMetadata + experimentalDecorators, a decorated class with no static importer is capped at medium (not proven dead); a constructor-param type it references stays alive via the type-position inverse rule, unaffected by the decorator hazard; an undecorated file's dead export is unaffected and stays high.
+subjects:
+  - kind: export
+    name: Service
+    file: src/service.ts
+    expected: dead
+    minConfidence: medium
+    because: >-
+      index.ts brings this file alive with a side-effect import only (a DI module registration) —
+      `Service` is never imported by name anywhere, so in a stand-alone project this would be a
+      clean high-confidence dead export. Under `emitDecoratorMetadata` the decorated class's
+      constructor-parameter type annotation is emitted as runtime `design:paramtypes` metadata and
+      the class is commonly DI-instantiated with no static importer, so the `emit-decorator-
+      metadata` hazard (symbol-set scope over the decorated file's exports) caps this claim at
+      medium (assumption-set.md).
+  - kind: export
+    name: Dep
+    file: src/dep.ts
+    expected: alive
+    because: >-
+      referenced only as the type of `service.ts`'s constructor parameter (`dep: Dep`), never as
+      a value — this is a real, statically-resolved type-position reference (architecture §4
+      inverse rule, exercised in ../type-position-inverse), independent of `emitDecoratorMetadata`.
+      The `emit-decorator-metadata` hazard's downgrade clause is explicit that this rule already
+      keeps type-referenced symbols alive regardless of the decorator, so the cap never needs to
+      (and does not) reach a type only referenced from a decorated file's constructor — it is not
+      itself capped-but-dead, it is alive outright. (This corrects an initial assumption, checked
+      against the real analyzer, that the referenced type would be "dead, minConfidence: medium"
+      — that reading does not hold: only the decorated file's OWN export claims are symbol-set
+      capped, never a type it merely references.)
+  - kind: export
+    name: unusedHelper
+    file: src/other.ts
+    expected: dead
+    minConfidence: high
+    because: >-
+      an undecorated file, never referenced anywhere; no hazard applies (the emit-decorator-
+      metadata cap only scopes the decorated file's own exports), so this is claimable at high
+      confidence.
