@@ -3,23 +3,24 @@
 Updated: 2026-07-18
 
 ## Current phase
-Phase 4 (implementation). **Milestone M1 — COMPLETE, awaiting founder gate approval.** Do not start M2 until approved. Tag `m1` on approval.
+Phase 4 (implementation). **Milestone M2 — COMPLETE, awaiting founder gate approval.** Do not start M3 until approved. Tag `m2` on approval.
 
 ## Done
-- Phases 0–3 complete and gate-approved (see git history + ADRs 0001–0010, all Accepted). Founder directives recorded: study-not-copy incumbents + differential Knip runs; benchmarking from M2 with early-pivot checkpoint at the M4 gate.
-- **M1 (commits 003598c..a9d0f8b)**: T1.1 scaffold (pnpm workspace, strict TS pinned <7 — TS7 makes dependency-cruiser fail open, Biome, boundary rules proven to bite, CI with least-privilege perms); T1.2 claim schema (full PRD §4/ADR 0006 contract, discriminated-union kind→verdict binding, JSON Schema validates the PRD worked example byte-identical); T1.4 corpus v1 (13 cases, 29 labelled subjects, alive labels in 12/13); T1.5 extraction spike (**PROCEED** — all 4 criteria pass; decorator-offset trap found for suppression comments; ~9k files/sec parse); T1.3 harness (gates A/B/C as pure predicates, permanent evil-analyzer rejection proofs, deterministic scoreboard). 96 tests green; both Opus reviews were approve-with-changes, all findings applied.
-
-## Current scoreboard (stub analyzer — baseline)
-precision 1.0 (vacuous), recall 0, 13 cases / 29 subjects, 14 dead-labelled misses awaiting the real analyzer.
+- Phases 0–3 gate-approved; M1 approved + tagged `m1`. ADRs 0001–0010 Accepted. Founder directives live: study-not-copy incumbents + differential Knip runs; benchmarking with M4-gate early-pivot checkpoint.
+- **M2 (commits 6f4a7fb..HEAD)**: T2.7 Gate C hardening (CI baseline from origin/main; sentinel-proofed); T2.6 bench harness (knip@6.27.0 pinned); T2.1 extraction (scope tracker, suppression capture, value/type classification); T2.2 resolution (closed union, internal-declaration, .d.ts source-first); T2.3 IR + emitter (spans on every edge, entrypoint contract frozen); T2.4 reachability + first claims (three inherited FP rules, hazard no-claim zones, config roots, wildcard exports); T2.5 minimal CLI (--json, exit contract 0/2/3, zero-entrypoints warning) + bench wired. Corpus grew 13→16 cases / 39 subjects (tsconfig-paths-alias, broken-paths-alias, import-equals).
+- **Scoreboard (realAnalyzer, full corpus, no skip-list): precision 1.0, recall 0.556, 0 FPs, 0 confidence violations, 10 high TPs, 8 misses.** 313 tests. Exceeds the phasing M2 acceptance (which permitted a hazard skip-list).
+- **Review layer caught 5 confirmed FP-vector classes pre-merge**: TSImportType silent drop; .d.ts types-condition shadowing; phantom scheme externals; import=/export= drop; entrypoint-boundary trio (root tool-configs, wildcard exports, zero-entrypoint claims).
+- Bench (fixture-scale, startup-dominated): unused ~40ms vs knip ~150ms median.
 
 ## Known debt (conscious, recorded)
-- Gate C baseline is in-tree → hardening scheduled as T2.7 (CI compares origin/main scoreboard); until then any PR touching fixtures/scoreboard.json is a review red flag.
-- Clean-subject under-confidence not surfaced until M3 (fixtures/README note).
-- estDeletableLoc is a provisional span-sum (real dedup at T3.4).
-- bin path `dist/cli.js` has no build step yet (bundler chosen at M2 packaging touchpoint or M9).
+- Computed import/require ⇒ whole-project no-claim (heavy recall, zero FP risk) — M3 registry scopes hazards properly.
+- Config string scan covers JSON + parsed source configs only; YAML/JSONC configs → M3.
+- 8 corpus misses enumerated in T2.4 report (string-computed×3, require-expression×2, re-export-chain barrel origin, import-equals surface, config-referenced-file).
+- Clean-subject under-confidence not surfaced (M3); estDeletableLoc provisional (T3.4); single-file bundle deferred (M9); warm cache post-v1 debt (architecture §5).
+- Optional CLI nit: `--cwd --json` consumes the flag as a value → exit 2 not 3 (harmless; note for M6 flag rework).
 
-## Next (after M1 gate approval)
-M2 — graph pipeline (docs/phasing.md): T2.1 discovery/parse (incl. suppression-comment capture with the spike's decorator-offset fix), T2.2 resolution, T2.3 IR assembly, T2.4 basic reachability + claims, T2.5 `--json` CLI, T2.6 bench harness, T2.7 Gate C hardening. Spike's flagged core risk for T2.1–T2.4: hand-rolled name resolution/shadowing (no symbol table over NAPI) — dedicated shadowing fixtures + Opus review on every extractor diff.
+## Next (after M2 gate approval)
+M3 — hazard registry + the FP bar (docs/phasing.md): registry structure + full class set with scoped downgrades (replaces whole-project suppression), two-sided type rule surfacing, confidence assignment + generated assumption set, estDeletableLoc dedup, pin smoke repos + first triage (docs/smoke/M3.md) + differential Knip run + real bench numbers.
 
 ## Standing founder actions
-Register npm org `ninthwave-io` (time-sensitive, hard blocker at M9); optional npm dispute for unscoped `unused`; 5–10 beta-user names before M9.
+Register npm org `ninthwave-io`; branch protection (required checks) when repo goes remote (ADR 0009 consequence); optional npm dispute for `unused`; beta-user names before M9.
