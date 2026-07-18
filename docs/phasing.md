@@ -28,6 +28,7 @@ Nine milestones, strictly ordered, each sized for ~10–15 focused hours of **or
 - T2.4 [core-implementer] Basic reachability + claim emission on hazard-free fixtures: `unused` verdicts for exports/files, evidence from provenance, why-path storage. *Accept:* hazard-free corpus subset green at the FP gate.
 - T2.5 [implementer] Minimal CLI: `unused --json`, exit codes 0/2/3. *Accept:* schema-valid JSON on fixture repos.
 - T2.6 [implementer] Bench harness (founder directive): reproducible timed cold runs (ours + Knip on the same target), JSON results committed under `docs/bench/`. *Accept:* one command reproduces; first fixture-scale numbers recorded.
+- T2.7 [implementer] Gate C hardening (M1 reviewer finding): CI fetches the baseline scoreboard from `origin/main` instead of the working tree, so a PR cannot lower precision and regenerate `fixtures/scoreboard.json` in the same commit. *Accept:* a simulated regression PR demonstrably fails CI.
 **Milestone acceptance:** pipeline end-to-end on hazard-free fixtures; corpus gates green (hazard fixtures excluded via explicit skip-list with a debt note).
 **Demo:** `unused --json` on a fixture monolith.
 

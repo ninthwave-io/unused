@@ -199,7 +199,8 @@
         "verdict": {
           "type": "string",
           "enum": ["unused", "test-only"],
-          "description": "export/file/dependency subjects take unused or test-only (PRD §4)."
+          "description": "export/file/dependency subjects take unused or test-only (PRD §4).",
+          "$comment": "Reserved verdicts no-runtime-traffic / no-user-engagement (ADR 0006) are intentionally absent from every kind's oneOf branch until a subject kind is bound to them — parity with the Verdict type in types.ts, where they exist but are marked never-emitted in v1."
         },
         "confidence": { "$ref": "#/$defs/confidence" },
         "evidence": { "$ref": "#/$defs/evidenceList" },

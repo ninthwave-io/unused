@@ -73,6 +73,12 @@ hazard (architecture §4) is in play for that subject:
   recall bug worth flagging, even though it isn't a false positive — the
   corpus expects the analyzer to be as confident as the evidence allows.
 
+> **M1 harness note (reviewer-reconciled):** the harness currently treats
+> every `minConfidence` as a ceiling only — under-confidence on clean
+> subjects is intentionally NOT surfaced or gated in M1 (it is a recall
+> concern, never a false-positive risk). Surfacing clean-subject
+> under-confidence is deferred to the M3 confidence-assignment work.
+
 In both readings, a confidence **higher** than `minConfidence` on a dead
 claim is a hard failure (a false-positive-adjacent overclaim); the
 difference is only in whether an *under*-confident claim is tolerated

@@ -1,0 +1,178 @@
+{
+  "analyzer": "all-alive-stub",
+  "corpus": {
+    "cases": 13,
+    "subjects": 29
+  },
+  "precision": 1,
+  "recall": 0,
+  "falsePositives": 0,
+  "confidenceViolations": 0,
+  "misses": 14,
+  "unlabelledClaims": 0,
+  "byConfidenceTier": {
+    "high": {
+      "claims": 0,
+      "truePositives": 0,
+      "falsePositives": 0,
+      "confidenceViolations": 0
+    },
+    "medium": {
+      "claims": 0,
+      "truePositives": 0,
+      "falsePositives": 0,
+      "confidenceViolations": 0
+    },
+    "low": {
+      "claims": 0,
+      "truePositives": 0,
+      "falsePositives": 0,
+      "confidenceViolations": 0
+    }
+  },
+  "cases": [
+    {
+      "case": "ambient-dts",
+      "subjects": 1,
+      "deadLabels": 0,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "basic-alive-export",
+      "subjects": 2,
+      "deadLabels": 0,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "basic-dead-export",
+      "subjects": 2,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 0,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 1,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "config-referenced-file",
+      "subjects": 2,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 0,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 1,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "dead-file",
+      "subjects": 2,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 0,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 1,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "entrypoint-exports-map",
+      "subjects": 3,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 0,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 1,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "export-star-chain",
+      "subjects": 2,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 0,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 1,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "import-type-reexport",
+      "subjects": 2,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 0,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 1,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "re-export-chain",
+      "subjects": 3,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 0,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 1,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "require-expression",
+      "subjects": 3,
+      "deadLabels": 2,
+      "precision": 1,
+      "recall": 0,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 2,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "side-effect-import",
+      "subjects": 2,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 0,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 1,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "string-computed-import",
+      "subjects": 3,
+      "deadLabels": 3,
+      "precision": 1,
+      "recall": 0,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 3,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "type-position-inverse",
+      "subjects": 2,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 0,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 1,
+      "unlabelledClaims": 0
+    }
+  ]
+}
