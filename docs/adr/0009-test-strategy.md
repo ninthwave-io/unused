@@ -21,3 +21,4 @@ Unit tests only (no ground truth against real-shaped repos); snapshot-only testi
 - The corpus is a durable asset (BRD §6) and grows monotonically — cases are never deleted, only added or corrected via reviewed label changes.
 - Precision-never-decreases requires keeping the main-branch scoreboard as a CI artifact — small plumbing cost in M1.
 - Per-language corpus layout means Python/Elixir arrive with their own labelled ground truth from their first commit (ADR 0003).
+- (Added 2026-07-18, T2.7 review) The precision-non-decreasing gate's enforcement point is the `pull_request` CI run. That is only sound if `main` forbids direct pushes and this CI check is a required status check — a direct push to main self-compares trivially and bypasses every PR gate. Branch protection must be configured accordingly when the repo goes remote (founder/orchestrator action, tracked in progress.md).

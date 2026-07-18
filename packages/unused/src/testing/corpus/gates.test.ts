@@ -4,7 +4,9 @@
  * that the gate predicates actually reject a false positive / confidence
  * violation when one exists, not just that they pass vacuously today.
  */
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { computeClaimId } from "../../core/claims/id.js";
 import type { Claim, Confidence, Subject } from "../../core/claims/types.js";
@@ -17,7 +19,7 @@ import {
   gatePrecisionNonDecreasing,
   scoreCorpus,
 } from "./metrics.js";
-import { defaultScoreboardPath, runCorpus } from "./scoreboard.js";
+import { BASELINE_SCOREBOARD_ENV_VAR, baselineScoreboardPath, runCorpus } from "./scoreboard.js";
 
 /** Builds a claim for exactly the subject a label describes, at a chosen confidence. */
 function claimForLabel(label: Label, confidence: Confidence): Claim {
@@ -128,7 +130,7 @@ describe("Gate B — zero confidence-ceiling violations", () => {
 
 describe("Gate C — corpus-wide precision never decreases vs the committed scoreboard", () => {
   it("passes: the stub analyzer's precision matches (or exceeds) the committed baseline", async () => {
-    const committedRaw = await readFile(defaultScoreboardPath(), "utf8");
+    const committedRaw = await readFile(baselineScoreboardPath(), "utf8");
     const committed = JSON.parse(committedRaw) as { precision: number };
 
     const { caseInputs } = await runCorpus(allAliveAnalyzer);
@@ -136,6 +138,72 @@ describe("Gate C — corpus-wide precision never decreases vs the committed scor
 
     const gate = gatePrecisionNonDecreasing(metrics, committed.precision);
     expect(gate.pass).toBe(true);
+  });
+
+  // A precision value the real, committed fixtures/scoreboard.json could
+  // never legitimately hold today (the M1 stub analyzer's vacuous precision
+  // is exactly 1). Deliberately NOT 1: the committed scoreboard currently
+  // also happens to read 1, so asserting equality to 1 here would pass even
+  // if `baselineScoreboardPath()` silently ignored the env var and fell back
+  // to the in-tree file — this sentinel is what makes the assertion below
+  // actually prove the env var was read, not just that the gate math works.
+  const DOCTORED_BASELINE_PRECISION = 0.987654321;
+
+  /**
+   * Permanent proof of the M2 T2.7 CI hardening (KNOWN GAP note,
+   * scoreboard.ts): Gate C must read its baseline through
+   * `baselineScoreboardPath()`, which CI redirects — via
+   * `UNUSED_BASELINE_SCOREBOARD` — at a scoreboard extracted from
+   * `origin/main`, not the (possibly same-commit-regenerated) in-tree file.
+   *
+   * This simulates exactly the attack the hardening closes: a doctored
+   * baseline claiming a precision higher than the current run can produce
+   * (standing in for "the PR rewrote fixtures/scoreboard.json in this same
+   * commit"), diffed against a run whose real precision is lower (the
+   * existing evil-analyzer test double). Two distinct failure modes are
+   * covered: (1) the `committed.precision` assertion fails loudly if the env
+   * var is ignored and the in-tree file is read instead; (2) `gate.pass`
+   * would be `true` if the gate predicate itself regressed.
+   */
+  it("rejects when UNUSED_BASELINE_SCOREBOARD points at a baseline with higher precision than the current run", async () => {
+    const tmpDir = await mkdtemp(path.join(tmpdir(), "unused-gate-c-baseline-"));
+    const doctoredBaselinePath = path.join(tmpDir, "scoreboard.json");
+    // Stands in for a PR that lowered real precision but overwrote
+    // fixtures/scoreboard.json with a rosier number in the same commit —
+    // exactly what the KNOWN GAP used to let through.
+    await writeFile(
+      doctoredBaselinePath,
+      JSON.stringify({ precision: DOCTORED_BASELINE_PRECISION }),
+      "utf8",
+    );
+
+    const previousEnv = process.env[BASELINE_SCOREBOARD_ENV_VAR];
+    process.env[BASELINE_SCOREBOARD_ENV_VAR] = doctoredBaselinePath;
+    try {
+      const committedRaw = await readFile(baselineScoreboardPath(), "utf8");
+      const committed = JSON.parse(committedRaw) as { precision: number };
+      // Fails here (not in the gate below) if baselineScoreboardPath() ever
+      // stops honouring the env var — the real regression this test guards.
+      expect(committed.precision).toBe(DOCTORED_BASELINE_PRECISION);
+
+      // evilFalsePositiveAnalyzer never claims a dead-labelled subject
+      // correctly, so its corpus-wide precision is 0 — well below the
+      // doctored baseline, whatever value that baseline holds.
+      const { caseInputs } = await runCorpus(evilFalsePositiveAnalyzer);
+      const metrics = scoreCorpus(caseInputs);
+      expect(metrics.precision).toBeLessThan(DOCTORED_BASELINE_PRECISION);
+
+      const gate = gatePrecisionNonDecreasing(metrics, committed.precision);
+      expect(gate.pass).toBe(false);
+      expect(gate.reason).toMatch(/precision regressed/);
+    } finally {
+      if (previousEnv === undefined) {
+        delete process.env[BASELINE_SCOREBOARD_ENV_VAR];
+      } else {
+        process.env[BASELINE_SCOREBOARD_ENV_VAR] = previousEnv;
+      }
+      await rm(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 

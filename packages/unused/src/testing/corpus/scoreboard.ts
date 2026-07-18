@@ -12,12 +12,30 @@
  * and committed by a human/orchestrator when the analyzer's precision
  * legitimately improves — never auto-committed by CI.
  *
- * KNOWN GAP (reviewer, M1 — fix scheduled for M2): Gate C compares against
- * the IN-TREE scoreboard, so a PR that lowers precision AND regenerates
- * this file in the same commit passes trivially. Until CI compares against
- * origin/main's scoreboard (phasing M2, gate-hardening task), any diff to
- * fixtures/scoreboard.json in a PR must be treated as a red flag in review:
- * the orchestrator verifies the regeneration is justified by a genuine
+ * GAP CLOSED IN CI (M1 reviewer finding, closed M2 T2.7,
+ * .github/workflows/ci.yml): Gate C used to compare against the IN-TREE
+ * scoreboard, so a PR that lowered precision AND regenerated this file in
+ * the same commit passed trivially. CI now extracts `fixtures/scoreboard.json`
+ * from `origin/main` before the test step and points `baselineScoreboardPath()`
+ * (below) at that extracted copy via the `UNUSED_BASELINE_SCOREBOARD` env
+ * var — the scoreboard baseline itself can no longer be edited by the PR
+ * under test. See `gates.test.ts`'s "rejects when UNUSED_BASELINE_SCOREBOARD"
+ * test for a permanent proof this actually rejects a same-commit regression.
+ *
+ * Limitation (T2.7 review): a `pull_request` run executes the PR head's own
+ * ci.yml, so a PR can still edit the extraction step or retarget the env var
+ * — the enforcing workflow is not self-protecting. The real defense there is
+ * human review of any workflow diff plus branch protection with this check
+ * required (ADR 0009 consequences). The scoreboard is protected; the
+ * workflow is reviewed.
+ *
+ * The in-tree fallback (no env var set) is deliberate and stays for local
+ * dev: `pnpm test` outside CI has no `origin/main` fetch to rely on, so it
+ * compares against the working tree's committed scoreboard, same as M1 —
+ * meaning a local-only run can still be fooled by a same-commit
+ * regeneration. CI is the actual enforcement point. The red-flag review
+ * convention stays as defense in depth regardless of the CI fix: any diff
+ * to `fixtures/scoreboard.json` in a PR is still reviewed for a genuine
  * corpus or analyzer improvement, never accepted alongside a precision drop.
  */
 import { mkdir, writeFile } from "node:fs/promises";
@@ -33,6 +51,29 @@ import { scoreCorpus } from "./metrics.js";
 /** Absolute path to `fixtures/scoreboard.json`, one level above the `fixtures/ts` corpus root. */
 export function defaultScoreboardPath(): string {
   return path.join(defaultFixturesRoot(), "..", "scoreboard.json");
+}
+
+/**
+ * Env var CI sets (`ci.yml`) to a path holding `fixtures/scoreboard.json` as
+ * extracted from `origin/main`, redirecting `baselineScoreboardPath()` below
+ * away from the in-tree file. Exported (rather than inlined) so
+ * `gates.test.ts` sets/restores exactly this var when proving the wiring,
+ * instead of duplicating the literal name.
+ */
+export const BASELINE_SCOREBOARD_ENV_VAR = "UNUSED_BASELINE_SCOREBOARD";
+
+/**
+ * Path to the scoreboard Gate C (`gates.test.ts`) compares the current
+ * run's precision against — the fix for the KNOWN GAP documented above.
+ *
+ * CI sets `UNUSED_BASELINE_SCOREBOARD` to a copy of `fixtures/scoreboard.json`
+ * extracted from `origin/main` before the test step runs (`ci.yml`), so the
+ * comparison target cannot be edited in the same commit/PR being checked.
+ * Local dev never sets this env var, so it falls back to the in-tree file,
+ * unchanged from M1.
+ */
+export function baselineScoreboardPath(): string {
+  return process.env[BASELINE_SCOREBOARD_ENV_VAR] ?? defaultScoreboardPath();
 }
 
 export interface ScoreboardCase {

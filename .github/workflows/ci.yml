@@ -36,5 +36,41 @@ jobs:
       - name: Boundaries
         run: pnpm run boundaries
 
+      - name: Extract Gate C baseline scoreboard from origin/main
+        # Gate C (packages/unused/src/testing/corpus/gates.test.ts /
+        # metrics.ts gatePrecisionNonDecreasing) must compare this run's
+        # corpus-wide precision against origin/main's scoreboard, not the
+        # working tree's fixtures/scoreboard.json — otherwise a PR could
+        # lower precision and regenerate that file in the same commit and
+        # pass trivially (docs/phasing.md T2.7; KNOWN GAP note in
+        # scoreboard.ts). We fetch `main` explicitly here rather than relying
+        # on actions/checkout's default shallow, single-ref clone, so
+        # `origin/main` resolves regardless of which event triggered this run.
+        #
+        # On a `push` to main itself, GitHub updates refs/heads/main before
+        # dispatching the event, so the `origin/main` fetched here is the
+        # same commit already checked out — Gate C ends up comparing the run
+        # against itself and passes trivially on that path. That's fine:
+        # main-bound changes are already gated on their originating
+        # pull_request run, where origin/main is main's tip *prior to* the
+        # PR's changes and the comparison is the one that matters.
+        #
+        # Missing-baseline guard: if fixtures/scoreboard.json doesn't exist
+        # on origin/main yet (fresh corpus, history rewrite), fall back to
+        # the in-tree scoreboard rather than failing the build — but say so
+        # loudly via a workflow annotation. Never silently skip Gate C.
+        run: |
+          git fetch origin +main:refs/remotes/origin/main --depth=1
+          BASELINE_PATH="$RUNNER_TEMP/baseline-scoreboard.json"
+          # The 2>/dev/null below only masks the missing-file case: the fetch
+          # above runs under `set -e` and fail-closes first, so origin/main is
+          # guaranteed to resolve by the time git show runs.
+          if git show origin/main:fixtures/scoreboard.json > "$BASELINE_PATH" 2>/dev/null; then
+            echo "UNUSED_BASELINE_SCOREBOARD=$BASELINE_PATH" >> "$GITHUB_ENV"
+            echo "Gate C baseline: fixtures/scoreboard.json from origin/main ($(git rev-parse origin/main)) -> $BASELINE_PATH"
+          else
+            echo "::warning::fixtures/scoreboard.json not found at origin/main — Gate C is falling back to the in-tree fixtures/scoreboard.json for this run instead of comparing against main. This should only happen before the file first exists on main; if it should be there, treat this run's Gate C result as unverified and investigate before merging."
+          fi
+
       - name: Test
         run: pnpm run test
