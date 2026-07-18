@@ -3,24 +3,23 @@
 Updated: 2026-07-18
 
 ## Current phase
-Phase 4 (implementation). **Milestone M2 — COMPLETE, awaiting founder gate approval.** Do not start M3 until approved. Tag `m2` on approval.
+Phase 4 (implementation). **Milestone M3 — COMPLETE, awaiting founder gate approval.** M1 approved+tagged; M2 approved (founder "continue") + tagged `m2`. Do not start M4 until approved; tag `m3` on approval.
 
-## Done
-- Phases 0–3 gate-approved; M1 approved + tagged `m1`. ADRs 0001–0010 Accepted. Founder directives live: study-not-copy incumbents + differential Knip runs; benchmarking with M4-gate early-pivot checkpoint.
-- **M2 (commits 6f4a7fb..HEAD)**: T2.7 Gate C hardening (CI baseline from origin/main; sentinel-proofed); T2.6 bench harness (knip@6.27.0 pinned); T2.1 extraction (scope tracker, suppression capture, value/type classification); T2.2 resolution (closed union, internal-declaration, .d.ts source-first); T2.3 IR + emitter (spans on every edge, entrypoint contract frozen); T2.4 reachability + first claims (three inherited FP rules, hazard no-claim zones, config roots, wildcard exports); T2.5 minimal CLI (--json, exit contract 0/2/3, zero-entrypoints warning) + bench wired. Corpus grew 13→16 cases / 39 subjects (tsconfig-paths-alias, broken-paths-alias, import-equals).
-- **Scoreboard (realAnalyzer, full corpus, no skip-list): precision 1.0, recall 0.556, 0 FPs, 0 confidence violations, 10 high TPs, 8 misses.** 313 tests. Exceeds the phasing M2 acceptance (which permitted a hazard skip-list).
-- **Review layer caught 5 confirmed FP-vector classes pre-merge**: TSImportType silent drop; .d.ts types-condition shadowing; phantom scheme externals; import=/export= drop; entrypoint-boundary trio (root tool-configs, wildcard exports, zero-entrypoint claims).
-- Bench (fixture-scale, startup-dominated): unused ~40ms vs knip ~150ms median.
+## M3 result (commits 578bc31..b5c9c8f)
+- **Hazard registry complete**: closed 16-class enum, compile-time-complete, per-class scope (project/subtree/file/symbol-set/none) + confidence caps; whole-project suppression replaced by scoped effects; every class has real, probe-verified detection (high without, capped with).
+- **Gate D** added: unlabelled high-confidence claims fail CI.
+- **Generated assumption set**: docs/generated/assumption-set.md rendered from code (globals + per-class rationale), byte-exact drift test. v1.1.x.
+- **estDeletableLoc** real (interval-merge, subsumption, suppression-excluded).
+- **Corpus: 19 cases / 49 subjects.** Scoreboard: precision 1.0, recall 0.870, 0 FP/CV/unlabelled. 367 tests.
+- **Smoke (docs/smoke/M3.md)**: pinned hono v4.12.30 / axios v1.18.1 / fastify v5.10.0. First run found **144 confirmed high FPs (axios)** + the hono unbuilt-exports trap — T3.6 fixed all root causes (interim test-root recognition, unresolvable-entrypoint-target hazard + dist→src remap, staticSpecifierPrefix relative-only, tool-config roots). **Post-fix: 0 high claims on all three repos; residual mediums triaged safe.**
+- **Bench (docs/bench/)**: 179–356ms medians on smoke repos, within 1.1× of Knip, <1% of the PRD 60s budget (repos are ~5% of target scale — budget unvalidated at 5k modules). Early-pivot checkpoint (M4 gate): no signal suggesting a Rust pivot.
 
-## Known debt (conscious, recorded)
-- Computed import/require ⇒ whole-project no-claim (heavy recall, zero FP risk) — M3 registry scopes hazards properly.
-- Config string scan covers JSON + parsed source configs only; YAML/JSONC configs → M3.
-- 8 corpus misses enumerated in T2.4 report (string-computed×3, require-expression×2, re-export-chain barrel origin, import-equals surface, config-referenced-file).
-- Clean-subject under-confidence not surfaced (M3); estDeletableLoc provisional (T3.4); single-file bundle deferred (M9); warm cache post-v1 debt (architecture §5).
-- Optional CLI nit: `--cwd --json` consumes the flag as a value → exit 2 not 3 (harmless; note for M6 flag rework).
+## Known debt
+- Corpus cases needed (labels exist only as __testfixtures__): emit-decorator-metadata, conditional-exports-divergence, project-references, test-root recognition, unresolvable-entrypoint; checker-only base-interface-via-merge gap (per-symbol scope post-v1); subsumption-aware label matching (metrics).
+- Test-only verdict/partition + zombie tests = M5 (interim: test-reachable is simply alive). PnP assumption-text nit ("M4" vs v1). Monorepo/workspaces = M4 (smoke had to skip zod). project-references cap is blunt (whole-package medium).
 
-## Next (after M2 gate approval)
-M3 — hazard registry + the FP bar (docs/phasing.md): registry structure + full class set with scoped downgrades (replaces whole-project suppression), two-sided type rule surfacing, confidence assignment + generated assumption set, estDeletableLoc dedup, pin smoke repos + first triage (docs/smoke/M3.md) + differential Knip run + real bench numbers.
+## Next (after M3 gate approval)
+M4 (docs/phasing.md): dependency claims, workspaces (npm/pnpm/yarn-classic/bun; PnP refusal), unused.config.jsonc, vite+next presets, no-config regression, corpus additions above, smoke incl. a monorepo repo. **M4 gate includes the founder-directive performance checkpoint.**
 
 ## Standing founder actions
-Register npm org `ninthwave-io`; branch protection (required checks) when repo goes remote (ADR 0009 consequence); optional npm dispute for `unused`; beta-user names before M9.
+npm org `ninthwave-io`; branch protection when remote; optional `unused` dispute; beta names before M9.
