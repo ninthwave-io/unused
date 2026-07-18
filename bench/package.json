@@ -1,0 +1,17 @@
+{
+  "name": "unused-bench",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Standalone benchmark harness for unused. Deliberately outside the pnpm workspace (see ../pnpm-workspace.yaml) so its dependency, especially the pinned knip reference version, never touches the analyzer's own dependency graph.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "bench": "node bench.mjs"
+  },
+  "devDependencies": {
+    "knip": "6.27.0"
+  }
+}

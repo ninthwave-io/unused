@@ -1,0 +1,33 @@
+{
+  "description": "Bench targets v1 — the fixtures/ts corpus mini-repos (T2.6). Real-scale targets arrive with the M3 smoke repos; see docs/phasing.md.",
+  "fixturesRoot": "fixtures/ts",
+  "targets": [
+    "ambient-dts",
+    "basic-alive-export",
+    "basic-dead-export",
+    "config-referenced-file",
+    "dead-file",
+    "entrypoint-exports-map",
+    "export-star-chain",
+    "import-type-reexport",
+    "re-export-chain",
+    "require-expression",
+    "side-effect-import",
+    "string-computed-import",
+    "type-position-inverse"
+  ],
+  "tools": {
+    "knip": {
+      "kind": "pinned-bin",
+      "binRoot": "bench",
+      "bin": "node_modules/.bin/knip",
+      "args": ["--no-config-hints"]
+    },
+    "unused": {
+      "kind": "repo-cli",
+      "binRoot": "repo",
+      "bin": "packages/unused/dist/cli.js",
+      "args": ["--json"]
+    }
+  }
+}
