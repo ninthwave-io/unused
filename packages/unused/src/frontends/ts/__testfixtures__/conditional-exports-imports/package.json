@@ -1,0 +1,13 @@
+{
+  "name": "testfx-conditional-exports-imports",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "imports": {
+    "#impl": {
+      "browser": "./src/impl.browser.js",
+      "default": "./src/impl.js"
+    }
+  }
+}

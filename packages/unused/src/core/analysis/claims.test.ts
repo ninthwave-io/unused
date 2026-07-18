@@ -401,6 +401,115 @@ describe("hazard registry — scoped effects (T3.1)", () => {
   });
 });
 
+describe("hazard registry — T3.1b classes (fooling-input: claimed WITHOUT, capped/alive WITH)", () => {
+  it("checker-only-type-relationship suppresses a file's dead EXPORTS (symbol-set, no-claim)", () => {
+    // A file that participates in declaration merging (a `declare global` /
+    // `declare module` block) carries the hazard. Its dead export would be a
+    // high-confidence claim; with the hazard it is kept alive (no-claim).
+    const build = (withHazard: boolean): Claim[] => {
+      const g = new IRGraph();
+      addEntry(g, "src/index.ts");
+      addSymbol(g, "src/globals.ts", "used");
+      addSymbol(g, "src/globals.ts", "Marker"); // referenced only through the merge
+      ref(g, "src/index.ts", symbolId("src/globals.ts", "used"), "static", "used");
+      // globals.ts is kept alive by the used-symbol edge (a live file), so only its
+      // export is at stake — exactly the symbol-set case.
+      if (withHazard) hazard(g, "src/globals.ts", "checker-only-type-relationship");
+      return run(g);
+    };
+    // WITHOUT detection: Marker is a confident dead export.
+    expect(shape(build(false))).toEqual([
+      {
+        kind: "export",
+        name: "Marker",
+        file: "src/globals.ts",
+        verdict: "unused",
+        confidence: "high",
+      },
+    ]);
+    // WITH detection: suppressed entirely (kept alive).
+    expect(build(true)).toEqual([]);
+  });
+
+  it("emit-decorator-metadata caps a decorated file's dead exports to medium (symbol-set)", () => {
+    const build = (withHazard: boolean): Claim[] => {
+      const g = new IRGraph();
+      addEntry(g, "src/index.ts");
+      addSymbol(g, "src/service.ts", "used");
+      addSymbol(g, "src/service.ts", "Service"); // decorated class, no static importer
+      ref(g, "src/index.ts", symbolId("src/service.ts", "used"), "static", "used");
+      if (withHazard) hazard(g, "src/service.ts", "emit-decorator-metadata");
+      return run(g);
+    };
+    expect(shape(build(false)).map((c) => c.confidence)).toEqual(["high"]);
+    expect(shape(build(true))).toEqual([
+      {
+        kind: "export",
+        name: "Service",
+        file: "src/service.ts",
+        verdict: "unused",
+        confidence: "medium",
+      },
+    ]);
+  });
+
+  it("conditional-exports-divergence suppresses the whole target file (file scope, no-claim)", () => {
+    const build = (withHazard: boolean): Claim[] => {
+      const g = new IRGraph();
+      addEntry(g, "src/index.ts");
+      addFile(g, "src/impl.browser.ts"); // reachable only under the browser branch
+      if (withHazard) hazard(g, "src/impl.browser.ts", "conditional-exports-divergence");
+      return run(g);
+    };
+    expect(shape(build(false))).toEqual([
+      {
+        kind: "file",
+        name: "src/impl.browser.ts",
+        file: "src/impl.browser.ts",
+        verdict: "unused",
+        confidence: "high",
+      },
+    ]);
+    expect(build(true)).toEqual([]);
+  });
+
+  it("project-references caps the WHOLE package at medium (directory-subtree, no prefix)", () => {
+    const build = (withHazard: boolean): Claim[] => {
+      const g = new IRGraph();
+      addEntry(g, "src/index.ts");
+      addFile(g, "src/a.ts");
+      addSymbol(g, "src/lib.ts", "used");
+      addSymbol(g, "src/lib.ts", "dead");
+      ref(g, "src/index.ts", symbolId("src/lib.ts", "used"), "static", "used");
+      // whole-package cap: attach the hazard to tsconfig.json (not a file node),
+      // no subtreePrefix ⇒ "" ⇒ every file/export is in scope.
+      if (withHazard) hazard(g, "tsconfig.json", "project-references");
+      return run(g);
+    };
+    expect(sorted(build(false)).map((c) => `${c.name}:${c.confidence}`)).toEqual([
+      "dead:high",
+      "src/a.ts:high",
+    ]);
+    expect(sorted(build(true)).map((c) => `${c.name}:${c.confidence}`)).toEqual([
+      "dead:medium",
+      "src/a.ts:medium",
+    ]);
+  });
+
+  it("jsx-runtime-dependency (scope none) affects nothing — a clean sibling stays claimable at high", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addSymbol(g, "src/lib.ts", "used");
+    addSymbol(g, "src/lib.ts", "dead");
+    ref(g, "src/index.ts", symbolId("src/lib.ts", "used"), "static", "used");
+    hazard(g, "src/index.ts", "jsx-runtime-dependency");
+
+    expect(shape(run(g))).toEqual([
+      { kind: "export", name: "dead", file: "src/lib.ts", verdict: "unused", confidence: "high" },
+    ]);
+  });
+});
+
 describe("hazard registry — the unmodelled-class invariant (degrade toward alive)", () => {
   it("an UNREGISTERED hazard class ⇒ NO claims at all + a loud internal warning", () => {
     const g = new IRGraph();

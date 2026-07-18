@@ -237,6 +237,16 @@ export interface ReferenceSite {
  * package: the import edge cannot be dropped (its target is unknown, not
  * absent), so it degrades toward alive with the import-site span
  * (see {@link file resolve.ts} `unresolvableToHazard`).
+ *
+ * Two M3 markers are emitted by extraction as *candidates* the IR layer
+ * finalises:
+ *  - `checker-only-type-relationship` — a `declare module '...'` augmentation or
+ *    a `declare global` block: declaration merging is a checker-only relationship
+ *    the reference graph cannot see, so the file's exports keep-alive (T3.1b).
+ *  - `emit-decorator-metadata` — the file contains a decorator. This is only a
+ *    hazard when tsconfig `emitDecoratorMetadata` is enabled, which extraction
+ *    does not know; the IR layer (`emitIR`) drops the marker unless the project
+ *    passes `emitDecoratorMetadata: true`.
  */
 export type HazardKind =
   | "computed-dynamic-import"
@@ -245,7 +255,9 @@ export type HazardKind =
   | "import-equals"
   | "export-assignment"
   | "parse-error"
-  | "unresolvable-import";
+  | "unresolvable-import"
+  | "checker-only-type-relationship"
+  | "emit-decorator-metadata";
 
 export interface HazardMarker {
   kind: HazardKind;

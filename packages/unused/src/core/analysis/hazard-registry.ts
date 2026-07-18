@@ -143,6 +143,41 @@ export const HAZARD_REGISTRY: Readonly<Record<HazardClass, HazardClassEntry>> = 
     rationale:
       "TS `export = …` CJS interop: recorded for provenance (declaration merging etc.); the value reference is walked as a normal use-site, so the marker scopes no claim.",
   },
+  "checker-only-type-relationship": {
+    hazardClass: "checker-only-type-relationship",
+    scope: "symbol-set",
+    cap: "no-claim",
+    rationale:
+      "A file that participates in declaration merging — a `declare module '...'` augmentation or a `declare global` block — contributes members to a type through a relationship that exists only in the type checker, with no import/export edge tying the contribution to any consumer. The syntactic reference graph therefore cannot prove its exported declarations dead, so the file's export claims are suppressed (kept alive). Scope is deliberately the whole file's export surface — the blunter symbol-set rather than the specific merged name — because the frontend does not model which individual declarations merge; a base interface used only through such a merge with no direct type reference remains a known gap (a per-symbol scope is post-v1).",
+  },
+  "emit-decorator-metadata": {
+    hazardClass: "emit-decorator-metadata",
+    scope: "symbol-set",
+    cap: "medium",
+    rationale:
+      "Under tsconfig `emitDecoratorMetadata`, a class carrying decorators has its constructor-parameter and property type annotations emitted as runtime `design:*` metadata — turning type-position references into runtime references — and is commonly instantiated by a decorator-driven reflection container (DI, ORM) with no static importer. The decorated file's export claims therefore cannot be proven dead and are capped at medium. We choose this scoped cap over rewriting type-position references to value references because the two-sided type rule already keeps type-referenced symbols alive, so the rewrite is a no-op for M3 liveness while the cap yields the conservative downgrade the confidence contract requires. Bluntness: the cap covers all exports of the decorated file, not only the reflected class; the file's own liveness (a decorated class alone in an unimported file) is not covered by symbol-set scope and relies on a real inbound edge.",
+  },
+  "conditional-exports-divergence": {
+    hazardClass: "conditional-exports-divergence",
+    scope: "file",
+    cap: "no-claim",
+    rationale:
+      "A package.json `exports` entry that maps different targets under different conditions (e.g. `browser` vs `import`), or a top-level `browser` field that remaps a module, has branches the analyzer's single condition set (types → import → node → default) does not select. A file that is only the target of a non-selected branch has no inbound edge under the resolved condition set, yet is genuinely the public/runtime module under another — so it cannot be claimed. Its file claim is suppressed. (Non-selected `exports` targets are additionally seeded as entrypoints during detection, so this cap is defence-in-depth there; the top-level `browser` remap is the branch entrypoint detection does not read, which this cap uniquely protects.)",
+  },
+  "project-references": {
+    hazardClass: "project-references",
+    scope: "directory-subtree",
+    cap: "medium",
+    rationale:
+      "A tsconfig with `references` composes this project with sibling TypeScript projects that may consume its files across the project boundary — a cross-project use the single-project reference graph cannot see. Until real cross-project analysis lands (post-v1), the whole package is capped at medium rather than claimed dead. This is deliberately blunt: every claim in a project-referenced package is downgraded, trading recall for the guarantee that no externally-consumed file is confidently flagged.",
+  },
+  "jsx-runtime-dependency": {
+    hazardClass: "jsx-runtime-dependency",
+    scope: "none",
+    cap: "medium",
+    rationale:
+      "JSX compiled with the automatic runtime (`jsxImportSource`) injects imports of `react/jsx-runtime` (or the configured source) that never appear in source — so the JSX runtime package is used without a visible import. This concerns *dependency* liveness (tier-1 dependency claims), which do not exist until M4; the entry is registered with no claim effect and activates at M4, when dependency claims can consume it.",
+  },
 };
 
 /** Strength order — a stronger cap wins when a subject is in multiple hazards' scope. */

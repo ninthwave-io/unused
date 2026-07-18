@@ -89,6 +89,14 @@ export interface EmitInput {
    * disk (missing/invalid ⇒ zero-config fallback). `null` ⇒ treat as absent.
    */
   packageJson?: PackageJsonLike | null;
+  /**
+   * tsconfig `compilerOptions.emitDecoratorMetadata` (T3.1b). Extraction emits an
+   * `emit-decorator-metadata` candidate marker for every decorated file; that
+   * marker only becomes a real hazard annotation when this flag is `true`
+   * (decorator metadata is a runtime-reference mechanism only under this option).
+   * Absent/`false` ⇒ decorated files carry no decorator-metadata hazard.
+   */
+  emitDecoratorMetadata?: boolean;
 }
 
 /** Assemble the reference-graph IR for one project. */
@@ -425,12 +433,17 @@ export function emitIR(input: EmitInput): IRGraph {
     }
 
     // 2f. parse/extract hazards already captured on the record (computed-*,
-    // computed-cjs-exports, import-equals, export-assignment, parse-error).
+    // computed-cjs-exports, import-equals, export-assignment, parse-error,
+    // checker-only-type-relationship, and the gated emit-decorator-metadata).
     // Suppressions were attached to their symbol nodes in phase 1. For the
     // `directory-subtree`-scoped computed classes, resolve the source-relative
     // static prefix against the importing file into the repo-relative
     // `subtreePrefix` the claim engine matches file paths against (M3 registry).
     for (const hz of record.hazards) {
+      // A decorated file is only an `emit-decorator-metadata` hazard when the
+      // project compiles with `emitDecoratorMetadata` (the runtime-metadata
+      // mechanism); otherwise the candidate marker is dropped here.
+      if (hz.kind === "emit-decorator-metadata" && input.emitDecoratorMetadata !== true) continue;
       const subtreePrefix =
         hz.kind === "computed-dynamic-import" || hz.kind === "computed-require"
           ? resolveSubtreePrefix(fileRel, hz.scopePrefix ?? "")

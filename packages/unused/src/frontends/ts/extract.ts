@@ -22,15 +22,19 @@
  *
  * ## Degrade toward alive
  * Computed `import(expr)` / `require(expr)`, and `import =` / `export =`
- * emit hazard markers rather than a confident classification.
+ * emit hazard markers rather than a confident classification. Declaration-
+ * merging sites (`declare module '...'` / `declare global`) and decorated
+ * classes emit the M3 `checker-only-type-relationship` / `emit-decorator-metadata`
+ * candidate markers the IR layer finalises (T3.1b).
  */
-import { isNode, nodeArray, prop, type RawNode, str } from "./ast.js";
+import { bool, isNode, nodeArray, prop, type RawNode, str } from "./ast.js";
 import type { LineIndex } from "./line-index.js";
 import type {
   DynamicImport,
   HazardMarker,
   ReferenceSite,
   RequireCall,
+  Span,
   TypeImportRecord,
 } from "./module-record.js";
 import { collectBindings, type ScopeBindings, scopeKindFor } from "./scope.js";
@@ -61,6 +65,11 @@ export function extract(
   // scopeStack[0] is always the module frame and is EXCLUDED from shadow
   // checks (imports live there; a module-scope rebind of an import is illegal).
   const scopeStack: ScopeBindings[] = [collectBindings(program, "module")];
+
+  // Span of the first decorator seen (the `emit-decorator-metadata` candidate
+  // marker's site); at most one entry so we emit a single marker per file. An
+  // array (not a closure-mutated `let`) so its post-walk narrowing is reliable.
+  const decoratorSpans: Span[] = [];
 
   function isShadowed(name: string, position: "value" | "type"): boolean {
     for (let i = 1; i < scopeStack.length; i++) {
@@ -239,6 +248,33 @@ export function extract(
     });
   }
 
+  /**
+   * Detect a declaration-merging site (T3.1b, `checker-only-type-relationship`):
+   * a `declare global` block (oxc: `TSModuleDeclaration` with `global: true`) or
+   * a module augmentation `declare module '...'` (a `TSModuleDeclaration` whose
+   * `id` is a string literal). Both merge members onto a type through a
+   * checker-only relationship no import/export edge names, so the file's exports
+   * must keep-alive (M3 registry, symbol-set → no-claim). A plain
+   * `namespace Foo {}` / `module Foo {}` (identifier id, not global) is NOT an
+   * augmentation and is skipped.
+   */
+  function recordDeclarationMerge(node: RawNode): void {
+    const isGlobal = bool(node, "global");
+    const id = prop(node, "id");
+    const moduleName =
+      isNode(id) && id.type === "Literal" && typeof prop(id, "value") === "string"
+        ? (str(id, "value") as string)
+        : null;
+    if (!isGlobal && moduleName === null) return;
+    hazards.push({
+      kind: "checker-only-type-relationship",
+      detail: isGlobal
+        ? "`declare global` block augments the global scope (declaration merging — a checker-only relationship)"
+        : `\`declare module "${moduleName}"\` augments another module (declaration merging — a checker-only relationship)`,
+      span: li.span(node.start, node.end),
+    });
+  }
+
   function walk(node: RawNode, inType: boolean): void {
     const kind = scopeKindFor(node);
     // The module frame is pushed once above; don't re-push it here.
@@ -285,6 +321,15 @@ export function extract(
             span: li.span(node.start, node.end),
           });
           break;
+        case "TSModuleDeclaration":
+          recordDeclarationMerge(node);
+          break;
+        case "Decorator":
+          // First decorator anchors the `emit-decorator-metadata` candidate marker
+          // (finalised by emitIR only when tsconfig `emitDecoratorMetadata` is on).
+          // The decorator EXPRESSION is still walked below as a value reference.
+          if (decoratorSpans.length === 0) decoratorSpans.push(li.span(node.start, node.end));
+          break;
         default:
           break;
       }
@@ -309,6 +354,21 @@ export function extract(
   }
 
   walk(program, false);
+
+  // A decorated file is a candidate for the `emit-decorator-metadata` hazard;
+  // emitIR keeps the marker only when tsconfig `emitDecoratorMetadata` is on
+  // (extraction cannot see the compiler option). Emitted once, at the first
+  // decorator's site.
+  const decoratorSpan = decoratorSpans[0];
+  if (decoratorSpan !== undefined) {
+    hazards.push({
+      kind: "emit-decorator-metadata",
+      detail:
+        "decorated class under `emitDecoratorMetadata` — constructor-parameter/property type annotations become runtime metadata references and the class may be instantiated by decorator-driven reflection",
+      span: decoratorSpan,
+    });
+  }
+
   return { references, dynamicImports, requires, typeImports, hazards };
 }
 

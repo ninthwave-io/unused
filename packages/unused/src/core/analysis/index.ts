@@ -8,6 +8,12 @@
  * {@link ./claims.js} for M2 claim emission (the hazard keep-alive rules).
  */
 
+export {
+  ASSUMPTION_SET_VERSION,
+  GLOBAL_ASSUMPTIONS,
+  type GlobalAssumption,
+  renderAssumptionSet,
+} from "./assumption-set.js";
 export { type EmitClaimsInput, emitClaims } from "./claims.js";
 export {
   type ConfidenceCap,

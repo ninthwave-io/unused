@@ -74,7 +74,12 @@ export type HazardClass =
   | "declaration-companion"
   | "parse-error"
   | "import-equals"
-  | "export-assignment";
+  | "export-assignment"
+  | "checker-only-type-relationship"
+  | "emit-decorator-metadata"
+  | "conditional-exports-divergence"
+  | "project-references"
+  | "jsx-runtime-dependency";
 
 // ---------------------------------------------------------------------------
 // Nodes

@@ -34,12 +34,21 @@
  *
  * With **zero production entrypoints**, `core/analysis` emits no claims at all
  * (nothing anchors liveness) — the caller surfaces "no entrypoints detected".
+ *
+ * ## T3.1b — config-derived hazards composed here
+ * Three M3 hazard classes need project config this composition layer reads:
+ * `emitDecoratorMetadata` (a tsconfig `compilerOptions` flag, passed to `emitIR`
+ * so a decorated file's candidate marker becomes a real hazard), `references` (a
+ * tsconfig top-level array ⇒ a whole-package `project-references` cap), and
+ * `conditional-exports-divergence` (package.json `exports` conditions / a
+ * top-level `browser` remap whose non-selected branch's target files keep-alive).
  */
 
 import { createHash } from "node:crypto";
 import type { Dirent } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve as resolvePath, sep } from "node:path";
+import { getTsconfig } from "get-tsconfig";
 import { computeReachability, emitClaims } from "../../core/analysis/index.js";
 import {
   type ClaimRun,
@@ -125,11 +134,23 @@ export async function analyzeProject(
 
   // resolve → emit IR (production entrypoints from main/module/exports/bin + fallback).
   const resolver = new Resolver({ projectRoot: root, discoveredFiles: new Set(files) });
-  const graph = emitIR({ projectRoot: root, records, resolver });
+  const tsconfigOptions = readTsconfigOptions(root);
+  const graph = emitIR({
+    projectRoot: root,
+    records,
+    resolver,
+    emitDecoratorMetadata: tsconfigOptions.emitDecoratorMetadata,
+  });
 
   // Fix 2: expand wildcard subpath exports into production entrypoints.
   const pkg = await readRootPackageJson(root);
   seedWildcardExportEntrypoints(graph, root, files, pkg);
+
+  // T3.1b: files reachable only under a package.json condition/browser branch the
+  // analyzer's single condition set does not select keep-alive (no-claim); a
+  // tsconfig with `references` caps the whole package (medium — see the registry).
+  addConditionalExportsDivergenceHazards(graph, root, resolver, files, pkg);
+  if (tsconfigOptions.hasReferences) addProjectReferencesHazard(graph);
 
   // One config-tree walk: JSON config files + the set of package-root directories.
   const jsonFiles: string[] = [];
@@ -366,6 +387,175 @@ function stripSourceExtension(path: string): string {
     if (lower.endsWith(ext)) return path.slice(0, path.length - ext.length);
   }
   return path;
+}
+
+// ---------------------------------------------------------------------------
+// T3.1b — tsconfig-driven hazards (emitDecoratorMetadata gate, project references)
+// ---------------------------------------------------------------------------
+
+/** A repo-relative site anchored at the package/tsconfig config, for config-derived hazards. */
+const CONFIG_SITE_SPAN = { start: 0, end: 0, startLine: 1, endLine: 1 } as const;
+
+/**
+ * Read the two `compilerOptions`/top-level tsconfig fields M3 needs, resolved
+ * through the `extends` chain by get-tsconfig and bounded to the project root
+ * (a package without its own tsconfig must not inherit an ancestor repo's
+ * options). Missing/unreadable ⇒ both `false` (degrade toward alive is safe:
+ * no decorator-metadata cap, no whole-package reference cap).
+ */
+function readTsconfigOptions(root: string): {
+  emitDecoratorMetadata: boolean;
+  hasReferences: boolean;
+} {
+  let found: ReturnType<typeof getTsconfig>;
+  try {
+    found = getTsconfig(root);
+  } catch {
+    found = null;
+  }
+  if (found === null || !isInsideRoot(found.path, root)) {
+    return { emitDecoratorMetadata: false, hasReferences: false };
+  }
+  const config = found.config as {
+    compilerOptions?: { emitDecoratorMetadata?: unknown };
+    references?: unknown;
+  };
+  return {
+    emitDecoratorMetadata: config.compilerOptions?.emitDecoratorMetadata === true,
+    hasReferences: Array.isArray(config.references) && config.references.length > 0,
+  };
+}
+
+/**
+ * A tsconfig `references` array composes this project with sibling TS projects
+ * that may consume its files across the project boundary — a use the
+ * single-project reference graph cannot see. Cap the whole package at medium
+ * (directory-subtree with an empty prefix matches every file). Deliberately
+ * blunt; real cross-project analysis is post-v1 (see the registry rationale).
+ */
+function addProjectReferencesHazard(graph: IRGraph): void {
+  graph.addHazard({
+    file: fileId("tsconfig.json"),
+    hazardClass: "project-references",
+    detail:
+      "tsconfig `references` composes this project with sibling projects that may consume its files across the project boundary (whole-package cap, medium)",
+    site: { file: "tsconfig.json", span: { ...CONFIG_SITE_SPAN } },
+    // no subtreePrefix ⇒ "" ⇒ the whole package is in scope
+  });
+}
+
+/**
+ * Keep-alive (no-claim) every file that is only the target of a package.json
+ * `exports`/`imports` condition, or a top-level `browser` remap, that the
+ * analyzer's single condition set (types → import → node → default) does not
+ * select. We resolve one branch; the other branch's files have no inbound edge
+ * under that set yet are the genuine module under another condition, so they
+ * must not be claimable (T3.1b, `conditional-exports-divergence`).
+ */
+function addConditionalExportsDivergenceHazards(
+  graph: IRGraph,
+  root: string,
+  resolver: Resolver,
+  files: readonly string[],
+  pkg: PackageJsonLike | null,
+): void {
+  if (pkg === null) return;
+  const withFields = pkg as PackageJsonLike & { imports?: unknown; browser?: unknown };
+  const candidates = new Set<string>();
+  collectDivergentExportsTargets(pkg.exports, candidates);
+  collectDivergentExportsTargets(withFields.imports, candidates); // `#`-subpath imports diverge too
+  collectBrowserFieldTargets(withFields.browser, candidates);
+  if (candidates.size === 0) return;
+
+  const discovered = new Set(files);
+  const from = join(root, "package.json");
+  const seen = new Set<string>();
+  for (const spec of candidates) {
+    const norm = normalizeRelTarget(spec);
+    if (norm === null) continue;
+    const outcome = resolver.resolve(norm, from, { ...CONFIG_SITE_SPAN }, "import").outcome;
+    if (outcome.kind !== "internal" && outcome.kind !== "internal-declaration") continue;
+    if (!discovered.has(outcome.path)) continue;
+    const rel = toPosixRel(root, outcome.path);
+    if (seen.has(rel)) continue;
+    seen.add(rel);
+    graph.addHazard({
+      file: fileId(rel),
+      hazardClass: "conditional-exports-divergence",
+      detail: `resolved only under a non-selected package.json condition/browser remap (\`${spec}\`); the analyzer resolves with one condition set, so this branch's target is kept alive`,
+      site: { file: rel, span: { ...CONFIG_SITE_SPAN } },
+    });
+  }
+}
+
+/**
+ * Collect the string targets of any `exports` **or** `imports` subpath whose
+ * conditions map to more than one distinct **runtime** target (declaration
+ * `.d.ts` targets — the `types` condition — do not count as a runtime
+ * divergence). Both maps share a shape: subpath/entry keys (`.`-prefixed for
+ * `exports`, `#`-prefixed for `imports`) whose values are targets or condition
+ * objects. The selected branch is included too; for `exports` it is already an
+ * entrypoint, so re-marking is harmless; for `imports` the non-selected branch
+ * is the whole point (entrypoint detection never reads `imports`).
+ */
+function collectDivergentExportsTargets(node: unknown, out: Set<string>): void {
+  if (node === null || typeof node !== "object") return;
+  if (Array.isArray(node)) {
+    for (const e of node) collectDivergentExportsTargets(e, out);
+    return;
+  }
+  const obj = node as Record<string, unknown>;
+  const keys = Object.keys(obj);
+  if (keys.length === 0) return;
+  const isSubpathMap = keys.every((k) => k.startsWith(".") || k.startsWith("#"));
+  if (isSubpathMap) {
+    for (const key of keys) processExportsSubpathTarget(obj[key], out);
+  } else {
+    processExportsSubpathTarget(obj, out); // a bare conditions object (sugar for ".")
+  }
+}
+
+function processExportsSubpathTarget(target: unknown, out: Set<string>): void {
+  const leaves = new Set<string>();
+  for (const leaf of collectStringLeaves(target)) {
+    if (leaf.includes("*")) continue;
+    if (/\.d\.[mc]?ts$/i.test(leaf)) continue; // a `types` target, not a runtime divergence
+    leaves.add(leaf);
+  }
+  if (leaves.size >= 2) for (const leaf of leaves) out.add(leaf);
+}
+
+/**
+ * Collect relative-path targets of a top-level `browser` field — a string
+ * (`"browser": "./index.browser.js"`) or the values of the object remap form
+ * (`{ "./impl.js": "./impl.browser.js", "crypto": "./crypto-shim.js" }`). Values
+ * that are `false` (stub-outs) or bare package names are skipped: only files.
+ * The `browser` field is the divergent branch entrypoint detection never reads.
+ */
+function collectBrowserFieldTargets(browser: unknown, out: Set<string>): void {
+  if (typeof browser === "string") {
+    if (browser.startsWith(".")) out.add(browser);
+    return;
+  }
+  if (browser === null || typeof browser !== "object" || Array.isArray(browser)) return;
+  for (const value of Object.values(browser as Record<string, unknown>)) {
+    if (typeof value === "string" && value.startsWith(".")) out.add(value);
+  }
+}
+
+/** Prefix a bare-relative target with `./` (package.json targets are package-relative); skip wildcards. */
+function normalizeRelTarget(target: string): string | null {
+  if (target === "" || target.includes("*")) return null;
+  if (target.startsWith("./") || target.startsWith("../") || target.startsWith("/")) return target;
+  return `./${target}`;
+}
+
+/** Is `p` equal to, or contained within, `root`? (Segment-boundary safe.) */
+function isInsideRoot(p: string, root: string): boolean {
+  const abs = resolvePath(p);
+  const r = resolvePath(root);
+  if (abs === r) return true;
+  return abs.startsWith(r.endsWith(sep) ? r : r + sep);
 }
 
 // ---------------------------------------------------------------------------

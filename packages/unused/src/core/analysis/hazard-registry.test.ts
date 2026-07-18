@@ -25,6 +25,11 @@ const ALL_CLASSES: readonly HazardClass[] = [
   "parse-error",
   "import-equals",
   "export-assignment",
+  "checker-only-type-relationship",
+  "emit-decorator-metadata",
+  "conditional-exports-divergence",
+  "project-references",
+  "jsx-runtime-dependency",
 ];
 
 describe("HAZARD_REGISTRY — vocabulary coverage", () => {
@@ -73,6 +78,27 @@ describe("HAZARD_REGISTRY — scope/cap per class group (T3.1a)", () => {
     ] as const) {
       expect(HAZARD_REGISTRY[cls].scope, cls).toBe("none");
     }
+  });
+
+  it("checker-only-type-relationship is symbol-set, no-claim (declaration merging keeps exports alive)", () => {
+    expectEntry("checker-only-type-relationship", { scope: "symbol-set", cap: "no-claim" });
+  });
+
+  it("emit-decorator-metadata is symbol-set, cap medium (decorated file's exports capped)", () => {
+    expectEntry("emit-decorator-metadata", { scope: "symbol-set", cap: "medium" });
+  });
+
+  it("conditional-exports-divergence is file scope, no-claim (non-selected branch kept alive)", () => {
+    expectEntry("conditional-exports-divergence", { scope: "file", cap: "no-claim" });
+  });
+
+  it("project-references is directory-subtree, cap medium (whole-package, conservative)", () => {
+    expectEntry("project-references", { scope: "directory-subtree", cap: "medium" });
+  });
+
+  it("jsx-runtime-dependency is scope none (note-only; activates at M4)", () => {
+    expect(HAZARD_REGISTRY["jsx-runtime-dependency"].scope).toBe("none");
+    expect(HAZARD_REGISTRY["jsx-runtime-dependency"].rationale).toMatch(/M4/);
   });
 });
 
