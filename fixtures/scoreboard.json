@@ -1,19 +1,19 @@
 {
   "analyzer": "ts-reference-graph",
   "corpus": {
-    "cases": 24,
-    "subjects": 62
+    "cases": 25,
+    "subjects": 66
   },
   "precision": 1,
-  "recall": 0.896551724137931,
+  "recall": 0.9032258064516129,
   "falsePositives": 0,
   "confidenceViolations": 0,
   "misses": 3,
   "unlabelledClaims": 0,
   "byConfidenceTier": {
     "high": {
-      "claims": 16,
-      "truePositives": 16,
+      "claims": 18,
+      "truePositives": 18,
       "falsePositives": 0,
       "confidenceViolations": 0
     },
@@ -288,6 +288,17 @@
       "case": "unresolvable-entrypoint",
       "subjects": 3,
       "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "workspace-pnpm-monorepo",
+      "subjects": 4,
+      "deadLabels": 2,
       "precision": 1,
       "recall": 1,
       "falsePositives": 0,

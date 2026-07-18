@@ -1,0 +1,54 @@
+case: workspace-pnpm-monorepo
+description: >-
+  A pnpm workspace (pnpm-workspace.yaml) with two members: @fix/app consumes
+  @fix/lib's exports map two ways — a bare specifier ("@fix/lib") and a
+  subpath specifier ("@fix/lib/util") — both resolved through @fix/lib's own
+  package.json "exports" map (T4.2 cross-workspace self-reference
+  resolution), the flagged shape combining bare + subpath sibling imports in
+  one case. @fix/app's package.json also declares "@fix/lib": "workspace:*"
+  as a dependency; that edge is deliberately not labelled here — dependency
+  claims (declared vs resolved) land with T4.1, not this export/file corpus.
+subjects:
+  - kind: export
+    name: helper
+    file: packages/lib/src/helper.ts
+    expected: alive
+    because: >-
+      re-exported by packages/lib/src/index.ts (the "." exports-map target)
+      and imported by name via the bare specifier "@fix/lib" in
+      packages/app/src/index.ts — a workspace-sibling bare import must
+      resolve to internal source (assumption-set.md, "Monorepo workspaces
+      are analyzed per package"), not a phantom external dependency; this is
+      the bare-import half of the FP trap.
+  - kind: export
+    name: util
+    file: packages/lib/src/util.ts
+    expected: alive
+    because: >-
+      the "./util" exports-map target of @fix/lib, imported by
+      packages/app/src/index.ts via the subpath specifier "@fix/lib/util" —
+      resolved through @fix/lib's own package.json "exports" map (Node
+      self-reference), not the directory/relative fallback used when a
+      member has no exports map; this is the subpath-import half of the FP
+      trap, on the same sibling package as the bare-import case above.
+  - kind: export
+    name: deadHelper
+    file: packages/lib/src/helper.ts
+    expected: dead
+    minConfidence: high
+    because: >-
+      exported but never re-exported, imported, or otherwise referenced —
+      not by packages/lib/src/index.ts's barrel, not by any sibling
+      workspace member. A clean per-workspace dead export with no hazard in
+      scope, verified empirically to be tagged subject.loc.package
+      "@fix/lib" (the T4.2 per-claim workspace-package tag).
+  - kind: file
+    name: packages/app/src/dead.ts
+    file: packages/app/src/dead.ts
+    expected: dead
+    minConfidence: high
+    because: >-
+      no file in either workspace member imports packages/app/src/dead.ts,
+      statically or via side effect; nothing keeps it reachable from any
+      entrypoint, and no hazard mechanism is present. Verified empirically
+      to be tagged subject.loc.package "@fix/app".
