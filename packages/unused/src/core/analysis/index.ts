@@ -1,0 +1,18 @@
+/**
+ * `core/analysis` — language-agnostic reachability + claim emission (T2.4,
+ * phasing.md M2, architecture.md §2/§4).
+ *
+ * Consumes the reference-graph {@link IRGraph} a frontend emits and produces
+ * claims with zero language knowledge (ADR 0003, dependency-cruiser). See
+ * {@link ./reachability.js} for the forward walk + `whyReachable` query and
+ * {@link ./claims.js} for M2 claim emission (the hazard keep-alive rules).
+ */
+
+export { type EmitClaimsInput, emitClaims } from "./claims.js";
+export {
+  computeReachability,
+  type Predecessor,
+  type Reachability,
+  type WhyReachable,
+  whyReachable,
+} from "./reachability.js";

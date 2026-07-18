@@ -1,12 +1,13 @@
 /**
  * The `Analyzer` contract the fixture harness scores (docs/phasing.md T1.3).
  *
- * No real analyzer exists yet in M1 (T2.x/T3.x land the graph pipeline). This
- * module exists so the harness — loader, joiner, scoreboard, and CI gates —
- * can be built and proven against a stub today, then pointed at the real
- * analyzer with no interface change once it exists.
+ * The M1 stub ({@link allAliveAnalyzer}) stays as a vacuous control; the real
+ * reference-graph analyzer ({@link realAnalyzer}, T2.4) runs the same harness
+ * over `analyzeProject`. Both are scored by the same loader/joiner/gates — the
+ * interface never changed when the real analyzer landed.
  */
 import type { Claim } from "../../core/claims/types.js";
+import { analyzeProject } from "../../frontends/ts/analyze.js";
 
 export interface Analyzer {
   /** Short, stable identifier recorded in the scoreboard (e.g. "all-alive-stub"). */
@@ -34,5 +35,25 @@ export const allAliveAnalyzer: Analyzer = {
   name: "all-alive-stub",
   async analyze(_fixtureDir: string): Promise<Claim[]> {
     return [];
+  },
+};
+
+const REAL_ANALYZER_NAME = "ts-reference-graph";
+const FIXED_CLOCK = new Date(0);
+
+/**
+ * The real TS/JS reference-graph analyzer (T2.4): discover → parse → resolve →
+ * emit IR → reachability → claims, over one fixture mini-repo.
+ *
+ * A fixed epoch clock keeps the emitted provenance stable run-to-run (the
+ * scoreboard and gates score only `claim.subject`, never provenance, so the
+ * timestamp is irrelevant to scoring — but a stable one makes the run itself
+ * fully deterministic).
+ */
+export const realAnalyzer: Analyzer = {
+  name: REAL_ANALYZER_NAME,
+  async analyze(fixtureDir: string): Promise<Claim[]> {
+    const run = await analyzeProject(fixtureDir, { now: FIXED_CLOCK });
+    return [...run.claims];
   },
 };

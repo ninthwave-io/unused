@@ -42,7 +42,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Analyzer } from "./analyzer.js";
-import { allAliveAnalyzer } from "./analyzer.js";
+import { realAnalyzer } from "./analyzer.js";
 import type { LabelCase } from "./labels.js";
 import { defaultFixturesRoot, loadLabelCases } from "./labels.js";
 import type { ByConfidenceTier, CaseInput, CorpusMetrics } from "./metrics.js";
@@ -189,7 +189,7 @@ export async function writeScoreboard(
 }
 
 async function main(): Promise<void> {
-  const scoreboard = await generateScoreboard(allAliveAnalyzer);
+  const scoreboard = await generateScoreboard(realAnalyzer);
   const outPath = defaultScoreboardPath();
   await writeScoreboard(scoreboard, outPath);
   console.log(

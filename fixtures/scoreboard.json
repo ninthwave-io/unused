@@ -1,19 +1,19 @@
 {
-  "analyzer": "all-alive-stub",
+  "analyzer": "ts-reference-graph",
   "corpus": {
     "cases": 16,
     "subjects": 39
   },
   "precision": 1,
-  "recall": 0,
+  "recall": 0.5555555555555556,
   "falsePositives": 0,
   "confidenceViolations": 0,
-  "misses": 18,
+  "misses": 8,
   "unlabelledClaims": 0,
   "byConfidenceTier": {
     "high": {
-      "claims": 0,
-      "truePositives": 0,
+      "claims": 10,
+      "truePositives": 10,
       "falsePositives": 0,
       "confidenceViolations": 0
     },
@@ -58,10 +58,10 @@
       "subjects": 2,
       "deadLabels": 1,
       "precision": 1,
-      "recall": 0,
+      "recall": 1,
       "falsePositives": 0,
       "confidenceViolations": 0,
-      "misses": 1,
+      "misses": 0,
       "unlabelledClaims": 0
     },
     {
@@ -69,10 +69,10 @@
       "subjects": 2,
       "deadLabels": 1,
       "precision": 1,
-      "recall": 0,
+      "recall": 1,
       "falsePositives": 0,
       "confidenceViolations": 0,
-      "misses": 1,
+      "misses": 0,
       "unlabelledClaims": 0
     },
     {
@@ -91,10 +91,10 @@
       "subjects": 2,
       "deadLabels": 1,
       "precision": 1,
-      "recall": 0,
+      "recall": 1,
       "falsePositives": 0,
       "confidenceViolations": 0,
-      "misses": 1,
+      "misses": 0,
       "unlabelledClaims": 0
     },
     {
@@ -102,10 +102,10 @@
       "subjects": 3,
       "deadLabels": 1,
       "precision": 1,
-      "recall": 0,
+      "recall": 1,
       "falsePositives": 0,
       "confidenceViolations": 0,
-      "misses": 1,
+      "misses": 0,
       "unlabelledClaims": 0
     },
     {
@@ -113,10 +113,10 @@
       "subjects": 2,
       "deadLabels": 1,
       "precision": 1,
-      "recall": 0,
+      "recall": 1,
       "falsePositives": 0,
       "confidenceViolations": 0,
-      "misses": 1,
+      "misses": 0,
       "unlabelledClaims": 0
     },
     {
@@ -135,10 +135,10 @@
       "subjects": 2,
       "deadLabels": 1,
       "precision": 1,
-      "recall": 0,
+      "recall": 1,
       "falsePositives": 0,
       "confidenceViolations": 0,
-      "misses": 1,
+      "misses": 0,
       "unlabelledClaims": 0
     },
     {
@@ -168,10 +168,10 @@
       "subjects": 2,
       "deadLabels": 1,
       "precision": 1,
-      "recall": 0,
+      "recall": 1,
       "falsePositives": 0,
       "confidenceViolations": 0,
-      "misses": 1,
+      "misses": 0,
       "unlabelledClaims": 0
     },
     {
@@ -190,10 +190,10 @@
       "subjects": 4,
       "deadLabels": 2,
       "precision": 1,
-      "recall": 0,
+      "recall": 1,
       "falsePositives": 0,
       "confidenceViolations": 0,
-      "misses": 2,
+      "misses": 0,
       "unlabelledClaims": 0
     },
     {
@@ -201,10 +201,10 @@
       "subjects": 2,
       "deadLabels": 1,
       "precision": 1,
-      "recall": 0,
+      "recall": 1,
       "falsePositives": 0,
       "confidenceViolations": 0,
-      "misses": 1,
+      "misses": 0,
       "unlabelledClaims": 0
     }
   ]

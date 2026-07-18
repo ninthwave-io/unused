@@ -10,7 +10,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { computeClaimId } from "../../core/claims/id.js";
 import type { Claim, Confidence, Subject } from "../../core/claims/types.js";
-import { type Analyzer, allAliveAnalyzer } from "./analyzer.js";
+import { type Analyzer, allAliveAnalyzer, realAnalyzer } from "./analyzer.js";
 import type { Label } from "./labels.js";
 import { loadLabelCase } from "./labels.js";
 import {
@@ -92,6 +92,16 @@ describe("Gate A — zero false positives at high confidence", () => {
     expect(gate.pass).toBe(true);
   });
 
+  it("passes against the real analyzer (non-vacuous: it emits high-confidence claims)", async () => {
+    const { caseInputs } = await runCorpus(realAnalyzer);
+    const metrics = scoreCorpus(caseInputs);
+    const gate = gateNoHighConfidenceFalsePositives(metrics);
+    expect(gate.pass, gate.reason).toBe(true);
+    // Not vacuous: the real analyzer actually flags dead subjects correctly.
+    expect(metrics.truePositives).toBeGreaterThan(0);
+    expect(metrics.falsePositives.length).toBe(0);
+  });
+
   it("rejects a planted high-confidence false positive (permanent proof, not a manual demo)", async () => {
     const { caseInputs } = await runCorpus(evilFalsePositiveAnalyzer);
     const metrics = scoreCorpus(caseInputs);
@@ -111,6 +121,14 @@ describe("Gate B — zero confidence-ceiling violations", () => {
     const metrics = scoreCorpus(caseInputs);
     const gate = gateNoConfidenceViolations(metrics);
     expect(gate.pass).toBe(true);
+  });
+
+  it("passes against the real analyzer (hazard subjects yield no over-confident claim)", async () => {
+    const { caseInputs } = await runCorpus(realAnalyzer);
+    const metrics = scoreCorpus(caseInputs);
+    const gate = gateNoConfidenceViolations(metrics);
+    expect(gate.pass, gate.reason).toBe(true);
+    expect(metrics.confidenceViolations.length).toBe(0);
   });
 
   it("rejects a planted confidence-ceiling violation (permanent proof, not a manual demo)", async () => {
@@ -138,6 +156,17 @@ describe("Gate C — corpus-wide precision never decreases vs the committed scor
 
     const gate = gatePrecisionNonDecreasing(metrics, committed.precision);
     expect(gate.pass).toBe(true);
+  });
+
+  it("passes: the real analyzer's precision is >= the committed baseline", async () => {
+    const committedRaw = await readFile(baselineScoreboardPath(), "utf8");
+    const committed = JSON.parse(committedRaw) as { precision: number };
+
+    const { caseInputs } = await runCorpus(realAnalyzer);
+    const metrics = scoreCorpus(caseInputs);
+
+    const gate = gatePrecisionNonDecreasing(metrics, committed.precision);
+    expect(gate.pass, gate.reason).toBe(true);
   });
 
   // A precision value the real, committed fixtures/scoreboard.json could
@@ -217,5 +246,14 @@ describe("recall — reported, not gated (ADR 0009 / PRD §8 asymmetry)", () => 
     // recall is expected to be 0 — but that expectation is informational,
     // not a gate.
     console.log(`[gates.test.ts] stub analyzer recall: ${metrics.recall}`);
+  });
+
+  it("reports the real analyzer's recall (M2: partial by design; hazard/keep-alive cases are misses)", async () => {
+    const { caseInputs } = await runCorpus(realAnalyzer);
+    const metrics = scoreCorpus(caseInputs);
+    expect(metrics.truePositives).toBeGreaterThan(0);
+    console.log(
+      `[gates.test.ts] real analyzer recall: ${metrics.recall} (tp=${metrics.truePositives}, misses=${metrics.misses.length})`,
+    );
   });
 });
