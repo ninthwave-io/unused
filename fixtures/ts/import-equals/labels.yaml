@@ -1,0 +1,24 @@
+case: import-equals
+description: TS CJS-interop syntax (`import x = require(path)` / `export = value`) is a first-class static edge; an analyzer that drops TSImportEqualsDeclaration nodes would flag a live file and a live export as dead.
+subjects:
+  - kind: file
+    name: src/util.ts
+    file: src/util.ts
+    expected: alive
+    because: reachable only through `import util = require('./util.js')` in src/index.ts — a TSImportEqualsDeclaration, not a standard ES import; an analyzer that drops that node type sees no importer and misclassifies this file dead, which is exactly the false-positive trap this case exists to catch.
+  - kind: export
+    name: greet
+    file: src/util.ts
+    expected: alive
+    because: called as `util.greet("world")` in src/index.ts through the import-equals binding; the reference is live even though the binding syntax is `import x = require(...)` rather than `import * as x from ...`.
+  - kind: export
+    name: unused
+    file: src/util.ts
+    expected: dead
+    minConfidence: high
+    because: never accessed off the util binding, or anywhere else in the fixture; the import-equals target is a literal string with no dynamic-reference hazard nearby, so this is claimable at high confidence.
+  - kind: file
+    name: src/legacy.ts
+    file: src/legacy.ts
+    expected: alive
+    because: consumed via `import legacy = require('./legacy.js')` in src/index.ts, which reads `legacy.version`; legacy.ts exports its value with CJS `export =`, the counterpart construct to import-equals, so the whole file must stay alive.

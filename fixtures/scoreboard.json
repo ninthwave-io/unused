@@ -1,14 +1,14 @@
 {
   "analyzer": "all-alive-stub",
   "corpus": {
-    "cases": 15,
-    "subjects": 35
+    "cases": 16,
+    "subjects": 39
   },
   "precision": 1,
   "recall": 0,
   "falsePositives": 0,
   "confidenceViolations": 0,
-  "misses": 17,
+  "misses": 18,
   "unlabelledClaims": 0,
   "byConfidenceTier": {
     "high": {
@@ -111,6 +111,17 @@
     {
       "case": "export-star-chain",
       "subjects": 2,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 0,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 1,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "import-equals",
+      "subjects": 4,
       "deadLabels": 1,
       "precision": 1,
       "recall": 0,
