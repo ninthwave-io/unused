@@ -85,7 +85,14 @@ export type HazardClass =
   | "jsx-runtime-dependency"
   | "bin-only-dependency"
   | "config-named-dependency"
-  | "capacitor-platform-dependency";
+  | "capacitor-platform-dependency"
+  // Elixir frontend (ADR 0011). The vocabulary is language-agnostic by
+  // construction, but these three classes are only ever cited by the Elixir
+  // frontend; core applies their scope/cap with zero language knowledge, exactly
+  // as for the TS classes above.
+  | "elixir-behaviour-callback"
+  | "elixir-dynamic-dispatch"
+  | "elixir-phoenix-runtime";
 
 // ---------------------------------------------------------------------------
 // Nodes

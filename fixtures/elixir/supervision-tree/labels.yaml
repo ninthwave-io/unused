@@ -1,0 +1,27 @@
+case: supervision-tree
+description: >-
+  A GenServer passed as a supervision-tree child stays alive even though it is
+  never called by name; its OTP callbacks are dispatched by the runtime and must
+  never be flagged.
+subjects:
+  - kind: export
+    name: SupTree.Worker
+    file: lib/sup_tree/worker.ex
+    expected: alive
+    because: >-
+      SupTree.Worker appears as a child atom in the supervisor's children list,
+      which the tracer records as a module reference — keeping the module alive.
+  - kind: export
+    name: SupTree.Worker.handle_call/3
+    file: lib/sup_tree/worker.ex
+    expected: alive
+    because: >-
+      handle_call/3 is a GenServer behaviour callback dispatched by OTP, never
+      called by name; the elixir-behaviour-callback hazard keeps it alive.
+  - kind: export
+    name: SupTree.Worker.start_link/1
+    file: lib/sup_tree/worker.ex
+    expected: alive
+    because: >-
+      start_link/1 is invoked reflectively by the supervisor via the module's
+      child_spec; the behaviour-callback hazard keeps the whole module alive.

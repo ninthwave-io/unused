@@ -28,7 +28,7 @@ import { HAZARD_REGISTRY, type HazardClassEntry } from "./hazard-registry.js";
  * wording or the set of globals (a behaviour-affecting change), so a consumer
  * pinning a version can detect it. Independent of the analyzer/tool version.
  */
-export const ASSUMPTION_SET_VERSION = "1.5.0";
+export const ASSUMPTION_SET_VERSION = "1.6.0";
 
 /** One global analysis assumption (independent of any single hazard class). */
 export interface GlobalAssumption {
@@ -91,6 +91,18 @@ export const GLOBAL_ASSUMPTIONS: readonly GlobalAssumption[] = [
     title: "Symlinks are not followed",
     detail:
       "Neither discovery nor resolution follows symlinks (`symlinks: false`): a symlinked directory is not descended and a symlinked file is not collected or `realpath()`-ed. This avoids cycles and escaping the project tree. Workspace members are resolved by package name (see above), so a symlinked monorepo layout is handled without following the symlink; a module reachable only through some other symlink still degrades toward alive (an outside-project keep-alive), never a confident dead claim.",
+  },
+  {
+    id: "elixir-frontend-compiles-the-project",
+    title: "Elixir analysis compiles the project (experimental frontend, ADR 0011)",
+    detail:
+      "The Elixir frontend (experimental in v0.1.0) is the one place `unused` executes user code, and this is disclosed rather than hidden. Unlike the TypeScript frontend — which parses source and never runs it — obtaining a function-level reference graph for Elixir requires the real compiler: `mix xref` has been module/file-level only since Elixir 1.10 and structurally cannot answer whether a single function is unused, so the frontend injects a custom compiler tracer (`Code.put_compiler_option(:tracers, …)`) and runs `mix compile.elixir --force` in a child `mix` process rooted at the target project. That compiles (and therefore runs the compile-time code of) the project and its dependencies, and reflects over the resulting BEAM modules for the public-function surface. Consequences: Elixir and a fetched, compilable project are required — if `elixir`/`mix` is absent, the project's dependencies are not fetched, or `mix compile` fails, the frontend REFUSES with a clear message and a non-zero exit, never a silently-wrong answer. No network and no telemetry beyond what the project's own build performs; the tracer writes only to a temp file the analyzer reads back. A user who cannot or will not compile the project gets nothing from this frontend by design.",
+  },
+  {
+    id: "elixir-entrypoints-and-runtime-dispatch",
+    title: "Elixir entrypoints, and runtime dispatch is kept alive (experimental)",
+    detail:
+      "The Elixir reachability roots are the OTP application callback module (`mix.exs` `application/0` `mod:`, read from the compiled `.app` resource), everything its supervision tree references (child modules appear as ordinary alias/call references in the tracer, so supervised children are reached transitively), `Phoenix.Endpoint`/`Phoenix.Router` modules when Phoenix is a dependency, and `Mix.Task` modules (`lib/mix/tasks/**`, invoked by CLI name) — all production roots. `config/*.exs` module references are config roots (a module named in config is kept alive). `test/` + ExUnit is the test partition. A public function is a symbol named `Mod.fun/arity` (kind `export` in v1); a module is a symbol named `Mod`; a `.ex`/`.exs` file is a `file` subject. Reflectively-dispatched CALLBACK FUNCTIONS are kept alive, never flagged — but only relative to a module that is itself reachable: a behaviour/OTP module (`@behaviour`/`use GenServer`), a Phoenix runtime module or protocol implementation (`defimpl`), or a plain OTP-supervisable module (one defining `child_spec/1`) has its callback claims suppressed when it is supervised, aliased, or config-named. A module reachable by NOTHING is still claimable as a dead file (the keep-alive suppresses callback claims, not the module's own file claim) — capped to medium by the unit's dynamic-dispatch hazard when an `apply`/`Module.concat` exists in the unit, never confidently dead while such a computed dispatch could reach it. HEEx `~H`/`.heex` component references are visible to the tracer (empirically confirmed) and need no special handling. A project with no application callback, mix task, or Phoenix endpoint anchors no liveness and is proven-nothing rather than flagged wholesale, exactly as a TypeScript project with no entrypoint. Full parity (dependency claims via `mix.lock`, umbrella apps, per-callback precision) is post-v1.",
   },
 ];
 

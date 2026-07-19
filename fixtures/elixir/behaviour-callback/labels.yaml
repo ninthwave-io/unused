@@ -1,0 +1,26 @@
+case: behaviour-callback
+description: >-
+  A behaviour implementation's callback is invoked reflectively by a dispatcher,
+  never by name — the classic false-positive trap. The elixir-behaviour-callback
+  hazard keeps every callback of a behaviour module alive.
+subjects:
+  - kind: export
+    name: Beh.EmailHandler.handle/1
+    file: lib/beh/email_handler.ex
+    expected: alive
+    because: >-
+      handle/1 is a callback of Beh.HandlerBehaviour, dispatched reflectively and
+      never called by name; deleting it would break the behaviour, so it must
+      never be flagged — the false-positive trap this case exists to catch.
+  - kind: export
+    name: Beh.EmailHandler.describe/0
+    file: lib/beh/email_handler.ex
+    expected: alive
+    because: The application callback calls Beh.EmailHandler.describe/0 directly.
+  - kind: file
+    name: lib/beh/handler_behaviour.ex
+    file: lib/beh/handler_behaviour.ex
+    expected: alive
+    because: >-
+      Beh.EmailHandler declares @behaviour Beh.HandlerBehaviour, which the
+      compiler records as a reference — keeping the behaviour module's file alive.

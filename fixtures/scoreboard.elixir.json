@@ -1,0 +1,124 @@
+{
+  "analyzer": "elixir-reference-graph",
+  "corpus": {
+    "cases": 8,
+    "subjects": 19
+  },
+  "precision": 1,
+  "recall": 1,
+  "falsePositives": 0,
+  "confidenceViolations": 0,
+  "misses": 0,
+  "unlabelledClaims": 0,
+  "byConfidenceTier": {
+    "high": {
+      "claims": 5,
+      "truePositives": 5,
+      "falsePositives": 0,
+      "confidenceViolations": 0
+    },
+    "medium": {
+      "claims": 1,
+      "truePositives": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0
+    },
+    "low": {
+      "claims": 0,
+      "truePositives": 0,
+      "falsePositives": 0,
+      "confidenceViolations": 0
+    }
+  },
+  "cases": [
+    {
+      "case": "basic-dead-function",
+      "subjects": 2,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "behaviour-callback",
+      "subjects": 3,
+      "deadLabels": 0,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "dynamic-dispatch",
+      "subjects": 2,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "heex-experiment",
+      "subjects": 2,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "supervised-plain-child",
+      "subjects": 2,
+      "deadLabels": 0,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "supervision-tree",
+      "subjects": 3,
+      "deadLabels": 0,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "test-only-zombie",
+      "subjects": 3,
+      "deadLabels": 2,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "unreferenced-behaviour",
+      "subjects": 2,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    }
+  ],
+  "skipped": []
+}

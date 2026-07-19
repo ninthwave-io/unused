@@ -34,6 +34,9 @@ const ALL_CLASSES: readonly HazardClass[] = [
   "bin-only-dependency",
   "config-named-dependency",
   "capacitor-platform-dependency",
+  "elixir-behaviour-callback",
+  "elixir-dynamic-dispatch",
+  "elixir-phoenix-runtime",
 ];
 
 describe("HAZARD_REGISTRY — vocabulary coverage", () => {

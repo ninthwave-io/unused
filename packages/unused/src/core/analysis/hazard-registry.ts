@@ -213,6 +213,27 @@ export const HAZARD_REGISTRY: Readonly<Record<HazardClass, HazardClassEntry>> = 
     rationale:
       "In a Capacitor app (a `capacitor.config.{ts,js,mjs,cjs,json}` present at the workspace root), the native-platform packages `@capacitor/ios` and `@capacitor/android`, and the `@capacitor/cli`, exist solely so the Capacitor CLI (`npx cap sync`/`cap add`) can locate and copy the native iOS/Android platform code — they are NEVER imported from JS/TS in any Capacitor app, by design. A pure reference-graph view therefore always sees zero references and would false-flag them as unused dependencies. Keyed off the presence of a `capacitor.config.*` at the unit root, they are kept alive (never claimed) — the same config-marker-activated keep-alive class as the vite/next presets, restricted to the platform/CLI packages (Capacitor *plugins* such as `@capacitor/camera` DO expose a JS API and are left claimable).",
   },
+  "elixir-behaviour-callback": {
+    hazardClass: "elixir-behaviour-callback",
+    scope: "symbol-set",
+    cap: "no-claim",
+    rationale:
+      "An Elixir module that declares one or more behaviours (`@behaviour`, or `use GenServer`/`Supervisor`/`Agent`/`Task`/a custom behaviour, detected reflectively via the compiled module's `:behaviour` attributes) has its callback functions — `handle_call/3`, `init/1`, `child_spec/1`, and the rest — invoked reflectively by the OTP runtime or the behaviour dispatcher, never called by name from user source. A syntactic call-graph therefore sees zero callers and would false-flag every callback as unused. Because the frontend does not model which of a behaviour module's functions are callbacks versus ordinary helpers, the cap is deliberately the whole module's public-function surface (symbol-set): all of its function claims are suppressed (never emitted). The module's own file liveness is unaffected — a behaviour module referenced by nothing (not in any supervision tree, not aliased) is still claimable as a dead file.",
+  },
+  "elixir-dynamic-dispatch": {
+    hazardClass: "elixir-dynamic-dispatch",
+    scope: "project",
+    cap: "medium",
+    rationale:
+      "A file that performs dynamic dispatch — `apply/2,3`, `Kernel.apply`, `:erlang.apply/3`, or a `Module.concat`/`String.to_atom`-computed module target — can invoke, at runtime, a module and function that no static reference names. The resolved target is structurally invisible to the compiler tracer and to `mix xref` alike (confirmed in the ADR 0011 research). Since the computed target could be any module in the application, the whole workspace unit that owns the dispatching file is capped at medium confidence rather than any claim being suppressed outright: code is still surfaced, but never at `high` (a confident 'delete this') while an `apply` that might reach it exists in the same unit. Precise per-target resolution is post-v1; until then the unit-wide medium cap is the honest, false-positive-proof downgrade.",
+  },
+  "elixir-phoenix-runtime": {
+    hazardClass: "elixir-phoenix-runtime",
+    scope: "symbol-set",
+    cap: "no-claim",
+    rationale:
+      "A Phoenix/OTP runtime-dispatch module — a `Phoenix.LiveView`/`Phoenix.LiveComponent`/`Phoenix.Channel`/`Phoenix.Endpoint`/`Phoenix.Router` behaviour implementation, or an Elixir protocol implementation (`defimpl`, detected via the compiled module's `__impl__/1`) or protocol definition (`__protocol__/1`) — exposes functions the framework or the protocol dispatcher calls by convention at runtime (`mount/3`, `handle_event/3`, `render/1`, a `defimpl` body dispatched by `Protocol.impl_for/1`), with no static caller anywhere. HEEx template component references, by contrast, ARE visible to the tracer (empirically confirmed in the ADR 0011 skeleton phase: `~H` and `.heex` component invocations compile to ordinary function calls the tracer records) and need no hazard. Like the behaviour-callback class, the whole module's public-function surface is suppressed (symbol-set, no-claim), because the frontend does not model which functions are the framework-called ones; the module's file liveness is unaffected.",
+  },
 };
 
 /** Strength order — a stronger cap wins when a subject is in multiple hazards' scope. */

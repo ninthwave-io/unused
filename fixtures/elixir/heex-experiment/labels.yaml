@@ -1,0 +1,23 @@
+case: heex-experiment
+description: >-
+  The HEEx-visibility experiment (ADR 0011). A function component referenced from
+  a `~H` template is alive; an unreferenced component is a real dead-code claim —
+  proving HEEx component references fire compiler-tracer events and need no
+  project-scope hazard. Requires the phoenix_live_view dependency (mix deps.get).
+subjects:
+  - kind: export
+    name: HeexExp.Components.greeting/1
+    file: lib/heex_exp/components.ex
+    expected: alive
+    because: >-
+      HeexExp.Page.render/1 references <.greeting/> in its ~H template, which the
+      compiler tracer records as an ordinary function call — so greeting is alive.
+  - kind: export
+    name: HeexExp.Components.unused_component/1
+    file: lib/heex_exp/components.ex
+    expected: dead
+    minConfidence: high
+    because: >-
+      No ~H template or call references unused_component/1. Because HEEx
+      references ARE visible, an unrendered component is a clean dead-code claim;
+      plain `use Phoenix.Component` declares no behaviour, so it stays claimable.

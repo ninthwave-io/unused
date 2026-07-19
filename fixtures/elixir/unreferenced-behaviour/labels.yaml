@@ -1,0 +1,27 @@
+case: unreferenced-behaviour
+description: >-
+  A behaviour module's callbacks are kept alive only relative to a module that is
+  itself reachable. A GenServer referenced by nothing — not supervised, not
+  aliased, not config-named, with no dynamic dispatch in the unit — is still
+  claimable as a dead file. The keep-alive hazard suppresses callback claims, it
+  does not make the module itself un-claimable.
+subjects:
+  - kind: file
+    name: lib/unref_beh/orphan_server.ex
+    file: lib/unref_beh/orphan_server.ex
+    expected: dead
+    minConfidence: high
+    because: >-
+      UnrefBeh.OrphanServer is a GenServer referenced by nothing (not in the
+      supervision tree, not aliased, not in config) and the unit performs no
+      apply/Module.concat, so it cannot be started reflectively and is
+      confidently dead — the elixir-behaviour-callback hazard suppresses its
+      callbacks' export claims but never its file claim.
+  - kind: file
+    name: lib/unref_beh/live_server.ex
+    file: lib/unref_beh/live_server.ex
+    expected: alive
+    because: >-
+      UnrefBeh.LiveServer is supervised (referenced as a child atom in the
+      supervisor's children list), so the module is reachable and must never be
+      flagged.

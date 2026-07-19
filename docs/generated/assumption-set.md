@@ -1,7 +1,7 @@
 <!-- GENERATED FILE — do not edit by hand. Regenerate with `pnpm run assumptions`.
      Source: packages/unused/src/core/analysis/assumption-set.ts + hazard-registry.ts. -->
 
-# Analysis assumption set (v1.5.0)
+# Analysis assumption set (v1.6.0)
 
 `unused`'s `high`-confidence verdicts hold under the assumptions enumerated
 here (PRD §4): `high` means "safe to act without re-deriving the reference
@@ -42,6 +42,14 @@ Resolution assumes a `node_modules` layout. Yarn PnP's `.pnp.cjs`/`.pnp.mjs` res
 ### Symlinks are not followed
 
 Neither discovery nor resolution follows symlinks (`symlinks: false`): a symlinked directory is not descended and a symlinked file is not collected or `realpath()`-ed. This avoids cycles and escaping the project tree. Workspace members are resolved by package name (see above), so a symlinked monorepo layout is handled without following the symlink; a module reachable only through some other symlink still degrades toward alive (an outside-project keep-alive), never a confident dead claim.
+
+### Elixir analysis compiles the project (experimental frontend, ADR 0011)
+
+The Elixir frontend (experimental in v0.1.0) is the one place `unused` executes user code, and this is disclosed rather than hidden. Unlike the TypeScript frontend — which parses source and never runs it — obtaining a function-level reference graph for Elixir requires the real compiler: `mix xref` has been module/file-level only since Elixir 1.10 and structurally cannot answer whether a single function is unused, so the frontend injects a custom compiler tracer (`Code.put_compiler_option(:tracers, …)`) and runs `mix compile.elixir --force` in a child `mix` process rooted at the target project. That compiles (and therefore runs the compile-time code of) the project and its dependencies, and reflects over the resulting BEAM modules for the public-function surface. Consequences: Elixir and a fetched, compilable project are required — if `elixir`/`mix` is absent, the project's dependencies are not fetched, or `mix compile` fails, the frontend REFUSES with a clear message and a non-zero exit, never a silently-wrong answer. No network and no telemetry beyond what the project's own build performs; the tracer writes only to a temp file the analyzer reads back. A user who cannot or will not compile the project gets nothing from this frontend by design.
+
+### Elixir entrypoints, and runtime dispatch is kept alive (experimental)
+
+The Elixir reachability roots are the OTP application callback module (`mix.exs` `application/0` `mod:`, read from the compiled `.app` resource), everything its supervision tree references (child modules appear as ordinary alias/call references in the tracer, so supervised children are reached transitively), `Phoenix.Endpoint`/`Phoenix.Router` modules when Phoenix is a dependency, and `Mix.Task` modules (`lib/mix/tasks/**`, invoked by CLI name) — all production roots. `config/*.exs` module references are config roots (a module named in config is kept alive). `test/` + ExUnit is the test partition. A public function is a symbol named `Mod.fun/arity` (kind `export` in v1); a module is a symbol named `Mod`; a `.ex`/`.exs` file is a `file` subject. Reflectively-dispatched CALLBACK FUNCTIONS are kept alive, never flagged — but only relative to a module that is itself reachable: a behaviour/OTP module (`@behaviour`/`use GenServer`), a Phoenix runtime module or protocol implementation (`defimpl`), or a plain OTP-supervisable module (one defining `child_spec/1`) has its callback claims suppressed when it is supervised, aliased, or config-named. A module reachable by NOTHING is still claimable as a dead file (the keep-alive suppresses callback claims, not the module's own file claim) — capped to medium by the unit's dynamic-dispatch hazard when an `apply`/`Module.concat` exists in the unit, never confidently dead while such a computed dispatch could reach it. HEEx `~H`/`.heex` component references are visible to the tracer (empirically confirmed) and need no special handling. A project with no application callback, mix task, or Phoenix endpoint anchors no liveness and is proven-nothing rather than flagged wholesale, exactly as a TypeScript project with no entrypoint. Full parity (dependency claims via `mix.lock`, umbrella apps, per-callback precision) is post-v1.
 
 ## Per-hazard downgrade clauses
 
@@ -121,6 +129,27 @@ A source file named only as a string inside a project config file (e.g. a test r
 - **Confidence cap:** n/a (no claim effect)
 
 The `.d.ts` companion of an imported source file: kept alive in the graph via a keep-alive edge (reachability), never a claim-scoping annotation.
+
+### elixir-behaviour-callback
+
+- **Scope:** symbol-set
+- **Confidence cap:** no-claim
+
+An Elixir module that declares one or more behaviours (`@behaviour`, or `use GenServer`/`Supervisor`/`Agent`/`Task`/a custom behaviour, detected reflectively via the compiled module's `:behaviour` attributes) has its callback functions — `handle_call/3`, `init/1`, `child_spec/1`, and the rest — invoked reflectively by the OTP runtime or the behaviour dispatcher, never called by name from user source. A syntactic call-graph therefore sees zero callers and would false-flag every callback as unused. Because the frontend does not model which of a behaviour module's functions are callbacks versus ordinary helpers, the cap is deliberately the whole module's public-function surface (symbol-set): all of its function claims are suppressed (never emitted). The module's own file liveness is unaffected — a behaviour module referenced by nothing (not in any supervision tree, not aliased) is still claimable as a dead file.
+
+### elixir-dynamic-dispatch
+
+- **Scope:** project
+- **Confidence cap:** medium
+
+A file that performs dynamic dispatch — `apply/2,3`, `Kernel.apply`, `:erlang.apply/3`, or a `Module.concat`/`String.to_atom`-computed module target — can invoke, at runtime, a module and function that no static reference names. The resolved target is structurally invisible to the compiler tracer and to `mix xref` alike (confirmed in the ADR 0011 research). Since the computed target could be any module in the application, the whole workspace unit that owns the dispatching file is capped at medium confidence rather than any claim being suppressed outright: code is still surfaced, but never at `high` (a confident 'delete this') while an `apply` that might reach it exists in the same unit. Precise per-target resolution is post-v1; until then the unit-wide medium cap is the honest, false-positive-proof downgrade.
+
+### elixir-phoenix-runtime
+
+- **Scope:** symbol-set
+- **Confidence cap:** no-claim
+
+A Phoenix/OTP runtime-dispatch module — a `Phoenix.LiveView`/`Phoenix.LiveComponent`/`Phoenix.Channel`/`Phoenix.Endpoint`/`Phoenix.Router` behaviour implementation, or an Elixir protocol implementation (`defimpl`, detected via the compiled module's `__impl__/1`) or protocol definition (`__protocol__/1`) — exposes functions the framework or the protocol dispatcher calls by convention at runtime (`mount/3`, `handle_event/3`, `render/1`, a `defimpl` body dispatched by `Protocol.impl_for/1`), with no static caller anywhere. HEEx template component references, by contrast, ARE visible to the tracer (empirically confirmed in the ADR 0011 skeleton phase: `~H` and `.heex` component invocations compile to ordinary function calls the tracer records) and need no hazard. Like the behaviour-callback class, the whole module's public-function surface is suppressed (symbol-set, no-claim), because the frontend does not model which functions are the framework-called ones; the module's file liveness is unaffected.
 
 ### emit-decorator-metadata
 

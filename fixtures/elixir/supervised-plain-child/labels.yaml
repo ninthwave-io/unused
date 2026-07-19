@@ -1,0 +1,23 @@
+case: supervised-plain-child
+description: >-
+  A plain module (no `use GenServer`, no @behaviour) used as a supervised child.
+  Its child_spec/1 and start_link/1 are invoked reflectively by the supervisor,
+  never by name — so they must be kept alive WITHOUT relying on a behaviour
+  declaration. Isolates the OTP-supervisable keep-alive from the behaviour one.
+subjects:
+  - kind: export
+    name: PlainSup.Cache.child_spec/1
+    file: lib/plainsup/cache.ex
+    expected: alive
+    because: >-
+      The supervisor calls PlainSup.Cache.child_spec/1 reflectively to build the
+      child spec; defining child_spec/1 marks the module OTP-supervisable, so its
+      lifecycle callbacks are kept alive even though it declares no behaviour.
+  - kind: export
+    name: PlainSup.Cache.start_link/1
+    file: lib/plainsup/cache.ex
+    expected: alive
+    because: >-
+      start_link/1 is invoked reflectively via the child spec's {module, fun,
+      args} start tuple, never called by name — kept alive as an OTP lifecycle
+      callback.

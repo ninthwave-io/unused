@@ -1,0 +1,29 @@
+case: test-only-zombie
+description: >-
+  A helper module reached only from tests is a whole test-only file, and a test
+  exercising only that test-only code is a zombie test; a test exercising
+  production code is a real test and must never be flagged.
+subjects:
+  - kind: file
+    name: lib/tob/fixture_factory.ex
+    file: lib/tob/fixture_factory.ex
+    expected: test-only
+    minConfidence: high
+    because: >-
+      Tob.FixtureFactory is referenced only from a test file, never from
+      production or config, so the whole file is deletable together with its test.
+  - kind: test
+    name: test/fixture_factory_test.exs
+    file: test/fixture_factory_test.exs
+    expected: test-only
+    minConfidence: high
+    because: >-
+      The test exercises only Tob.FixtureFactory — itself test-only — so it
+      reaches no production-alive code and is a zombie test.
+  - kind: test
+    name: test/calc_test.exs
+    file: test/calc_test.exs
+    expected: alive
+    because: >-
+      calc_test.exs exercises Tob.Calc.add/2, which the application callback also
+      uses, so it is a real test of production-alive code, never a zombie.

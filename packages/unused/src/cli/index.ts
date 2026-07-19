@@ -74,10 +74,11 @@ import {
   ID_VERSION,
   type SubjectKind,
 } from "../core/claims/index.js";
+import { analyzeProjectAuto } from "../frontends/dispatch.js";
+import { ElixirFrontendError } from "../frontends/elixir/index.js";
 import {
   type AnalyzeResult,
   type AnalyzeWithGraph,
-  analyzeProject,
   analyzeProjectWithGraph,
 } from "../frontends/ts/analyze.js";
 import {
@@ -325,7 +326,7 @@ async function runAnalysis(
   }
 
   try {
-    const result = await analyzeProject(
+    const result = await analyzeProjectAuto(
       root,
       configArg === undefined ? {} : { configPath: configArg },
     );
@@ -339,9 +340,12 @@ async function runAnalysis(
       return { ok: false, exitCode: EXIT_USAGE_ERROR };
     }
     const message = err instanceof Error ? err.message : String(err);
-    // A deliberate refusal (e.g. Yarn PnP, PRD §6) is not a failure — surface the
-    // message plainly rather than as an "analysis failed" error, still exit 2.
-    const prefix = err instanceof UnsupportedProjectError ? "unused:" : "unused: analysis failed:";
+    // A deliberate refusal (Yarn PnP, PRD §6; or an Elixir toolchain/compile
+    // refusal, ADR 0011) is not a failure — surface the message plainly rather
+    // than as an "analysis failed" error, still exit 2.
+    const plainRefusal =
+      err instanceof UnsupportedProjectError || err instanceof ElixirFrontendError;
+    const prefix = plainRefusal ? "unused:" : "unused: analysis failed:";
     process.stderr.write(`${prefix} ${message}\n`);
     return { ok: false, exitCode: EXIT_ANALYSIS_ERROR };
   }

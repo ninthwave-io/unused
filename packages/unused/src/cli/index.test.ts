@@ -91,6 +91,32 @@ beforeAll(() => {
   });
 }, 120_000);
 
+describe("Elixir frontend refusal (ADR 0011)", () => {
+  it("maps a toolchain-absent (mix ENOENT) refusal to exit 2 with a clear message", async () => {
+    // A directory with a mix.exs and no package.json routes to the Elixir
+    // frontend (dispatch.ts). Running the built CLI with a PATH that lacks `mix`
+    // forces the toolchain-absent refusal — the frontend's `mix` spawn ENOENTs,
+    // becomes an ElixirToolchainError, and the CLI must map it to exit 2 with a
+    // plain "unused:" message (a refusal, not an "analysis failed" crash).
+    const dir = await mkdtemp(join(tmpdir(), "unused-cli-ex-"));
+    try {
+      await writeFile(
+        join(dir, "mix.exs"),
+        'defmodule X.MixProject do\n  use Mix.Project\n  def project, do: [app: :x, version: "0.1.0"]\nend\n',
+      );
+      const result = spawnSync(process.execPath, [CLI_ENTRY, "--cwd", dir], {
+        encoding: "utf8",
+        env: { ...process.env, PATH: "/usr/bin:/bin" },
+      });
+      expect(result.status).toBe(2);
+      expect(result.stderr).toMatch(/mix.*was not found on PATH/i);
+      expect(result.stderr.startsWith("unused:")).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("checkNodeEngine (T9.1: engines.node >=22 startup check)", () => {
   it("accepts a Node version at or above the floor", () => {
     expect(checkNodeEngine("v22.0.0")).toBeUndefined();

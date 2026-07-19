@@ -1,0 +1,20 @@
+case: basic-dead-function
+description: >-
+  A public function reached from the OTP application callback is alive; a sibling
+  public function reached by nothing is a clean, high-confidence dead-code claim.
+subjects:
+  - kind: export
+    name: BasicDead.Core.unused_helper/1
+    file: lib/basic_dead/core.ex
+    expected: dead
+    minConfidence: high
+    because: >-
+      Nothing in the module graph references BasicDead.Core.unused_helper/1 and no
+      hazard applies, so it is a clean high-confidence dead public function.
+  - kind: export
+    name: BasicDead.Core.greet/1
+    file: lib/basic_dead/core.ex
+    expected: alive
+    because: >-
+      BasicDead.Application.start/2 (the production entrypoint) calls
+      BasicDead.Core.greet/1, so it is reachable and must never be flagged.
