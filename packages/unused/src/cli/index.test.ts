@@ -9,7 +9,9 @@
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Ajv2020 } from "ajv/dist/2020.js";
@@ -53,6 +55,27 @@ function compileSchema() {
 
 function runCli(args: readonly string[]) {
   return spawnSync(process.execPath, [CLI_ENTRY, ...args], { encoding: "utf8" });
+}
+
+/**
+ * Copies `fixtureDir` into a fresh temp directory, runs `fn` against it, then
+ * removes it. Every `unused baseline`/`unused check` test needs a *writable*
+ * copy — the checked-in fixture directories are shared/read-only across this
+ * whole test file, and `unused baseline` writes `.unused/baseline.jsonl` into
+ * whatever `--cwd` it's pointed at (same `mkdtemp` pattern the `--sarif`
+ * tests already use, applied here to a whole directory via `fs.cp`).
+ */
+async function withTempFixtureCopy<T>(
+  fixtureDir: string,
+  fn: (dir: string) => Promise<T>,
+): Promise<T> {
+  const dir = await mkdtemp(join(tmpdir(), "unused-cli-"));
+  try {
+    await cp(fixtureDir, dir, { recursive: true });
+    return await fn(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
 
 beforeAll(() => {
@@ -558,5 +581,366 @@ describe("unused CLI — --sarif <file> (T6.3)", () => {
     expect(result.status).toBe(2);
     expect(result.stderr).toMatch(/could not write SARIF log/);
     expect(result.stdout).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `unused baseline` / `unused check` (T7.1/T7.2, docs/phasing.md M7)
+// ---------------------------------------------------------------------------
+
+/** Read `.unused/baseline.jsonl`'s header line (first line), parsed. */
+async function readBaselineHeader(
+  dir: string,
+  rel = ".unused/baseline.jsonl",
+): Promise<Record<string, unknown>> {
+  const raw = await readFile(join(dir, rel), "utf8");
+  return JSON.parse(raw.split("\n")[0] as string);
+}
+
+/** Patch `.unused/baseline.jsonl`'s header line in place (simulates a stale baseline: analyzer upgraded, config changed, etc.). */
+async function tamperBaselineHeader(
+  dir: string,
+  patch: Record<string, unknown>,
+  rel = ".unused/baseline.jsonl",
+): Promise<void> {
+  const path = join(dir, rel);
+  const raw = await readFile(path, "utf8");
+  const lines = raw.split("\n");
+  const header = JSON.parse(lines[0] as string) as Record<string, unknown>;
+  lines[0] = JSON.stringify({ ...header, ...patch });
+  await writeFile(path, lines.join("\n"));
+}
+
+describe("unused baseline (T7.1)", () => {
+  it("writes .unused/baseline.jsonl (header + id-sorted claims) and prints a bless summary", async () => {
+    await withTempFixtureCopy(DEAD_FIXTURE, async (dir) => {
+      const result = runCli(["baseline", "--cwd", dir]);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("unused baseline: wrote 1 baseline file (1 claim blessed).");
+      expect(result.stdout).toContain("root -- 1 claim (.unused/baseline.jsonl)");
+      expect(result.stdout).toContain(
+        "by kind: 1 export, 0 file, 0 dependency, 0 endpoint, 0 test",
+      );
+      expect(result.stdout).toContain("regenerated on main only");
+
+      const raw = await readFile(join(dir, ".unused/baseline.jsonl"), "utf8");
+      const lines = raw.trim().split("\n");
+      expect(lines).toHaveLength(2); // header + 1 claim
+      const header = JSON.parse(lines[0] as string);
+      expect(header.analyzerVersion).toBe("0.1.0");
+      expect(header.idVersion).toBe(1);
+      expect(header.schemaVersion).toBe("1.1.0");
+      expect(typeof header.configHash).toBe("string");
+      expect(typeof header.generatedAt).toBe("string");
+      const claim = JSON.parse(lines[1] as string);
+      expect(claim.subject.name).toBe("subtract");
+    });
+  });
+
+  it("monorepo: writes one file per unit (root + every member, excluding an excluded member) — T7.1 acceptance", async () => {
+    await withTempFixtureCopy(WORKSPACE_FIXTURE, async (dir) => {
+      const result = runCli(["baseline", "--cwd", dir]);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("wrote 4 baseline files (2 claims blessed).");
+      expect(result.stdout).toContain("root -- 0 claims (.unused/baseline.jsonl)");
+      expect(result.stdout).toContain(
+        "packages/app -- 1 claim (packages/app/.unused/baseline.jsonl)",
+      );
+      expect(result.stdout).toContain(
+        "packages/lib -- 1 claim (packages/lib/.unused/baseline.jsonl)",
+      );
+      expect(result.stdout).toContain(
+        "packages/utils -- 0 claims (packages/utils/.unused/baseline.jsonl)",
+      );
+
+      for (const rel of [
+        ".unused/baseline.jsonl",
+        "packages/app/.unused/baseline.jsonl",
+        "packages/lib/.unused/baseline.jsonl",
+        "packages/utils/.unused/baseline.jsonl",
+      ]) {
+        const raw = await readFile(join(dir, rel), "utf8");
+        expect(raw.trim().length).toBeGreaterThan(0); // at least the header line
+      }
+      // `packages/excluded` is removed by the workspace glob's negative pattern
+      // (pnpm-workspace.yaml) — never a unit, so it never gets a baseline file.
+      await expect(
+        readFile(join(dir, "packages/excluded/.unused/baseline.jsonl"), "utf8"),
+      ).rejects.toThrow();
+    });
+  });
+
+  it("baseline claim lines are id-sorted (minimal-diff-churn contract)", async () => {
+    await withTempFixtureCopy(WORKSPACE_FIXTURE, async (dir) => {
+      const result = runCli(["baseline", "--cwd", dir]);
+      expect(result.status).toBe(0);
+      const raw = await readFile(join(dir, ".unused/baseline.jsonl"), "utf8");
+      // root has zero claims here, so exercise a unit that has some instead.
+      const rawLib = await readFile(join(dir, "packages/lib/.unused/baseline.jsonl"), "utf8");
+      const idsRoot = raw
+        .trim()
+        .split("\n")
+        .slice(1)
+        .map((l) => JSON.parse(l).id);
+      const idsLib = rawLib
+        .trim()
+        .split("\n")
+        .slice(1)
+        .map((l) => JSON.parse(l).id);
+      expect(idsRoot).toEqual([...idsRoot].sort());
+      expect(idsLib).toEqual([...idsLib].sort());
+    });
+  });
+
+  it("--help / -h print the general help and exit 0 (no --cwd needed)", () => {
+    for (const args of [
+      ["baseline", "--help"],
+      ["baseline", "-h"],
+    ]) {
+      const result = runCli(args);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("USAGE");
+    }
+  });
+});
+
+describe("unused check (T7.2)", () => {
+  it("exits 3 with a 'run: unused baseline' pointer when no baseline exists", () => {
+    const result = runCli(["check", "--cwd", DEAD_FIXTURE]);
+    expect(result.status).toBe(3);
+    expect(result.stderr).toMatch(/no baseline found/);
+    expect(result.stderr).toMatch(/unused baseline/);
+    expect(result.stdout).toBe("");
+  });
+
+  it("clean: no changes since baseline -> exit 0, '✓ no new dead weight'", async () => {
+    await withTempFixtureCopy(DEAD_FIXTURE, async (dir) => {
+      expect(runCli(["baseline", "--cwd", dir]).status).toBe(0);
+      const check = runCli(["check", "--cwd", dir]);
+      expect(check.status).toBe(0);
+      expect(check.stdout).toContain("PASS no new dead weight since baseline -- exit 0");
+      expect(check.stdout).toMatch(/^baseline: \d{4}-\d{2}-\d{2} \(1 claim, analyzer 0\.1\.0\)/);
+    });
+  });
+
+  it("new claim on branch -> exit 1, prints the new claim, remediation, and the verdict line", async () => {
+    await withTempFixtureCopy(DEAD_FIXTURE, async (dir) => {
+      expect(runCli(["baseline", "--cwd", dir]).status).toBe(0);
+
+      const mathPath = join(dir, "src/math.ts");
+      const original = await readFile(mathPath, "utf8");
+      await writeFile(
+        mathPath,
+        `${original}\nexport function divide(a: number, b: number): number {\n  return a / b;\n}\n`,
+      );
+
+      const check = runCli(["check", "--cwd", dir]);
+      expect(check.status).toBe(1);
+      expect(check.stdout).toContain("unused  export  divide  src/math.ts");
+      expect(check.stdout).toContain("remediation:");
+      expect(check.stdout).toContain("unused:ignore <reason>");
+      expect(check.stdout).toContain("re-baseline on main");
+      expect(check.stdout).toContain("FAIL 1 new high-confidence claim since baseline");
+      expect(check.stdout).toMatch(/exit 1$/m);
+    });
+  });
+
+  it("suppressed new claim does NOT gate the build (suppression is the escape hatch)", async () => {
+    await withTempFixtureCopy(DEAD_FIXTURE, async (dir) => {
+      expect(runCli(["baseline", "--cwd", dir]).status).toBe(0);
+
+      const mathPath = join(dir, "src/math.ts");
+      const original = await readFile(mathPath, "utf8");
+      await writeFile(
+        mathPath,
+        `${original}\n/* unused:ignore migration pending */\nexport function scratchFn(): void {\n  console.log("scratch");\n}\n`,
+      );
+
+      const check = runCli(["check", "--cwd", dir]);
+      expect(check.status).toBe(0);
+      expect(check.stdout).toContain("suppressed, not gated");
+      expect(check.stdout).toContain("scratchFn");
+      expect(check.stdout).toContain("PASS no new dead weight since baseline -- exit 0");
+    });
+  });
+
+  it("a REASONLESS suppression (/* unused:ignore */, no reason) does NOT escape the gate — it gates like an unsuppressed claim (reviewer finding)", async () => {
+    await withTempFixtureCopy(DEAD_FIXTURE, async (dir) => {
+      expect(runCli(["baseline", "--cwd", dir]).status).toBe(0);
+
+      const mathPath = join(dir, "src/math.ts");
+      const original = await readFile(mathPath, "utf8");
+      await writeFile(
+        mathPath,
+        `${original}\n/* unused:ignore */\nexport function scratchFn(): void {\n  console.log("scratch");\n}\n`,
+      );
+
+      const check = runCli(["check", "--cwd", dir]);
+      expect(check.status).toBe(1);
+      expect(check.stdout).toContain("unused  export  scratchFn");
+      expect(check.stdout).not.toContain("suppressed, not gated");
+      expect(check.stdout).toContain("FAIL 1 new high-confidence claim since baseline");
+    });
+  });
+
+  it("rename reads as one resolved claim plus one new claim (ADR 0006 documented behaviour)", async () => {
+    await withTempFixtureCopy(DEAD_FIXTURE, async (dir) => {
+      expect(runCli(["baseline", "--cwd", dir]).status).toBe(0);
+
+      const mathPath = join(dir, "src/math.ts");
+      const original = await readFile(mathPath, "utf8");
+      await writeFile(mathPath, original.replace(/subtract/g, "subtractNumbers"));
+
+      const check = runCli(["check", "--cwd", dir]);
+      expect(check.status).toBe(1);
+      expect(check.stdout).toContain("subtractNumbers");
+      expect(check.stdout).toContain("1 claim resolved since baseline.");
+      expect(check.stdout).toContain("FAIL 1 new high-confidence claim since baseline");
+    });
+  });
+
+  it("monorepo: per-workspace baselines are read and diffed together — clean run exits 0", async () => {
+    await withTempFixtureCopy(WORKSPACE_FIXTURE, async (dir) => {
+      expect(runCli(["baseline", "--cwd", dir]).status).toBe(0);
+      const check = runCli(["check", "--cwd", dir]);
+      expect(check.status).toBe(0);
+      expect(check.stdout).toContain("PASS no new dead weight since baseline -- exit 0");
+      expect(check.stdout).toMatch(/\(2 claims, analyzer 0\.1\.0\)/); // total across every workspace's baseline
+    });
+  });
+
+  it("gate.threshold (config): a new medium-confidence claim gates only once the threshold is lowered to medium", async () => {
+    await withTempFixtureCopy(MIXED_CONFIDENCE_FIXTURE, async (dir) => {
+      expect(runCli(["baseline", "--cwd", dir]).status).toBe(0);
+
+      // Under the SAME computed-import hazard as the fixture's existing
+      // mods/alpha.ts and mods/beta.ts (both medium) — a new file here is a
+      // genuinely new medium-confidence claim, not high.
+      await writeFile(
+        join(dir, "src/mods/gamma.ts"),
+        'export function gammaFn(): void {\n  console.log("gamma");\n}\n',
+      );
+
+      const defaultThreshold = runCli(["check", "--cwd", dir]);
+      expect(defaultThreshold.status).toBe(0); // default gate is high; the new claim is medium
+
+      await writeFile(
+        join(dir, "unused.config.jsonc"),
+        JSON.stringify({ gate: { threshold: "medium" } }),
+      );
+      const mediumThreshold = runCli(["check", "--cwd", dir]);
+      expect(mediumThreshold.status).toBe(1);
+      expect(mediumThreshold.stdout).toContain("gamma.ts");
+      expect(mediumThreshold.stdout).toContain(
+        "1 new medium-confidence-or-above claim since baseline",
+      );
+    });
+  });
+
+  it("--min-confidence is rejected: the gate is controlled by config gate.threshold only (T7.2, documented)", () => {
+    const result = runCli(["check", "--min-confidence", "medium"]);
+    expect(result.status).toBe(3);
+    expect(result.stderr).toMatch(/does not take --min-confidence/);
+    expect(result.stderr).toMatch(/gate\.threshold/);
+  });
+
+  it("analyzerVersion-only mismatch (idVersion/schema unchanged) warns but still evaluates the gate normally (PRD §4 graceful degrade)", async () => {
+    await withTempFixtureCopy(DEAD_FIXTURE, async (dir) => {
+      expect(runCli(["baseline", "--cwd", dir]).status).toBe(0);
+      const before = await readBaselineHeader(dir);
+      await tamperBaselineHeader(dir, { analyzerVersion: "9.9.9" });
+
+      const check = runCli(["check", "--cwd", dir]);
+      expect(check.status).toBe(0); // zero NEW claims -> a genuinely-evaluated pass, not a skip
+      expect(check.stdout).toMatch(/different conditions than this run/);
+      expect(check.stdout).toContain(
+        `analyzer version: baseline 9.9.9, current ${before["analyzerVersion"]}`,
+      );
+      expect(check.stdout).toContain("re-baseline");
+      expect(check.stdout).toContain("PASS no new dead weight since baseline -- exit 0");
+      expect(check.stdout).not.toContain("gate not evaluated");
+    });
+  });
+
+  it("configHash mismatch (config changed underneath the baseline) warns but still evaluates the gate normally", async () => {
+    await withTempFixtureCopy(DEAD_FIXTURE, async (dir) => {
+      expect(runCli(["baseline", "--cwd", dir]).status).toBe(0);
+      await tamperBaselineHeader(dir, { configHash: "0000deadbeef" });
+
+      const check = runCli(["check", "--cwd", dir]);
+      expect(check.status).toBe(0);
+      expect(check.stdout).toContain("config: changed since baseline (configHash differs)");
+      expect(check.stdout).toContain("PASS no new dead weight since baseline -- exit 0");
+      expect(check.stdout).not.toContain("gate not evaluated");
+    });
+  });
+
+  it("schemaVersion MINOR-only mismatch (e.g. 1.1.0 -> 1.2.0) still evaluates the gate — only a MAJOR change makes ids incomparable (ADR 0006)", async () => {
+    await withTempFixtureCopy(DEAD_FIXTURE, async (dir) => {
+      expect(runCli(["baseline", "--cwd", dir]).status).toBe(0);
+      await tamperBaselineHeader(dir, { schemaVersion: "1.2.0" });
+
+      const check = runCli(["check", "--cwd", dir]);
+      expect(check.status).toBe(0);
+      expect(check.stdout).toContain("schema version: baseline 1.2.0, current 1.1.0");
+      expect(check.stdout).toContain("PASS no new dead weight since baseline -- exit 0");
+      expect(check.stdout).not.toContain("gate not evaluated");
+    });
+  });
+
+  it("idVersion mismatch skips the gate entirely (exit 0, 'gate not evaluated') even when a genuinely new claim exists — never paints the repo as failing (PRD §4, reviewer fix)", async () => {
+    await withTempFixtureCopy(DEAD_FIXTURE, async (dir) => {
+      expect(runCli(["baseline", "--cwd", dir]).status).toBe(0);
+      await tamperBaselineHeader(dir, { idVersion: 99 });
+
+      // A real new claim: under a matching idVersion this alone would fail
+      // the gate (exit 1, see the "new claim on branch" test above). Under
+      // an idVersion mismatch it must NOT — the ids aren't comparable, so
+      // this would otherwise be a false "everything is new" avalanche.
+      const mathPath = join(dir, "src/math.ts");
+      const original = await readFile(mathPath, "utf8");
+      await writeFile(
+        mathPath,
+        `${original}\nexport function divide(a: number, b: number): number {\n  return a / b;\n}\n`,
+      );
+
+      const check = runCli(["check", "--cwd", dir]);
+      expect(check.status).toBe(0);
+      expect(check.stdout).toContain("claim id recipe (idVersion): baseline 99, current 1");
+      expect(check.stdout).toMatch(/gate not evaluated.*re-baseline required.*exit 0/);
+      expect(check.stdout).not.toContain("divide"); // no NEW-claim list is rendered in this state
+      expect(check.stdout).not.toContain("PASS no new dead weight");
+      expect(check.stdout).not.toContain("FAIL");
+    });
+  });
+
+  it("schemaVersion MAJOR mismatch (e.g. 1.1.0 -> 2.0.0) also skips the gate (ADR 0006: only MAJOR can change claim shape/identity)", async () => {
+    await withTempFixtureCopy(DEAD_FIXTURE, async (dir) => {
+      expect(runCli(["baseline", "--cwd", dir]).status).toBe(0);
+      await tamperBaselineHeader(dir, { schemaVersion: "2.0.0" });
+
+      const mathPath = join(dir, "src/math.ts");
+      const original = await readFile(mathPath, "utf8");
+      await writeFile(
+        mathPath,
+        `${original}\nexport function divide(a: number, b: number): number {\n  return a / b;\n}\n`,
+      );
+
+      const check = runCli(["check", "--cwd", dir]);
+      expect(check.status).toBe(0);
+      expect(check.stdout).toContain("schema version: baseline 2.0.0, current 1.1.0");
+      expect(check.stdout).toMatch(/gate not evaluated.*re-baseline required.*exit 0/);
+    });
+  });
+
+  it("--help / -h print the general help and exit 0", () => {
+    for (const args of [
+      ["check", "--help"],
+      ["check", "-h"],
+    ]) {
+      const result = runCli(args);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("USAGE");
+    }
   });
 });

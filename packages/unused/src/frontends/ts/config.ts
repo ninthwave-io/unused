@@ -87,6 +87,7 @@
  * message is easier to test and to write CLI copy against.
  */
 
+import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { join, resolve as resolvePath } from "node:path";
 import { globToRegExp } from "./glob.js";
@@ -140,6 +141,59 @@ export const EMPTY_CONFIG: UnusedConfig = {
   presets: undefined,
   ciSecondsPerTestFile: undefined,
 };
+
+/**
+ * A deterministic hash of the resolved effective config (PRD §4
+ * `run.configHash`; docs/phasing.md M7 T7.2 "configHash under-hashing" debt,
+ * closed here) — covers every field {@link UnusedConfig} carries: `entry`,
+ * `project`, `ignore`, `ignoreDependencies`, `workspaces` overrides,
+ * `presets`, `gate`, `ciSecondsPerTestFile`.
+ *
+ * An earlier version hashed the resolved production-entrypoint set derived
+ * from the IR graph instead of the config itself: it both **under-counted**
+ * (a config that only changes `ignore`/`project`/`gate`/`ciSecondsPerTestFile`
+ * never touches the entrypoint set, so the hash silently failed to reflect a
+ * real config change) and **over-counted** (the entrypoint set also shifts on
+ * incidental preset-detection/wildcard-export changes unrelated to config,
+ * churning the hash for reasons a baseline consumer cannot explain). Hashing
+ * the config directly fixes both: `unused check` (M7) can trust
+ * `run.configHash` as a genuine "did the config change since this baseline"
+ * signal, not an approximation.
+ *
+ * Stable serialisation: array fields are copied in their declared order
+ * (order is part of the resolved config, not normalised away) and the
+ * `workspaces` map is emitted key-sorted so JSON key-insertion order (which
+ * follows the source file, not the map's semantics) never perturbs the hash.
+ * {@link EMPTY_CONFIG} (the zero-config default) always hashes to the same
+ * value — the "no-config hash stays stable across runs" contract — since
+ * every field is empty/`undefined` regardless of which repo it came from.
+ */
+export function computeConfigHash(config: UnusedConfig): string {
+  const payload = JSON.stringify(canonicalConfigForHash(config));
+  return createHash("sha256").update(payload, "utf8").digest("hex").slice(0, 12);
+}
+
+function canonicalConfigForHash(config: UnusedConfig): unknown {
+  const workspaceKeys = Object.keys(config.workspaces).sort();
+  return {
+    entry: [...config.entry],
+    project: [...config.project],
+    ignore: [...config.ignore],
+    ignoreDependencies: [...config.ignoreDependencies],
+    workspaces: workspaceKeys.map((key) => {
+      const override = config.workspaces[key] as WorkspaceConfigOverride;
+      return {
+        key,
+        entry: [...override.entry],
+        project: [...override.project],
+        ignore: [...override.ignore],
+      };
+    }),
+    gate: config.gate === undefined ? null : { threshold: config.gate.threshold },
+    presets: config.presets === undefined ? null : [...config.presets],
+    ciSecondsPerTestFile: config.ciSecondsPerTestFile ?? null,
+  };
+}
 
 /**
  * Thrown by {@link loadConfig} for anything the CLI should report as a usage

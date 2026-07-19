@@ -9,6 +9,7 @@
  */
 export const CLAIMS_MODULE = "core/claims" as const;
 
+export * from "./baseline-diff.js";
 export * from "./id.js";
 export * from "./summary.js";
 export * from "./types.js";

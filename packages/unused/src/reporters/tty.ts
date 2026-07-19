@@ -153,8 +153,12 @@ const SECTIONS: readonly SectionDef[] = [
 // Small formatting helpers
 // ---------------------------------------------------------------------------
 
-/** Manual thousands separator — deterministic, no ICU/locale dependency (non-negative integers only). */
-function formatCount(n: number): string {
+/**
+ * Manual thousands separator — deterministic, no ICU/locale dependency
+ * (non-negative integers only). Exported for reuse by
+ * `reporters/check.ts`/`reporters/baseline.ts` (T7.1/T7.2).
+ */
+export function formatCount(n: number): string {
   return Math.trunc(n)
     .toString()
     .replace(/\B(?=(\d{3})+(?!\d))/g, ",");
@@ -168,7 +172,8 @@ function plural(n: number): string {
   return n === 1 ? "" : "s";
 }
 
-function locLabel(claim: Claim): string {
+/** Exported for reuse by `reporters/check.ts` (T7.2) — the same "file:line" location label `unused check`'s NEW-claim rows use. */
+export function locLabel(claim: Claim): string {
   return `${claim.subject.loc.file}:${claim.subject.loc.span[0]}`;
 }
 
@@ -213,8 +218,12 @@ function wrap(text: string, code: string, color: boolean): string {
  * "missing reason" callout `suppression.ts`'s own docstring anticipates
  * ("so M6 renders the warning rather than silently dropping the
  * directive") instead of a blank.
+ *
+ * Exported for reuse by `reporters/check.ts` (T7.2) — `unused check`'s NEW-
+ * claim rows render the identical one-line why (cli-ux §3: "each with the
+ * same one-line why").
  */
-function whyText(claim: Claim, showSuppressed: boolean): string {
+export function whyText(claim: Claim, showSuppressed: boolean): string {
   const base = claim.evidence[0]?.detail ?? "";
   if (showSuppressed && claim.suppression !== undefined) {
     const reason =

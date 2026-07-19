@@ -8,6 +8,14 @@
  */
 export const REPORTERS_MODULE = "reporters" as const;
 
+export { type BaselineUnitSummary, renderBlessSummary } from "./baseline.js";
+export {
+  type CheckBaselineMeta,
+  type CheckVersionMismatch,
+  type MismatchField,
+  type RenderCheckOptions,
+  renderCheckReport,
+} from "./check.js";
 export {
   applyClaimFilters,
   type ClaimFilterOptions,
@@ -24,8 +32,11 @@ export {
   type SarifRun,
 } from "./sarif.js";
 export {
+  formatCount,
+  locLabel,
   renderTtyReport,
   type TtyLayout,
   type TtyRenderOptions,
   type TtyReportContext,
+  whyText,
 } from "./tty.js";

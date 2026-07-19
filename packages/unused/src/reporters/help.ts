@@ -1,13 +1,13 @@
 /**
- * `--help` / `-h` text (T6.1, docs/phasing.md M6), in the cli-ux voice:
- * scannable, action-first, evidence-first. Documents exactly the flag
- * surface this build implements (`unused [options]`) — `unused check` /
- * `baseline` / `why` / `mcp` / `report` / `badge` are named on the PRD §3
- * command table but ship in later milestones (M7/M8/M9), so they are
- * deliberately absent here rather than documented as if they already work:
- * "zero-config first run is the pitch ... it gets one chance" (cli-ux §1) —
- * a `--help` example that fails when tried is the same trust break as a
- * wrong claim.
+ * `--help` / `-h` text (T6.1/T7.1/T7.2, docs/phasing.md M6/M7), in the
+ * cli-ux voice: scannable, action-first, evidence-first. Documents exactly
+ * the command/flag surface this build implements (`unused [options]`,
+ * `unused check`, `unused baseline`) — `why` / `mcp` / `report` / `badge`
+ * are named on the PRD §3 command table but ship in later milestones
+ * (M8/M9), so they are deliberately absent here rather than documented as
+ * if they already work: "zero-config first run is the pitch ... it gets one
+ * chance" (cli-ux §1) — a `--help` example that fails when tried is the
+ * same trust break as a wrong claim.
  */
 
 const OPTIONS: ReadonlyArray<{ flag: string; lines: readonly string[] }> = [
@@ -69,8 +69,20 @@ dependencies, each with a confidence grade and a one-line reference-graph
 
 USAGE
   unused [options]
+  unused check [--cwd <dir>] [--config <path>]
+  unused baseline [--cwd <dir>] [--config <path>]
 
-OPTIONS
+COMMANDS
+  unused              Analyse the repo, print the terminal report (default).
+  unused check        CI gate: compare this run's claims against the
+                       committed baseline, fail only on claims new since it
+                       (PRD §3). Gated at config gate.threshold (default
+                       high) — --min-confidence has no effect on the gate.
+  unused baseline     Write/update .unused/baseline.jsonl (one per
+                       workspace) and print what it blessed. Regenerate on
+                       main only — never on a feature branch.
+
+OPTIONS (default report + check/baseline)
 ${renderOptions()}
 
 EXAMPLES
@@ -89,13 +101,21 @@ EXAMPLES
   unused --all --json
       Every claim, not just the top 10 per section, as JSON.
 
+  unused baseline
+      Bless the current claims as the committed baseline (run on main).
+
+  unused check
+      Fail the build if any high-confidence claim is new since baseline.
+
 EXIT CODES
-  0   success — report printed (findings do not change this).
+  0   success — report printed, or the gate/baseline passed.
+  1   gate failure — \`unused check\` found new dead weight at or above
+      gate.threshold.
   2   analysis error — the tool could not complete (bad tsconfig, unsupported
       project layout).
-  3   usage error — a bad flag or an invalid flag value, e.g. --min-confidence.
-  (1 is reserved for \`unused check\`'s gate failure, arriving in a later
-  milestone — this build never emits it.)
+  3   usage error — a bad flag or an invalid flag value (e.g.
+      --min-confidence), or \`unused check\` with no baseline (run
+      \`unused baseline\` first).
 
 docs: unused.dev
 `;

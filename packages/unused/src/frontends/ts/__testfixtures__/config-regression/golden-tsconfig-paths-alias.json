@@ -5,7 +5,7 @@
     "version": "0.1.0"
   },
   "run": {
-    "configHash": "10e96c2464f3",
+    "configHash": "2d7e0d8ab93a",
     "startedAt": "1970-01-01T00:00:00.000Z"
   },
   "claims": [
@@ -84,5 +84,12 @@
   "productionEntrypointCount": 1,
   "fileCount": 3,
   "workspaceCount": 1,
-  "repoName": "fixture-tsconfig-paths-alias"
+  "repoName": "fixture-tsconfig-paths-alias",
+  "units": [
+    {
+      "rootRelDir": "",
+      "name": "fixture-tsconfig-paths-alias"
+    }
+  ],
+  "gateThreshold": "high"
 }

@@ -55,7 +55,6 @@
  *    config-root set (loaded by a tool by filename convention, not an import).
  */
 
-import { createHash } from "node:crypto";
 import type { Dirent } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve as resolvePath, sep } from "node:path";
@@ -78,7 +77,9 @@ import {
 import {
   type ConfigUnit,
   collectConfigEntrypoints,
+  computeConfigHash,
   filterFilesByConfig,
+  type GateThreshold,
   isClaimable,
   isIgnoredDependency,
   loadConfig,
@@ -156,8 +157,13 @@ export interface AnalyzeOptions {
  * out-of-band: the header needs repo identity and scale figures the claim
  * schema itself has no field for (PRD §4 fixes the `ClaimRun` shape; these
  * three are analysis-time facts a reporter needs alongside it, not inside
- * it). The CLI strips all four non-schema fields before any `--json`/SARIF
+ * it). The CLI strips all six non-schema fields before any `--json`/SARIF
  * output, exactly as it already did for `productionEntrypointCount`.
+ *
+ * `units` and `gateThreshold` (M7, docs/phasing.md T7.1/T7.2) serve
+ * `unused baseline`/`unused check`: baselines are written and diffed
+ * per-workspace (`.unused/baseline.jsonl`, root + one per member), and the
+ * gate needs the resolved threshold without re-loading config a second time.
  */
 export interface AnalyzeResult extends ClaimRun {
   /** Count of production entrypoint files found before claim emission. */
@@ -175,6 +181,21 @@ export interface AnalyzeResult extends ClaimRun {
   readonly workspaceCount: number;
   /** Root `package.json` `name`, or the root directory's basename when absent. */
   readonly repoName: string;
+  /**
+   * Every package unit in this run, root first (`rootRelDir: ""`) then each
+   * workspace member — the same partition `annotateClaimPackages` tags
+   * `subject.loc.package` from, exposed so `unused baseline`/`unused check`
+   * (M7) can locate `.unused/baseline.jsonl` per unit without re-detecting
+   * the workspace layout themselves.
+   */
+  readonly units: readonly { readonly rootRelDir: string; readonly name: string | null }[];
+  /**
+   * The resolved gate confidence floor (`unused check`'s default `"high"`,
+   * or config `gate.threshold` — PRD §6/cli-ux §3) computed once here so the
+   * CLI does not need a second `loadConfig` call to answer "what does the
+   * gate compare against".
+   */
+  readonly gateThreshold: GateThreshold;
 }
 
 /**
@@ -503,7 +524,7 @@ export async function analyzeProject(
     tool: { name: "unused", version },
     run: {
       root,
-      configHash: configHash(graph, root),
+      configHash: computeConfigHash(config),
       startedAt: now.toISOString(),
       durationMs: Date.now() - start,
     },
@@ -516,6 +537,8 @@ export async function analyzeProject(
     fileCount: files.length,
     workspaceCount: units.length,
     repoName: nameOfPackage(rootPkg) ?? basename(root),
+    units: units.map((u) => ({ rootRelDir: u.rootRelDir, name: u.name })),
+    gateThreshold: config.gate?.threshold ?? "high",
   };
 }
 
@@ -1180,16 +1203,6 @@ function isInsideRoot(p: string, root: string): boolean {
 function countLines(source: string): number {
   if (source.length === 0) return 1;
   return source.split(/\r\n|\r|\n/).length;
-}
-
-/** A deterministic, config-comparison hash (PRD §4 `run.configHash`). */
-function configHash(graph: IRGraph, root: string): string {
-  const entrypoints = graph
-    .entrypoints()
-    .map((e) => `${e.entryKind}:${e.file}:${e.reason}`)
-    .sort();
-  const payload = JSON.stringify({ root: toPosixRel(root, root), entrypoints });
-  return createHash("sha256").update(payload, "utf8").digest("hex").slice(0, 12);
 }
 
 /** Absolute path → POSIX, project-relative. */
