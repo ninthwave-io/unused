@@ -1,6 +1,6 @@
 # Progress — unused
 
-Updated: 2026-07-19. **v1 BUILD COMPLETE — M1–M9 all done and tagged (m1..m9).** Gates M5–M9 self-approved under the founder's 2026-07-19 delegation ("review on my behalf, do not stop for approval, complete the implementation").
+Updated: 2026-07-19 (evening). **v1 BUILD COMPLETE + pre-release iteration round done — M1–M9 all done and tagged (m1..m9).** Gates M5–M9 self-approved under the founder's 2026-07-19 delegation ("review on my behalf, do not stop for approval, complete the implementation").
 
 ## What shipped (v1, private-beta ready)
 `@ninthwave-io/unused` — a liveness oracle for TS/JS. Tiers 1–2 fully implemented:
@@ -20,3 +20,12 @@ Tier-3 endpoint extraction (Next API routes first — schema contract already sh
 
 ## Resuming a session
 Read CLAUDE.md, this file, docs/adr/ (0001–0010 all Accepted), docs/phasing.md, docs/smoke/M3–M5.md. The corpus + gates are the quality contract; never commit red; labels are truth.
+
+## Pre-v0.1.0 iteration round (founder directives, 2026-07-19)
+- **Remote live**: github.com/ninthwave-io/unused; ruleset `main-protection` active (PR + required `ci` check, no force-push/deletion, admin bypass). Tagging policy: semver-only on the remote (m1–m9 were never pushed; local process markers only).
+- **reference-codebase TS/JS assessment** (docs/smoke/reference-codebase-ts-sanitized.md; detailed triage scratch-only): found + fixed the whole-run hazard-cap scoping bug (per-unit caps now, incl. referenced project-reference units), storybook preset (hidden-dir discovery, cross-unit aggregator globs), cdk preset, capacitor dep rule. Customer repo: 0 high/477 flat-medium → 313 high/19 medium, ALL high triaged true-positive, story/CDK FPs → 0.
+- **Elixir frontend skeleton** (ADR 0011, Accepted): compiler-tracer approach (research: docs/research/elixir-landscape-2026-07.md — mix xref module-level-only; boundary = prior art; no live competitor). HEEx empirically VISIBLE to tracing. Behaviour-honesty fix (unreferenced behaviour module stays claimable). fixtures/elixir 8 cases precision 1.0, toolchain-gated in CI. reference-codebase Phoenix app: 1062 claims all-medium, 0 high FPs. Disclosure: Elixir analysis compiles the target project (unlike TS) — in the assumption set.
+- Corpus: TS 40 cases (precision 1.0, 0 FP) + Elixir 8 cases (precision 1.0). 857 tests.
+
+## Before v0.1.0 (remaining)
+Founder review of the reference-codebase deletion list (the real-use-case validation is the founder acting on it); decide Elixir experimental-flag wording for the README; then tag v0.1.0 (fires provenance publish; npm org + trusted publishing already registered).
