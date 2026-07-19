@@ -28,20 +28,31 @@ describe("renderHelp", () => {
     expect(text).toMatch(/\b3\b.*usage error/);
   });
 
-  it("documents check/baseline/why/mcp as real commands (T7.1/T7.2/T8.2/T8.3)", () => {
-    for (const cmd of ["unused check", "unused baseline", "unused why", "unused mcp"]) {
+  it("documents check/baseline/why/mcp/report/badge as real commands (T7.1/T7.2/T8.2/T8.3/T9.3)", () => {
+    for (const cmd of [
+      "unused check",
+      "unused baseline",
+      "unused why",
+      "unused mcp",
+      "unused report",
+      "unused badge",
+    ]) {
       expect(text).toContain(cmd);
     }
     expect(text).toMatch(/^ {2}unused check\b/m);
     expect(text).toMatch(/^ {2}unused baseline\b/m);
     expect(text).toMatch(/^ {2}unused why\b/m);
     expect(text).toMatch(/^ {2}unused mcp\b/m);
+    expect(text).toMatch(/^ {2}unused report\b/m);
+    expect(text).toMatch(/^ {2}unused badge\b/m);
   });
 
-  it("does not document unshipped subcommands (report/badge — land in M9)", () => {
-    for (const cmd of ["unused report", "unused badge"]) {
-      expect(text).not.toContain(cmd);
-    }
+  it("documents --md/--html on `unused report` and the .unused/ artifact paths", () => {
+    expect(text).toContain("--md");
+    expect(text).toContain("--html");
+    expect(text).toContain(".unused/report.md");
+    expect(text).toContain(".unused/report.html");
+    expect(text).toContain(".unused/badge.json");
   });
 
   it("includes at least one runnable example for every documented flag/command category", () => {
@@ -50,6 +61,8 @@ describe("renderHelp", () => {
     expect(text).toContain("unused --filter export --min-confidence high");
     expect(text).toContain("unused baseline");
     expect(text).toContain("unused check");
+    expect(text).toContain("unused report --html");
+    expect(text).toContain("unused badge");
   });
 
   it("ends with the docs pointer", () => {

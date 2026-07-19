@@ -9,10 +9,12 @@
  * `unused check` (compare against it, exit 1 on new dead weight).
  * M8 (T8.2/T8.3, docs/phasing.md) adds `unused why <symbol|file>` (the
  * reference-path explanation, cli-ux §4) and `unused mcp` (the stdio MCP
- * server over the same engine, PRD §5).
- *
- * Still no `report` / `badge` (PRD §3 — land in M9); `--help` says so rather
- * than documenting a command that doesn't run yet.
+ * server over the same engine, PRD §5). M9 (T9.3, docs/phasing.md) adds
+ * `unused report [--md|--html]` (the shareable deletion-report artifact,
+ * `.unused/report.<ext>`, docs/design/report-and-badge.md §1) and
+ * `unused badge` (the shields.io endpoint JSON badge, `.unused/badge.json`,
+ * report-and-badge.md §2). T9.1 adds the `engines.node >=22` startup check
+ * (`checkNodeEngine`, called from `main()` before anything else runs).
  *
  * ## Flag composition (delegation-spec decision, PRD §3)
  * `--filter`/`--min-confidence` filter claims in **every** output —
@@ -42,21 +44,29 @@
  *       mismatch — reviewer fix, see `runCheckCommand`: ids aren't
  *       comparable, so the comparison is skipped rather than either
  *       fabricating a pass or painting the whole repo "new"), a successful
- *       `unused baseline`, or `--help`.
+ *       `unused baseline`/`unused report`/`unused badge`, or `--help`. A
+ *       Node version below `engines.node` is exit 3, not 0 (`checkNodeEngine`
+ *       — see below), and is checked before any of the above can run.
  *   1 — `unused check` gate failure: at least one claim at/above
  *       `gate.threshold` is new since the baseline (T7.2). Never emitted by
- *       the default report, `unused baseline`, or a not-evaluated gate.
+ *       the default report, `unused baseline`, `unused report`/`badge`, or a
+ *       not-evaluated gate.
  *   2 — analysis could not proceed (nonexistent/unreadable `--cwd`,
- *       `analyzeProject` threw an analysis error e.g. Yarn PnP refusal, or
- *       the requested `--sarif` path could not be written).
+ *       `analyzeProject` threw an analysis error e.g. Yarn PnP refusal, the
+ *       requested `--sarif` path could not be written, or `unused
+ *       report`/`unused badge` could not write their `.unused/` artifact).
  *   3 — usage error (unknown flag, a value-taking flag missing its
  *       argument, an invalid `--filter`/`--min-confidence` value naming the
- *       flag, `analyzeProject` threw `ConfigError`, or `unused check` found
+ *       flag, `--md`/`--html` both given to `unused report`,
+ *       `analyzeProject` threw `ConfigError`, a Node version below
+ *       `engines.node`, or `unused check` found
  *       no baseline / an unparseable one — cli-ux §6).
  */
 
-import { stat, writeFile } from "node:fs/promises";
-import { resolve as resolvePath } from "node:path";
+import { realpathSync } from "node:fs";
+import { mkdir, stat, writeFile } from "node:fs/promises";
+import { join, resolve as resolvePath } from "node:path";
+import { fileURLToPath } from "node:url";
 import { whyAlive } from "../core/analysis/index.js";
 import {
   type Confidence,
@@ -85,11 +95,18 @@ import {
   type BaselineUnitSummary,
   type CheckVersionMismatch,
   type ClaimFilterOptions,
+  computeBadge,
   hasActiveFilters,
   type MismatchField,
+  type ReportFormat,
+  renderBadgeConfirmation,
+  renderBadgeJson,
   renderBlessSummary,
   renderCheckReport,
   renderHelp,
+  renderReportConfirmation,
+  renderReportHtml,
+  renderReportMarkdown,
   renderSarif,
   renderTtyReport,
   renderWhy,
@@ -100,6 +117,28 @@ const EXIT_OK = 0;
 const EXIT_GATE_FAILURE = 1;
 const EXIT_ANALYSIS_ERROR = 2;
 const EXIT_USAGE_ERROR = 3;
+
+/** `engines.node` floor (package.json, ADR 0008: "Node ≥22 declared via engines and checked at startup with a clear error"). */
+const MIN_NODE_MAJOR = 22;
+
+/**
+ * Checks `versionString` (`process.version`-shaped: `vX.Y.Z…`) against
+ * {@link MIN_NODE_MAJOR}. Returns the error message to print when it's below
+ * the floor, or `undefined` when it satisfies it (including when the string
+ * is unparseable — degrading toward "let it run" rather than refusing on a
+ * format this function doesn't recognise). Exported as a pure function, and
+ * called with an explicit argument in tests, so this is verifiable without
+ * actually running the CLI under an old Node binary (T9.1 acceptance).
+ */
+export function checkNodeEngine(versionString: string = process.version): string | undefined {
+  const match = /^v?(\d+)\./.exec(versionString);
+  const major = match?.[1] === undefined ? Number.NaN : Number(match[1]);
+  if (Number.isNaN(major) || major >= MIN_NODE_MAJOR) return undefined;
+  return (
+    `unused requires Node.js >=${MIN_NODE_MAJOR} (found ${versionString}). ` +
+    `Upgrade Node — e.g. \`nvm install ${MIN_NODE_MAJOR}\` — then try again.`
+  );
+}
 
 const NO_ENTRYPOINTS_WARNING =
   "unused: no production entrypoints detected — nothing can be proven unused; " +
@@ -327,7 +366,7 @@ type SubcommandParseResult =
 
 function parseSubcommandArgs(
   argv: readonly string[],
-  commandName: "check" | "baseline",
+  commandName: "check" | "baseline" | "badge",
 ): SubcommandParseResult {
   if (argv.includes("--help") || argv.includes("-h")) {
     return { ok: true, args: { help: true } };
@@ -698,6 +737,157 @@ async function runMcpCommand(argv: readonly string[]): Promise<number> {
 }
 
 // ---------------------------------------------------------------------------
+// `unused report [--md|--html]` (T9.3, docs/design/report-and-badge.md §1)
+// ---------------------------------------------------------------------------
+
+interface ReportArgs {
+  readonly help: boolean;
+  readonly format?: ReportFormat;
+  readonly cwd?: string;
+  readonly config?: string;
+}
+
+type ReportParseResult =
+  | { readonly ok: true; readonly args: ReportArgs }
+  | { readonly ok: false; readonly message: string };
+
+/** Parse `unused report` argv: `--md`/`--html` (mutually exclusive, default `md`) plus `--cwd`/`--config`/`--help`. */
+function parseReportArgs(argv: readonly string[]): ReportParseResult {
+  if (argv.includes("--help") || argv.includes("-h")) return { ok: true, args: { help: true } };
+
+  let format: ReportFormat | undefined;
+  let cwd: string | undefined;
+  let config: string | undefined;
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i] as string;
+    if (arg === "--md" || arg === "--html") {
+      const next: ReportFormat = arg === "--md" ? "md" : "html";
+      if (format !== undefined && format !== next) {
+        return { ok: false, message: "--md and --html are mutually exclusive" };
+      }
+      format = next;
+    } else if (arg === "--cwd") {
+      const value = argv[i + 1];
+      if (value === undefined) return { ok: false, message: "--cwd requires a directory argument" };
+      cwd = value;
+      i += 1;
+    } else if (arg === "--config") {
+      const value = argv[i + 1];
+      if (value === undefined) return { ok: false, message: "--config requires a path argument" };
+      config = value;
+      i += 1;
+    } else {
+      return { ok: false, message: `unknown argument: ${arg}` };
+    }
+  }
+
+  return {
+    ok: true,
+    args: {
+      help: false,
+      ...(format === undefined ? {} : { format }),
+      ...(cwd === undefined ? {} : { cwd }),
+      ...(config === undefined ? {} : { config }),
+    },
+  };
+}
+
+/**
+ * `unused report [--md|--html]` (T9.3): always re-analyses (docs/phasing.md
+ * M9's "keep simple: always analyze" — there is no cross-invocation cache to
+ * be stale) and writes a self-contained artifact to `.unused/report.<ext>`,
+ * mirroring `unused baseline`/`unused badge`'s `.unused/` convention. Format
+ * defaults to `md` when neither flag is given (the simplest, most
+ * paste-friendly artifact — HTML is the opt-in for "open this in a browser
+ * and screenshot it").
+ */
+async function runReportCommand(argv: readonly string[]): Promise<number> {
+  const parsed = parseReportArgs(argv);
+  if (!parsed.ok) {
+    process.stderr.write(`unused: ${parsed.message}\n`);
+    return EXIT_USAGE_ERROR;
+  }
+  if (parsed.args.help) {
+    process.stdout.write(renderHelp());
+    return EXIT_OK;
+  }
+
+  const outcome = await runAnalysis(parsed.args.cwd, parsed.args.config);
+  if (!outcome.ok) return outcome.exitCode;
+  const { root, result } = outcome;
+
+  const format: ReportFormat = parsed.args.format ?? "md";
+  // Same six-field strip the default report/`--json` path uses (T2.5/T6.1) —
+  // the report artifact renders from the schema-shaped `ClaimRun` plus the
+  // three header fields `reporters/report.ts`'s `ReportContext` declares,
+  // never the raw `AnalyzeResult`.
+  const {
+    productionEntrypointCount: _productionEntrypointCount,
+    fileCount,
+    workspaceCount,
+    repoName,
+    units: _units,
+    gateThreshold: _gateThreshold,
+    ...claimRun
+  } = result;
+
+  const content =
+    format === "html"
+      ? renderReportHtml({ run: claimRun, repoName, fileCount, workspaceCount })
+      : renderReportMarkdown({ run: claimRun, repoName, fileCount, workspaceCount });
+  const unusedDir = resolvePath(root, ".unused");
+  const outPath = join(unusedDir, `report.${format}`);
+
+  try {
+    await mkdir(unusedDir, { recursive: true });
+    await writeFile(outPath, content);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`unused: could not write report to ${outPath}: ${message}\n`);
+    return EXIT_ANALYSIS_ERROR;
+  }
+
+  process.stdout.write(renderReportConfirmation(claimRun, outPath, shouldUseAscii()));
+  return EXIT_OK;
+}
+
+// ---------------------------------------------------------------------------
+// `unused badge` (T9.3, docs/design/report-and-badge.md §2)
+// ---------------------------------------------------------------------------
+
+/** `unused badge`: writes the shields.io endpoint JSON to `.unused/badge.json` (high-confidence claim count only — `reporters/badge.ts`). */
+async function runBadgeCommand(argv: readonly string[]): Promise<number> {
+  const parsed = parseSubcommandArgs(argv, "badge");
+  if (!parsed.ok) {
+    process.stderr.write(`unused: ${parsed.message}\n`);
+    return EXIT_USAGE_ERROR;
+  }
+  if (parsed.args.help) {
+    process.stdout.write(renderHelp());
+    return EXIT_OK;
+  }
+
+  const outcome = await runAnalysis(parsed.args.cwd, parsed.args.config);
+  if (!outcome.ok) return outcome.exitCode;
+  const { root, result } = outcome;
+
+  const unusedDir = resolvePath(root, ".unused");
+  const outPath = join(unusedDir, "badge.json");
+
+  try {
+    await mkdir(unusedDir, { recursive: true });
+    await writeFile(outPath, renderBadgeJson(result));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`unused: could not write badge to ${outPath}: ${message}\n`);
+    return EXIT_ANALYSIS_ERROR;
+  }
+
+  process.stdout.write(renderBadgeConfirmation(computeBadge(result), outPath));
+  return EXIT_OK;
+}
+
+// ---------------------------------------------------------------------------
 // Default report
 // ---------------------------------------------------------------------------
 
@@ -717,6 +907,8 @@ export async function run(argv: readonly string[]): Promise<number> {
   if (first === "baseline") return runBaselineCommand(rest);
   if (first === "why") return runWhyCommand(rest);
   if (first === "mcp") return runMcpCommand(rest);
+  if (first === "report") return runReportCommand(rest);
+  if (first === "badge") return runBadgeCommand(rest);
 
   const parsed = parseArgs(argv);
   if (!parsed.ok) {
@@ -795,6 +987,15 @@ export async function run(argv: readonly string[]): Promise<number> {
 }
 
 async function main(): Promise<void> {
+  // Engine check first, before any argv parsing or analysis — a clear,
+  // immediate error rather than a confusing crash deeper in oxc/fs internals
+  // on a Node version the analyzer was never tested against (ADR 0008).
+  const engineError = checkNodeEngine();
+  if (engineError !== undefined) {
+    process.stderr.write(`unused: ${engineError}\n`);
+    process.exitCode = EXIT_USAGE_ERROR;
+    return;
+  }
   try {
     process.exitCode = await run(process.argv.slice(2));
   } catch (err) {
@@ -807,4 +1008,38 @@ async function main(): Promise<void> {
   }
 }
 
-void main();
+/**
+ * Only auto-run `main()` when this file is the process entrypoint (the `bin`
+ * invocation, `node dist/cli/index.js …`) — never merely on import. Without
+ * this guard, importing this module from a unit test (e.g. to exercise
+ * {@link checkNodeEngine} directly instead of via a spawned subprocess) would
+ * trigger a real `main()` run as a side effect of the `import` statement
+ * itself: argv parsing against the test runner's own argv, a real
+ * `analyzeProject` call, and a real `process.exitCode` write.
+ *
+ * **`realpath`, not a raw string compare (T9.1 pack-verification finding).**
+ * `npm`/`pnpm` install `bin: { unused: "./dist/cli/index.js" }` as a
+ * *symlink* at `node_modules/.bin/unused`. Node's ESM loader resolves
+ * `import.meta.url` through that symlink to the real target file, but
+ * `process.argv[1]` stays exactly what was invoked — the symlink path
+ * itself. A direct `fileURLToPath(import.meta.url) === resolvePath(argv[1])`
+ * compare therefore NEVER matches for the actual installed-package
+ * invocation (only for `node dist/cli/index.js` run directly from source),
+ * so `main()` silently never ran: no output, no error, exit 0 — the exact
+ * failure this file's own `main()` docstring says defense-in-depth exists to
+ * prevent, just from the opposite direction. Caught by the `npm pack` →
+ * install → cold-run verification transcript (T9.1 acceptance), not by the
+ * spawn-based tests (which invoke `dist/cli/index.js` directly, never
+ * through a symlink). `realpathSync` resolves both sides to the same
+ * filesystem target before comparing.
+ */
+function isEntryPoint(): boolean {
+  if (process.argv[1] === undefined) return false;
+  try {
+    return fileURLToPath(import.meta.url) === realpathSync(resolvePath(process.argv[1]));
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryPoint()) void main();

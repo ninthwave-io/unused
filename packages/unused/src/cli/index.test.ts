@@ -9,7 +9,7 @@
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -17,6 +17,12 @@ import { fileURLToPath } from "node:url";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import type { FormatsPlugin } from "ajv-formats";
 import { beforeAll, describe, expect, it } from "vitest";
+// Direct import (not spawned) is safe here — `isEntryPoint()` guards `main()`
+// from auto-running merely because this module was imported (T9.1); this is
+// the one export in this file worth unit-testing directly rather than via a
+// spawned subprocess, since faking an old Node binary to spawn against isn't
+// practical in CI.
+import { checkNodeEngine } from "./index.js";
 
 const addFormats = createRequire(import.meta.url)("ajv-formats") as FormatsPlugin;
 
@@ -85,10 +91,63 @@ beforeAll(() => {
   });
 }, 120_000);
 
+describe("checkNodeEngine (T9.1: engines.node >=22 startup check)", () => {
+  it("accepts a Node version at or above the floor", () => {
+    expect(checkNodeEngine("v22.0.0")).toBeUndefined();
+    expect(checkNodeEngine("v22.16.0")).toBeUndefined();
+    expect(checkNodeEngine("v23.4.1")).toBeUndefined();
+  });
+
+  it("rejects a Node version below the floor, with a clear message naming the requirement", () => {
+    const message = checkNodeEngine("v18.20.4");
+    expect(message).toBeDefined();
+    expect(message).toMatch(/Node\.js >=22/);
+    expect(message).toContain("v18.20.4");
+  });
+
+  it("rejects a version just one major below the floor (boundary)", () => {
+    expect(checkNodeEngine("v21.7.3")).toBeDefined();
+  });
+
+  it("degrades toward 'let it run' on an unparseable version string rather than refusing", () => {
+    expect(checkNodeEngine("not-a-version")).toBeUndefined();
+  });
+
+  it("defaults to the real process.version when called with no argument", () => {
+    // The environment actually running this test suite must itself satisfy
+    // engines.node >=22 (package.json) — so this should always be undefined.
+    expect(checkNodeEngine()).toBeUndefined();
+  });
+});
+
 describe("unused CLI — shebang + executability", () => {
   it("dist/cli/index.js starts with the node shebang", () => {
     const firstLine = readFileSync(CLI_ENTRY, "utf8").split("\n")[0];
     expect(firstLine).toBe("#!/usr/bin/env node");
+  });
+
+  it("runs when invoked through a symlink, exactly as npm's `bin` install does (T9.1 pack-verification finding)", async () => {
+    // npm/pnpm install `bin: { unused: "./dist/cli/index.js" }` as a symlink
+    // at node_modules/.bin/unused — NOT a copy. `import.meta.url` resolves
+    // through that symlink to the real file, but `process.argv[1]` stays the
+    // symlink path (Node's ESM loader behaviour), which broke `isEntryPoint()`'s
+    // first, naive string-compare implementation: `main()` silently never
+    // ran (no stdout, no stderr, exit 0) when launched through a symlink —
+    // caught only by the actual `npm pack`/install/cold-run transcript, not
+    // by any of the other tests here, which all invoke CLI_ENTRY directly.
+    const dir = await mkdtemp(join(tmpdir(), "unused-symlink-"));
+    const linkPath = join(dir, "unused-link.js");
+    try {
+      await symlink(CLI_ENTRY, linkPath);
+      const result = spawnSync(process.execPath, [linkPath, "--json", "--cwd", DEAD_FIXTURE], {
+        encoding: "utf8",
+      });
+      expect(result.status).toBe(0);
+      expect(() => JSON.parse(result.stdout)).not.toThrow();
+      expect(JSON.parse(result.stdout).claims.length).toBeGreaterThan(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -1010,5 +1069,117 @@ describe("unused CLI — mcp (T8.3)", () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("unused mcp");
     expect(result.stdout).toContain("find_unused, why_alive, usage_evidence");
+  });
+});
+
+describe("unused report (T9.3, docs/design/report-and-badge.md §1)", () => {
+  it("defaults to Markdown, writing .unused/report.md and printing a confirmation", async () => {
+    await withTempFixtureCopy(DEAD_FIXTURE, async (dir) => {
+      const result = runCli(["report", "--cwd", dir]);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("unused report: wrote");
+      expect(result.stdout).toContain(".unused/report.md");
+      expect(result.stdout).toContain("review before sharing outside your team");
+
+      const content = await readFile(join(dir, ".unused/report.md"), "utf8");
+      expect(content).toContain("# unused deletion report");
+      expect(content).toContain("subtract"); // the fixture's one dead export
+      expect(content).toContain("docs/generated/assumption-set.md");
+    });
+  });
+
+  it("--html writes .unused/report.html — self-contained, no external assets", async () => {
+    await withTempFixtureCopy(DEAD_FIXTURE, async (dir) => {
+      const result = runCli(["report", "--html", "--cwd", dir]);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain(".unused/report.html");
+
+      const content = await readFile(join(dir, ".unused/report.html"), "utf8");
+      expect(content.startsWith("<!doctype html>")).toBe(true);
+      expect(content).toContain("<style>");
+      expect(content).not.toMatch(/<link\b/);
+      expect(content).not.toMatch(/<script\b/);
+    });
+  });
+
+  it("exits 3 when --md and --html are both given", () => {
+    const result = runCli(["report", "--md", "--html", "--cwd", DEAD_FIXTURE]);
+    expect(result.status).toBe(3);
+    expect(result.stderr).toMatch(/mutually exclusive/);
+  });
+
+  it("report --help prints the general help documenting `unused report`", () => {
+    const result = runCli(["report", "--help"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("unused report");
+    expect(result.stdout).toContain("--md");
+    expect(result.stdout).toContain("--html");
+  });
+
+  it("exits 2 on a nonexistent --cwd", () => {
+    const result = runCli(["report", "--cwd", join(REPO_ROOT, "does-not-exist-anywhere")]);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(/cannot read directory/);
+  });
+});
+
+describe("unused badge (T9.3, docs/design/report-and-badge.md §2)", () => {
+  it("writes .unused/badge.json ('N claims', blue) on a fixture with a high-confidence claim", async () => {
+    await withTempFixtureCopy(DEAD_FIXTURE, async (dir) => {
+      const result = runCli(["badge", "--cwd", dir]);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe(
+        `unused badge: wrote ${join(dir, ".unused/badge.json")} (1 claim).\n`,
+      );
+
+      const badge = JSON.parse(await readFile(join(dir, ".unused/badge.json"), "utf8"));
+      expect(badge).toEqual({
+        schemaVersion: 1,
+        label: "unused",
+        message: "1 claim",
+        color: "blue",
+      });
+    });
+  });
+
+  it("writes 'clean', green on a fixture with zero unused claims", async () => {
+    await withTempFixtureCopy(CLEAN_FIXTURE, async (dir) => {
+      const result = runCli(["badge", "--cwd", dir]);
+      expect(result.status).toBe(0);
+      const badge = JSON.parse(await readFile(join(dir, ".unused/badge.json"), "utf8"));
+      expect(badge).toEqual({
+        schemaVersion: 1,
+        label: "unused",
+        message: "clean",
+        color: "green",
+      });
+    });
+  });
+
+  it("a mixed-confidence fixture (1 high + 2 medium, fixtures/ts/string-computed-import) counts only the high claim", async () => {
+    await withTempFixtureCopy(MIXED_CONFIDENCE_FIXTURE, async (dir) => {
+      const result = runCli(["badge", "--cwd", dir]);
+      expect(result.status).toBe(0);
+      const badge = JSON.parse(await readFile(join(dir, ".unused/badge.json"), "utf8"));
+      expect(badge).toEqual({
+        schemaVersion: 1,
+        label: "unused",
+        message: "1 claim",
+        color: "blue",
+      });
+    });
+  });
+
+  it("badge --help prints the general help documenting `unused badge`", () => {
+    const result = runCli(["badge", "--help"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("unused badge");
+    expect(result.stdout).toContain(".unused/badge.json");
+  });
+
+  it("exits 2 on a nonexistent --cwd", () => {
+    const result = runCli(["badge", "--cwd", join(REPO_ROOT, "does-not-exist-anywhere")]);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(/cannot read directory/);
   });
 });

@@ -8,6 +8,7 @@
  */
 export const REPORTERS_MODULE = "reporters" as const;
 
+export { type BadgeJson, computeBadge, renderBadgeConfirmation, renderBadgeJson } from "./badge.js";
 export { type BaselineUnitSummary, renderBlessSummary } from "./baseline.js";
 export {
   type CheckBaselineMeta,
@@ -24,6 +25,13 @@ export {
 } from "./filter.js";
 export { renderHelp } from "./help.js";
 export {
+  type ReportContext,
+  type ReportFormat,
+  renderReportConfirmation,
+  renderReportHtml,
+  renderReportMarkdown,
+} from "./report.js";
+export {
   buildSarifLog,
   renderSarif,
   type SarifLog,
@@ -35,6 +43,7 @@ export {
   formatCount,
   locLabel,
   renderTtyReport,
+  spanLines,
   type TtyLayout,
   type TtyRenderOptions,
   type TtyReportContext,

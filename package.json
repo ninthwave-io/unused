@@ -13,7 +13,7 @@
     "format": "biome format --write .",
     "boundaries": "depcruise --config .dependency-cruiser.cjs packages/unused/src",
     "test": "vitest run",
-    "build": "tsc -p packages/unused/tsconfig.json",
+    "build": "tsc -p packages/unused/tsconfig.json && node packages/unused/scripts/copy-schemas.mjs",
     "scoreboard": "tsc -p packages/unused/tsconfig.json && node packages/unused/dist/testing/corpus/scoreboard.js",
     "assumptions": "tsc -p packages/unused/tsconfig.json && node packages/unused/dist/testing/assumption-set-doc.js",
     "ci": "pnpm run typecheck && pnpm run lint && pnpm run boundaries && pnpm run test"

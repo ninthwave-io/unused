@@ -177,7 +177,8 @@ export function locLabel(claim: Claim): string {
   return `${claim.subject.loc.file}:${claim.subject.loc.span[0]}`;
 }
 
-function spanLines(claim: Claim): number {
+/** Line count of a claim's subject span — exported for reuse by `reporters/report.ts` (T9.3: "top-10 deletions by LOC"). */
+export function spanLines(claim: Claim): number {
   const [start, end] = claim.subject.loc.span;
   return end - start + 1;
 }

@@ -1,13 +1,11 @@
 /**
- * `--help` / `-h` text (T6.1/T7.1/T7.2/T8.2/T8.3, docs/phasing.md M6/M7/M8),
- * in the cli-ux voice: scannable, action-first, evidence-first. Documents
- * exactly the command surface this build implements (`unused [options]`,
- * `unused check`, `unused baseline`, `unused why`, `unused mcp`) — `report` /
- * `badge` are named on the PRD §3 command table but ship in M9, so they are
- * deliberately absent here rather than documented as if they already work:
- * "zero-config first run is the pitch ... it gets one chance" (cli-ux §1) — a
- * `--help` example that fails when tried is the same trust break as a wrong
- * claim.
+ * `--help` / `-h` text (T6.1/T7.1/T7.2/T8.2/T8.3/T9.3, docs/phasing.md
+ * M6/M7/M8/M9), in the cli-ux voice: scannable, action-first,
+ * evidence-first. Documents exactly the command surface this build
+ * implements (`unused [options]`, `unused check`, `unused baseline`,
+ * `unused why`, `unused mcp`, `unused report`, `unused badge`) — "zero-config
+ * first run is the pitch ... it gets one chance" (cli-ux §1) — a `--help`
+ * example that fails when tried is the same trust break as a wrong claim.
  */
 
 const OPTIONS: ReadonlyArray<{ flag: string; lines: readonly string[] }> = [
@@ -73,6 +71,8 @@ USAGE
   unused baseline [--cwd <dir>] [--config <path>]
   unused why <symbol|file> [--cwd <dir>] [--config <path>]
   unused mcp [--cwd <dir>] [--config <path>]
+  unused report [--md|--html] [--cwd <dir>] [--config <path>]
+  unused badge [--cwd <dir>] [--config <path>]
 
 COMMANDS
   unused              Analyse the repo, print the terminal report (default).
@@ -90,6 +90,14 @@ COMMANDS
   unused mcp          Start the MCP server (stdio) over the same engine, for
                        coding agents: find_unused, why_alive, usage_evidence.
                        Read-only, zero network.
+  unused report       Write a self-contained, shareable deletion report to
+                       .unused/report.md (default) or .unused/report.html
+                       (--html): headline totals, top-10 deletions by LOC,
+                       confidence breakdown. Contains file paths and symbol
+                       names — review before sharing outside your team.
+  unused badge        Write .unused/badge.json (a shields.io endpoint badge):
+                       "clean" when zero high-confidence claims, otherwise
+                       "N claims" — medium/low candidates never count.
 
 OPTIONS (default report + check/baseline)
 ${renderOptions()}
@@ -116,15 +124,23 @@ EXAMPLES
   unused check
       Fail the build if any high-confidence claim is new since baseline.
 
+  unused report --html
+      Write .unused/report.html — open it in a browser or screenshot it.
+
+  unused badge
+      Write .unused/badge.json for a README badge (links to unused.dev).
+
 EXIT CODES
-  0   success — report printed, or the gate/baseline passed.
+  0   success — report printed, or the gate/baseline/report/badge succeeded.
   1   gate failure — \`unused check\` found new dead weight at or above
       gate.threshold.
   2   analysis error — the tool could not complete (bad tsconfig, unsupported
-      project layout).
+      project layout), or an artifact (--sarif, report, badge) could not be
+      written.
   3   usage error — a bad flag or an invalid flag value (e.g.
-      --min-confidence), or \`unused check\` with no baseline (run
-      \`unused baseline\` first).
+      --min-confidence, or --md/--html together), \`unused check\` with no
+      baseline (run \`unused baseline\` first), or a Node version below the
+      supported floor (>=22).
 
 docs: unused.dev
 `;

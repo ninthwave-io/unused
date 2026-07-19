@@ -1,0 +1,86 @@
+name: Release
+
+# Publishes @ninthwave-io/unused to npm on a version tag push (e.g. v0.1.0),
+# with npm provenance via GitHub Actions OIDC "trusted publishing" (ADR 0008:
+# "Publish via GitHub Actions trusted publishing with npm provenance from day
+# one — supply-chain posture is part of the trust brand"). No long-lived npm
+# token lives in repo secrets: `id-token: write` below lets npm's CLI mint a
+# short-lived OIDC token itself and exchange it for a publish grant, and
+# `--provenance` attaches a signed build attestation (this workflow file +
+# commit + repo) that shows up as a "Provenance" badge on the npm page.
+#
+# ####################################################################
+# # BLOCKED until both of the following founder actions are done     #
+# # (docs/progress.md "Founder checklist"; docs/adr/0008-distribution.md): #
+# #  1. Register the npm org `ninthwave-io` (npm facts as of 2026-07-18: #
+# #     unregistered, first-come). Cannot publish `@ninthwave-io/unused` #
+# #     at all until this exists.                                    #
+# #  2. On npmjs.com, configure this package for "Trusted Publisher": #
+# #     GitHub Actions, this repo (ninthwave-io/unused), this workflow #
+# #     file (release.yml), and (if used) the environment name below. #
+# #     This is what authorises the OIDC exchange below — without it, #
+# #     `npm publish` here fails with 404/403, which is expected and  #
+# #     does not indicate a bug in this workflow.                     #
+# ####################################################################
+#
+# Until both are done, a pushed tag will run this workflow and fail at the
+# "Publish to npm" step — everything before that (build, full CI) still
+# runs and is a useful signal on its own.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+  id-token: write # OIDC — required for npm trusted publishing + provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # Uncomment once an npm "Trusted Publisher" environment name is set up
+    # (optional extra approval gate on npmjs.com's side):
+    # environment: npm-publish
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.16.0"
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Trusted publishing (no NPM_TOKEN) needs a recent npm CLI — the one
+      # bundled with actions/setup-node's pinned Node version predates the
+      # feature. Bump just the CLI, not Node itself.
+      - name: Update npm to a trusted-publishing-capable version
+        run: npm install -g npm@11.5.1
+
+      - name: Build (tsc + schema copy)
+        run: pnpm run build
+
+      - name: Full CI gate (typecheck, lint, boundaries, tests)
+        run: pnpm run ci
+
+      - name: Verify the tag matches package.json's version
+        working-directory: packages/unused
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME (version $TAG_VERSION) does not match packages/unused/package.json version $PKG_VERSION"
+            exit 1
+          fi
+
+      - name: Publish to npm with provenance
+        working-directory: packages/unused
+        run: npm publish --provenance --access public
