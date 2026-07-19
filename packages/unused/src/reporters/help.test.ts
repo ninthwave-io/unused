@@ -28,15 +28,18 @@ describe("renderHelp", () => {
     expect(text).toMatch(/\b3\b.*usage error/);
   });
 
-  it("documents `unused check` and `unused baseline` as real commands (T7.1/T7.2)", () => {
-    expect(text).toContain("unused check");
-    expect(text).toContain("unused baseline");
+  it("documents check/baseline/why/mcp as real commands (T7.1/T7.2/T8.2/T8.3)", () => {
+    for (const cmd of ["unused check", "unused baseline", "unused why", "unused mcp"]) {
+      expect(text).toContain(cmd);
+    }
     expect(text).toMatch(/^ {2}unused check\b/m);
     expect(text).toMatch(/^ {2}unused baseline\b/m);
+    expect(text).toMatch(/^ {2}unused why\b/m);
+    expect(text).toMatch(/^ {2}unused mcp\b/m);
   });
 
-  it("does not document unimplemented subcommands (why/mcp/report/badge — still unshipped)", () => {
-    for (const cmd of ["unused why", "unused mcp", "unused report", "unused badge"]) {
+  it("does not document unshipped subcommands (report/badge — land in M9)", () => {
+    for (const cmd of ["unused report", "unused badge"]) {
       expect(text).not.toContain(cmd);
     }
   });

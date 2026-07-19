@@ -18,6 +18,7 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
     "get-tsconfig": "4.14.0",
     "oxc-parser": "0.140.0",
     "oxc-resolver": "11.24.2"

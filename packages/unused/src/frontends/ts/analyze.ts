@@ -59,7 +59,11 @@ import type { Dirent } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve as resolvePath, sep } from "node:path";
 import { getTsconfig } from "get-tsconfig";
-import { computePartitionedReachability, emitClaims } from "../../core/analysis/index.js";
+import {
+  computePartitionedReachability,
+  emitClaims,
+  type PartitionedReachability,
+} from "../../core/analysis/index.js";
 import {
   type Claim,
   type ClaimRun,
@@ -199,15 +203,53 @@ export interface AnalyzeResult extends ClaimRun {
 }
 
 /**
+ * {@link analyzeProjectWithGraph}'s return value: the {@link AnalyzeResult} the
+ * reporters/CI surfaces consume, plus the reference-graph {@link IRGraph} and
+ * the per-partition {@link PartitionedReachability} that produced it.
+ *
+ * The graph and reachability are deliberately NOT on {@link AnalyzeResult}: the
+ * default report / `--json` / SARIF paths must never see them (the CLI's
+ * six-field strip keeps `--json` byte-identical to the claim-run schema). Only
+ * the M8 `why`/MCP surfaces — which answer for ANY symbol, not just claimed-dead
+ * ones, and render reference paths from stored provenance (PRD §5/§8) — need the
+ * live graph and predecessor maps, so they call this entry instead.
+ */
+export interface AnalyzeWithGraph {
+  readonly result: AnalyzeResult;
+  /** The reference-graph IR the run was computed over (`why_alive` path queries). */
+  readonly graph: IRGraph;
+  /** The three per-partition reachability walks (production/config/test), with predecessor maps. */
+  readonly reachability: PartitionedReachability;
+}
+
+/**
  * Analyse the project rooted at `rootDir` and return a full {@link
  * AnalyzeResult} (a {@link ClaimRun} plus the disambiguating entrypoint
  * count above). Deterministic given a fixed clock: claims are id-sorted and
  * reachability is built from the deterministically-constructed IR.
+ *
+ * Thin wrapper over {@link analyzeProjectWithGraph} that drops the graph and
+ * reachability — every existing caller (default report, `--json`, SARIF,
+ * `unused check`/`baseline`) wants only the claim run, and never the live IR.
  */
 export async function analyzeProject(
   rootDir: string,
   options: AnalyzeOptions = {},
 ): Promise<AnalyzeResult> {
+  return (await analyzeProjectWithGraph(rootDir, options)).result;
+}
+
+/**
+ * The full analysis: the {@link AnalyzeResult} plus the reference graph and
+ * per-partition reachability it was derived from (M8 `why`/MCP — see
+ * {@link AnalyzeWithGraph}). Byte-identical claim output to {@link
+ * analyzeProject}; it simply also returns the two internals the why-path query
+ * needs to answer for any symbol without re-analysis.
+ */
+export async function analyzeProjectWithGraph(
+  rootDir: string,
+  options: AnalyzeOptions = {},
+): Promise<AnalyzeWithGraph> {
   const start = Date.now();
   const now = options.now ?? new Date();
   const version = options.toolVersion ?? DEFAULT_TOOL_VERSION;
@@ -519,7 +561,7 @@ export async function analyzeProject(
   // never churns ids — single-package output is byte-identical (no field added).
   if (isWorkspace) annotateClaimPackages(claims, units);
 
-  return {
+  const result: AnalyzeResult = {
     schemaVersion: SCHEMA_VERSION,
     tool: { name: "unused", version },
     run: {
@@ -540,6 +582,7 @@ export async function analyzeProject(
     units: units.map((u) => ({ rootRelDir: u.rootRelDir, name: u.name })),
     gateThreshold: config.gate?.threshold ?? "high",
   };
+  return { result, graph, reachability };
 }
 
 // ---------------------------------------------------------------------------

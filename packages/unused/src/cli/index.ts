@@ -7,9 +7,12 @@
  * CI-gate subcommands: `unused baseline` (write/update
  * `.unused/baseline.jsonl`, per workspace, + a bless summary) and
  * `unused check` (compare against it, exit 1 on new dead weight).
+ * M8 (T8.2/T8.3, docs/phasing.md) adds `unused why <symbol|file>` (the
+ * reference-path explanation, cli-ux §4) and `unused mcp` (the stdio MCP
+ * server over the same engine, PRD §5).
  *
- * Still no `why` / `mcp` / `report` / `badge` (PRD §3 — land in M8/M9);
- * `--help` says so rather than documenting a command that doesn't run yet.
+ * Still no `report` / `badge` (PRD §3 — land in M9); `--help` says so rather
+ * than documenting a command that doesn't run yet.
  *
  * ## Flag composition (delegation-spec decision, PRD §3)
  * `--filter`/`--min-confidence` filter claims in **every** output —
@@ -54,13 +57,19 @@
 
 import { stat, writeFile } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
+import { whyAlive } from "../core/analysis/index.js";
 import {
   type Confidence,
   diffAgainstBaseline,
   ID_VERSION,
   type SubjectKind,
 } from "../core/claims/index.js";
-import { type AnalyzeResult, analyzeProject } from "../frontends/ts/analyze.js";
+import {
+  type AnalyzeResult,
+  type AnalyzeWithGraph,
+  analyzeProject,
+  analyzeProjectWithGraph,
+} from "../frontends/ts/analyze.js";
 import {
   BaselineError,
   type BaselineHeader,
@@ -70,6 +79,7 @@ import {
 } from "../frontends/ts/baseline.js";
 import { ConfigError } from "../frontends/ts/config.js";
 import { UnsupportedProjectError } from "../frontends/ts/workspaces.js";
+import { runMcpServer } from "../mcp/index.js";
 import {
   applyClaimFilters,
   type BaselineUnitSummary,
@@ -82,6 +92,7 @@ import {
   renderHelp,
   renderSarif,
   renderTtyReport,
+  renderWhy,
   type TtyLayout,
 } from "../reporters/index.js";
 
@@ -521,6 +532,172 @@ function semverMajor(version: string): number {
 }
 
 // ---------------------------------------------------------------------------
+// Shared: analyze and also return the graph + reachability (why/MCP need the
+// live IR + predecessor maps). Same failure→exit mapping as `runAnalysis`.
+// ---------------------------------------------------------------------------
+
+type GraphAnalysisOutcome =
+  | { readonly ok: true; readonly root: string; readonly analysis: AnalyzeWithGraph }
+  | { readonly ok: false; readonly exitCode: number };
+
+async function runAnalysisWithGraph(
+  cwdArg: string | undefined,
+  configArg: string | undefined,
+): Promise<GraphAnalysisOutcome> {
+  const root = resolvePath(process.cwd(), cwdArg ?? ".");
+  try {
+    const stats = await stat(root);
+    if (!stats.isDirectory()) {
+      process.stderr.write(`unused: not a directory: ${root}\n`);
+      return { ok: false, exitCode: EXIT_ANALYSIS_ERROR };
+    }
+  } catch {
+    process.stderr.write(`unused: cannot read directory: ${root}\n`);
+    return { ok: false, exitCode: EXIT_ANALYSIS_ERROR };
+  }
+  try {
+    const analysis = await analyzeProjectWithGraph(
+      root,
+      configArg === undefined ? {} : { configPath: configArg },
+    );
+    return { ok: true, root, analysis };
+  } catch (err) {
+    if (err instanceof ConfigError) {
+      process.stderr.write(`unused: ${err.message}\n`);
+      return { ok: false, exitCode: EXIT_USAGE_ERROR };
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    const prefix = err instanceof UnsupportedProjectError ? "unused:" : "unused: analysis failed:";
+    process.stderr.write(`${prefix} ${message}\n`);
+    return { ok: false, exitCode: EXIT_ANALYSIS_ERROR };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// `unused why <symbol|file>` (T8.2, cli-ux §4)
+// ---------------------------------------------------------------------------
+
+interface WhyArgs {
+  readonly help: boolean;
+  readonly subject?: string;
+  readonly cwd?: string;
+  readonly config?: string;
+}
+
+type WhyParseResult =
+  | { readonly ok: true; readonly args: WhyArgs }
+  | { readonly ok: false; readonly message: string };
+
+/** Parse `unused why` argv: one positional `<symbol|file>` plus `--cwd`/`--config`/`--help`. */
+function parseWhyArgs(argv: readonly string[]): WhyParseResult {
+  if (argv.includes("--help") || argv.includes("-h")) return { ok: true, args: { help: true } };
+
+  let subject: string | undefined;
+  let cwd: string | undefined;
+  let config: string | undefined;
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i] as string;
+    if (arg === "--cwd") {
+      const value = argv[i + 1];
+      if (value === undefined) return { ok: false, message: "--cwd requires a directory argument" };
+      cwd = value;
+      i += 1;
+    } else if (arg === "--config") {
+      const value = argv[i + 1];
+      if (value === undefined) return { ok: false, message: "--config requires a path argument" };
+      config = value;
+      i += 1;
+    } else if (arg.startsWith("-")) {
+      return { ok: false, message: `unknown argument: ${arg}` };
+    } else if (subject === undefined) {
+      subject = arg;
+    } else {
+      return {
+        ok: false,
+        message: `unexpected extra argument: ${arg} (why takes one symbol or file)`,
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    args: {
+      help: false,
+      ...(subject === undefined ? {} : { subject }),
+      ...(cwd === undefined ? {} : { cwd }),
+      ...(config === undefined ? {} : { config }),
+    },
+  };
+}
+
+/**
+ * `unused why <symbol|file>` (cli-ux §4). Exit codes:
+ *   0 — the query resolved (alive, dead, or an ambiguity list printed).
+ *   2 — analysis could not proceed.
+ *   3 — usage error: no subject given, or the named subject/file matches
+ *       nothing in the project (there is nothing to explain — the same
+ *       "unusable input" family as a bad flag value, PRD §3).
+ */
+async function runWhyCommand(argv: readonly string[]): Promise<number> {
+  const parsed = parseWhyArgs(argv);
+  if (!parsed.ok) {
+    process.stderr.write(`unused: ${parsed.message}\n`);
+    return EXIT_USAGE_ERROR;
+  }
+  if (parsed.args.help) {
+    process.stdout.write(renderHelp());
+    return EXIT_OK;
+  }
+  if (parsed.args.subject === undefined) {
+    process.stderr.write(
+      "unused: why requires a symbol or file argument. Usage: unused why <symbol|file>\n",
+    );
+    return EXIT_USAGE_ERROR;
+  }
+
+  const outcome = await runAnalysisWithGraph(parsed.args.cwd, parsed.args.config);
+  if (!outcome.ok) return outcome.exitCode;
+  const { analysis } = outcome;
+
+  const result = whyAlive({
+    graph: analysis.graph,
+    reachability: analysis.reachability,
+    claims: analysis.result.claims,
+    query: parsed.args.subject,
+  });
+
+  const ascii = shouldUseAscii();
+  if (result.outcome === "not-found") {
+    // Nothing in the project matches — a usage-level "unusable input" (exit 3),
+    // not a successful answer. The message still teaches the fix (cli-ux §6).
+    process.stderr.write(renderWhy(result, ascii));
+    return EXIT_USAGE_ERROR;
+  }
+  process.stdout.write(renderWhy(result, ascii));
+  return EXIT_OK;
+}
+
+// ---------------------------------------------------------------------------
+// `unused mcp` (T8.3) — start the stdio MCP server over the same engine.
+// ---------------------------------------------------------------------------
+
+async function runMcpCommand(argv: readonly string[]): Promise<number> {
+  const parsed = parseSubcommandArgs(argv, "baseline");
+  if (!parsed.ok) {
+    process.stderr.write(`unused: ${parsed.message}\n`);
+    return EXIT_USAGE_ERROR;
+  }
+  if (parsed.args.help) {
+    process.stdout.write(renderHelp());
+    return EXIT_OK;
+  }
+  return runMcpServer({
+    ...(parsed.args.cwd === undefined ? {} : { cwd: parsed.args.cwd }),
+    ...(parsed.args.config === undefined ? {} : { config: parsed.args.config }),
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Default report
 // ---------------------------------------------------------------------------
 
@@ -538,6 +715,8 @@ export async function run(argv: readonly string[]): Promise<number> {
   const [first, ...rest] = argv;
   if (first === "check") return runCheckCommand(rest);
   if (first === "baseline") return runBaselineCommand(rest);
+  if (first === "why") return runWhyCommand(rest);
+  if (first === "mcp") return runMcpCommand(rest);
 
   const parsed = parseArgs(argv);
   if (!parsed.ok) {

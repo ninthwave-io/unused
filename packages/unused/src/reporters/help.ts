@@ -1,13 +1,13 @@
 /**
- * `--help` / `-h` text (T6.1/T7.1/T7.2, docs/phasing.md M6/M7), in the
- * cli-ux voice: scannable, action-first, evidence-first. Documents exactly
- * the command/flag surface this build implements (`unused [options]`,
- * `unused check`, `unused baseline`) — `why` / `mcp` / `report` / `badge`
- * are named on the PRD §3 command table but ship in later milestones
- * (M8/M9), so they are deliberately absent here rather than documented as
- * if they already work: "zero-config first run is the pitch ... it gets one
- * chance" (cli-ux §1) — a `--help` example that fails when tried is the
- * same trust break as a wrong claim.
+ * `--help` / `-h` text (T6.1/T7.1/T7.2/T8.2/T8.3, docs/phasing.md M6/M7/M8),
+ * in the cli-ux voice: scannable, action-first, evidence-first. Documents
+ * exactly the command surface this build implements (`unused [options]`,
+ * `unused check`, `unused baseline`, `unused why`, `unused mcp`) — `report` /
+ * `badge` are named on the PRD §3 command table but ship in M9, so they are
+ * deliberately absent here rather than documented as if they already work:
+ * "zero-config first run is the pitch ... it gets one chance" (cli-ux §1) — a
+ * `--help` example that fails when tried is the same trust break as a wrong
+ * claim.
  */
 
 const OPTIONS: ReadonlyArray<{ flag: string; lines: readonly string[] }> = [
@@ -71,6 +71,8 @@ USAGE
   unused [options]
   unused check [--cwd <dir>] [--config <path>]
   unused baseline [--cwd <dir>] [--config <path>]
+  unused why <symbol|file> [--cwd <dir>] [--config <path>]
+  unused mcp [--cwd <dir>] [--config <path>]
 
 COMMANDS
   unused              Analyse the repo, print the terminal report (default).
@@ -81,6 +83,13 @@ COMMANDS
   unused baseline     Write/update .unused/baseline.jsonl (one per
                        workspace) and print what it blessed. Regenerate on
                        main only — never on a feature branch.
+  unused why          Explain why a symbol or file is alive (the shortest
+                       reference path, entrypoint kind labelled) or, if dead,
+                       its verdict, confidence, and evidence. Answers for any
+                       symbol — a bare name, file.ts:name, or a file path.
+  unused mcp          Start the MCP server (stdio) over the same engine, for
+                       coding agents: find_unused, why_alive, usage_evidence.
+                       Read-only, zero network.
 
 OPTIONS (default report + check/baseline)
 ${renderOptions()}

@@ -40,3 +40,16 @@ export {
   type TtyReportContext,
   whyText,
 } from "./tty.js";
+export {
+  renderHop,
+  renderWhy,
+  renderWhyPath,
+  subjectLabel,
+  type WhyCandidateView,
+  type WhyEntrypointKind,
+  type WhyHazardView,
+  type WhyHopView,
+  type WhyPathView,
+  type WhyReportInput,
+  type WhySubjectView,
+} from "./why.js";

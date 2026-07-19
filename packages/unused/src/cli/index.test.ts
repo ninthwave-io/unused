@@ -944,3 +944,71 @@ describe("unused check (T7.2)", () => {
     }
   });
 });
+
+describe("unused CLI — why (T8.2, cli-ux §4)", () => {
+  const REEXPORT_FIXTURE = join(FIXTURES_ROOT, "re-export-chain");
+
+  it("renders the alive path through a re-export chain (exit 0)", () => {
+    const result = runCli(["why", "usedThing", "--cwd", REEXPORT_FIXTURE]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatchInlineSnapshot(`
+      "src/lib/usedThing.ts:1 usedThing -- alive
+
+        reachable from a production entrypoint:
+          src/index.ts (production entrypoint) -> src/barrel.ts:2 usedThing -> src/lib/usedThing.ts:1 usedThing
+      "
+    `);
+  });
+
+  it("explains a dead export with verdict, confidence, and evidence (exit 0)", () => {
+    const result = runCli(["why", "subtract", "--cwd", DEAD_FIXTURE]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("subtract -- unused (confidence: high)");
+    expect(result.stdout).toContain("evidence:");
+    expect(result.stdout).toContain("0 inbound references");
+    expect(result.stdout).toContain("hazards checked near this subject: none");
+  });
+
+  it("flags a test-only subject with the tier-2 note (exit 0)", () => {
+    const result = runCli(["why", "src/feature.ts", "--cwd", ZOMBIE_TEST_FIXTURE]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("test-only (production-dead, kept alive by tests)");
+    expect(result.stdout).toContain("(test entrypoint)");
+    expect(result.stdout).toContain("tier-2:");
+  });
+
+  it("exits 3 with a fix hint on a nonexistent name (stdout clean)", () => {
+    const result = runCli(["why", "noSuchSymbol", "--cwd", DEAD_FIXTURE]);
+    expect(result.status).toBe(3);
+    expect(result.stderr).toMatch(/no symbol or file matching "noSuchSymbol" found/);
+    expect(result.stdout).toBe("");
+  });
+
+  it("exits 3 when no subject is given", () => {
+    const result = runCli(["why", "--cwd", DEAD_FIXTURE]);
+    expect(result.status).toBe(3);
+    expect(result.stderr).toMatch(/why requires a symbol or file argument/);
+  });
+
+  it("exits 2 on a nonexistent --cwd", () => {
+    const result = runCli(["why", "add", "--cwd", join(REPO_ROOT, "does-not-exist-anywhere")]);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(/cannot read directory/);
+  });
+
+  it("why --help prints the general help documenting `unused why`", () => {
+    const result = runCli(["why", "--help"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("USAGE");
+    expect(result.stdout).toContain("unused why");
+  });
+});
+
+describe("unused CLI — mcp (T8.3)", () => {
+  it("mcp --help prints the general help documenting `unused mcp`", () => {
+    const result = runCli(["mcp", "--help"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("unused mcp");
+    expect(result.stdout).toContain("find_unused, why_alive, usage_evidence");
+  });
+});
