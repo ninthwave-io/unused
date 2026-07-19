@@ -1,25 +1,25 @@
 {
   "analyzer": "ts-reference-graph",
   "corpus": {
-    "cases": 36,
-    "subjects": 103
+    "cases": 40,
+    "subjects": 115
   },
   "precision": 1,
-  "recall": 0.9387755102040817,
+  "recall": 0.9433962264150944,
   "falsePositives": 0,
   "confidenceViolations": 0,
   "misses": 3,
   "unlabelledClaims": 0,
   "byConfidenceTier": {
     "high": {
-      "claims": 36,
-      "truePositives": 36,
+      "claims": 39,
+      "truePositives": 39,
       "falsePositives": 0,
       "confidenceViolations": 0
     },
     "medium": {
-      "claims": 10,
-      "truePositives": 10,
+      "claims": 11,
+      "truePositives": 11,
       "falsePositives": 0,
       "confidenceViolations": 0
     },
@@ -252,6 +252,17 @@
       "unlabelledClaims": 0
     },
     {
+      "case": "preset-cdk",
+      "subjects": 3,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
       "case": "preset-next-app",
       "subjects": 4,
       "deadLabels": 1,
@@ -263,7 +274,40 @@
       "unlabelledClaims": 0
     },
     {
+      "case": "preset-storybook",
+      "subjects": 4,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "preset-storybook-aggregator",
+      "subjects": 3,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
       "case": "project-references",
+      "subjects": 2,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "project-references-workspace",
       "subjects": 2,
       "deadLabels": 1,
       "precision": 1,

@@ -1,0 +1,30 @@
+case: project-references-workspace
+description: >-
+  A two-workspace monorepo where @refs/app's tsconfig `references` @refs/lib, and
+  @refs/lib is a `composite` LEAF (it declares `composite: true` but has no
+  `references` of its own). A composite project's files may be consumed across the
+  project boundary by projects this single analysis cannot see, so the
+  project-references cap must cover BOTH the referencing unit (@refs/app) AND the
+  referenced leaf (@refs/lib) — not only the unit that literally declares
+  `references`. Without the referenced-unit half, @refs/lib's dead-looking export
+  (reachable only across the reference boundary) would be a confident HIGH claim;
+  with it, the export is correctly hedged to medium.
+subjects:
+  - kind: export
+    name: usedLib
+    file: packages/lib/src/api.ts
+    expected: alive
+    because: >-
+      re-exported by @refs/lib's barrel (src/index.ts) and imported by @refs/app
+      across the workspace — a real reference edge keeps it alive.
+  - kind: export
+    name: deadLib
+    file: packages/lib/src/api.ts
+    expected: dead
+    minConfidence: medium
+    because: >-
+      exported by a `composite` referenced leaf (@refs/lib) but re-exported by no
+      barrel and imported by nothing — dead in the shared graph, yet @refs/lib's
+      composite public surface may be consumed by an out-of-analysis project that
+      references it, so the project-references cap (applied to the REFERENCED unit,
+      not just the referencing one) holds this claim at medium rather than high.

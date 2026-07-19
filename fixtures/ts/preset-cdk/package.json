@@ -1,0 +1,9 @@
+{
+  "name": "fixture-preset-cdk",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "devDependencies": {
+    "aws-cdk-lib": "2.0.0"
+  }
+}

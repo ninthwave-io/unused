@@ -7,8 +7,13 @@
  *
  * ## Scope (M2)
  *  - Extensions: `.ts .tsx .mts .cts .js .jsx .mjs .cjs`.
- *  - Excluded directories: `node_modules`, `dist`, and any hidden entry
- *    (name starting with `.`). Hidden files are likewise skipped.
+ *  - Excluded directories: `node_modules`, `dist`, `cdk.out`, and any hidden
+ *    entry (name starting with `.`). Hidden files are likewise skipped.
+ *  - **`.storybook` exception** — the one hidden directory that IS descended.
+ *    Storybook's config files there (`main.*`, `preview.*`, decorators, MSW
+ *    handlers, store-reset helpers) import real application code that must stay
+ *    alive, and `main.*` carries the `stories` glob the storybook preset reads;
+ *    `analyze.ts` seeds those config files as reachability roots (never claimed).
  *  - **No config handling** — tsconfig `include`/`exclude`, workspace globs,
  *    and ignore files arrive in M4. This is the raw filesystem walk.
  *  - **Symlinks are not followed** — neither directory nor file symlinks.
@@ -22,7 +27,11 @@ import { join } from "node:path";
 
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]);
 
-const EXCLUDED_DIRS = new Set(["node_modules", "dist"]);
+// `cdk.out` is the AWS CDK synth output (generated CloudFormation JSON + a
+// bundled copy of the app's JS) — a build artifact, never source, excluded like
+// `dist`. The CDK preset (presets.ts) reads `cdk.json#app` directly to seed the
+// real `bin/app.ts` entrypoint; nothing under `cdk.out` should be analyzed.
+const EXCLUDED_DIRS = new Set(["node_modules", "dist", "cdk.out"]);
 
 /** Return all source files under `rootDir`, absolute and lexicographically sorted. */
 export async function discover(rootDir: string): Promise<string[]> {
@@ -35,8 +44,11 @@ export async function discover(rootDir: string): Promise<string[]> {
 async function walk(dir: string, results: string[]): Promise<void> {
   const entries = await readdir(dir, { withFileTypes: true });
   for (const entry of entries) {
-    // Hidden entries (dot-prefixed) — dirs and files — are skipped.
-    if (entry.name.startsWith(".")) continue;
+    // Hidden entries (dot-prefixed) — dirs and files — are skipped, EXCEPT the
+    // `.storybook` config directory (see the module doc): its config files
+    // reference real app code and carry the `stories` glob, so the tree is
+    // descended and `analyze.ts` roots the config files.
+    if (entry.name.startsWith(".") && entry.name !== ".storybook") continue;
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
       if (EXCLUDED_DIRS.has(entry.name)) continue;

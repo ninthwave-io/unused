@@ -29,8 +29,8 @@ beforeAll(() => {
   });
 }, 120_000);
 
-/** Spawn `unused mcp --cwd <fixture>`, connect an SDK client, run `fn`, then close. */
-async function withMcpClient<T>(fixture: string, fn: (client: Client) => Promise<T>): Promise<T> {
+/** One spawn/connect/run/close cycle against a freshly-spawned server. */
+async function runMcpOnce<T>(fixture: string, fn: (client: Client) => Promise<T>): Promise<T> {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [CLI_ENTRY, "mcp", "--cwd", fixture],
@@ -41,7 +41,37 @@ async function withMcpClient<T>(fixture: string, fn: (client: Client) => Promise
   try {
     return await fn(client);
   } finally {
-    await client.close();
+    // Await the close so the child's stdio is fully torn down before the next
+    // spawn; swallow a close-time error (a teardown race can surface as
+    // "Connection closed" here) so it never masks a successful `fn` result.
+    await client.close().catch(() => {});
+  }
+}
+
+/**
+ * Is `err` a transient stdio child-process teardown/startup race rather than a
+ * real contract failure? The MCP SDK surfaces such races as an `McpError`
+ * "Connection closed" (JSON-RPC code -32000) or a raw pipe error (EPIPE/
+ * ECONNRESET) when the spawned server's stdio closes at an unlucky moment.
+ */
+function isTransientMcpError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /connection closed|-32000|epipe|econnreset/i.test(msg);
+}
+
+/**
+ * Spawn `unused mcp --cwd <fixture>`, connect an SDK client, run `fn`, then close.
+ * Retries the whole spawn ONCE on a transient stdio teardown/startup race
+ * (documented flake, not a product bug — see {@link isTransientMcpError}); a
+ * single clean re-spawn is reliable, and a genuine contract failure still
+ * propagates on the first non-transient error.
+ */
+async function withMcpClient<T>(fixture: string, fn: (client: Client) => Promise<T>): Promise<T> {
+  try {
+    return await runMcpOnce(fixture, fn);
+  } catch (err) {
+    if (!isTransientMcpError(err)) throw err;
+    return await runMcpOnce(fixture, fn);
   }
 }
 

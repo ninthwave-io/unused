@@ -1,0 +1,50 @@
+case: preset-storybook
+description: >-
+  A Storybook project: `.storybook/main.ts` declares a `stories` glob
+  (`../src/**/*.stories.@(ts|tsx)`) that Storybook auto-discovers at dev/build
+  time, so a story file is never statically imported by application code. The
+  storybook preset (auto-activated by the `.storybook` directory or a
+  `storybook`/`@storybook/*` dependency) reads that glob and seeds every matched
+  story file as a production entrypoint — the single largest real-customer
+  false-positive class this closes. A component rendered only by a story is kept
+  alive through it; a component with no story and no importer stays a genuine
+  high-confidence dead claim (the preset must not over-keep-alive).
+subjects:
+  - kind: file
+    name: src/Widget.stories.tsx
+    file: src/Widget.stories.tsx
+    expected: alive
+    because: >-
+      matched by the `stories` glob in .storybook/main.ts
+      (`../src/**/*.stories.@(ts|tsx)`, its `@(ts|tsx)` extglob rewritten to
+      `{ts,tsx}`) and seeded as a production entrypoint by the storybook preset;
+      Storybook auto-discovers it, so it is never statically imported by app code
+      yet is live — flagging it would be a false positive.
+  - kind: file
+    name: src/Widget.tsx
+    file: src/Widget.tsx
+    expected: alive
+    because: >-
+      imported by src/Widget.stories.tsx, a preset-seeded production entrypoint —
+      a component kept alive solely by its story (nothing in application code
+      imports it), exactly how a reference storybook plugin treats a story-only
+      component.
+  - kind: file
+    name: src/storybookOnly.ts
+    file: src/storybookOnly.ts
+    expected: alive
+    because: >-
+      imported only by .storybook/preview.ts (a Storybook config file, never by
+      application code). `discover.ts` descends the hidden `.storybook` directory
+      and analyze.ts roots its config files, so this helper is config-reachable
+      and alive — a module referenced solely by `.storybook` config is genuinely
+      loaded by the Storybook build and must not be a false positive.
+  - kind: file
+    name: src/Orphan.tsx
+    file: src/Orphan.tsx
+    expected: dead
+    minConfidence: high
+    because: >-
+      no story renders it and no file imports it — a genuine orphan the storybook
+      preset must NOT keep alive (an over-broad keep-alive would be a recall bug),
+      flagged dead at high confidence because no hazard is in scope.

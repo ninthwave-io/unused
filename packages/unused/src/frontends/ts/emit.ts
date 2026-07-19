@@ -548,7 +548,6 @@ export function emitIR(input: EmitInput): IRGraph {
       packageJson: input.packageJson === undefined ? readPackageJson(root) : input.packageJson,
     },
   ];
-  const unresolvedTargets: string[] = [];
   for (const unit of units) {
     // Detect each unit's entrypoints through its own resolver (T4.6); entry
     // targets are package-relative, so this matches the pre-T4.6 single-resolver
@@ -565,27 +564,30 @@ export function emitIR(input: EmitInput): IRGraph {
       ensureFile(fileRel);
       graph.addNode(entrypointNode(fileRel, hit.reason));
     }
-    unresolvedTargets.push(...detection.unresolvedTargets);
-  }
 
-  // T3.6 (the hono trap): a declared entrypoint target that resolved to nothing
-  // internal — even after the `dist/**`→`src/**` remap — means the declared
-  // public API is incomplete (typically an unbuilt `dist/`). Emit a project-scope
-  // `unresolvable-entrypoint-target` hazard (whole-package medium cap): with the
-  // public-API surface broken, no file can be confidently proven dead. This
-  // replaces M2's silent collapse to a single `index.*` fallback.
-  if (unresolvedTargets.length > 0) {
-    const [first] = unresolvedTargets;
-    graph.addHazard({
-      file: fileId("package.json"),
-      hazardClass: "unresolvable-entrypoint-target",
-      detail:
-        `${unresolvedTargets.length} declared package.json entrypoint target(s) ` +
-        `could not be resolved to a project file (e.g. \`${first}\`) — the declared public ` +
-        "API is incomplete (unbuilt dist/? misconfigured exports?), so no file can be proven " +
-        "dead. Whole-package cap: medium.",
-      site: { file: "package.json", span: { ...ENTRY_SPAN } },
-    });
+    // T3.6 (the hono trap): a declared entrypoint target that resolved to nothing
+    // internal — even after the `dist/**`→`src/**` remap — means the declared
+    // public API is incomplete (typically an unbuilt `dist/`). Emit a project-scope
+    // `unresolvable-entrypoint-target` hazard (whole-package medium cap): with the
+    // public-API surface broken, no file can be confidently proven dead. This
+    // replaces M2's silent collapse to a single `index.*` fallback. Sited at the
+    // OWNING unit's package.json so the claim engine's whole-package cap scopes to
+    // that workspace member (T4.2), never the whole monorepo — a member with an
+    // unbuilt `dist/` does not cap its siblings.
+    if (detection.unresolvedTargets.length > 0) {
+      const [first] = detection.unresolvedTargets;
+      const pkgRel = joinRootRel(unit.rootRelDir, "package.json");
+      graph.addHazard({
+        file: fileId(pkgRel),
+        hazardClass: "unresolvable-entrypoint-target",
+        detail:
+          `${detection.unresolvedTargets.length} declared package.json entrypoint target(s) ` +
+          `could not be resolved to a project file (e.g. \`${first}\`) — the declared public ` +
+          "API is incomplete (unbuilt dist/? misconfigured exports?), so no file can be proven " +
+          "dead. Whole-package cap: medium.",
+        site: { file: pkgRel, span: { ...ENTRY_SPAN } },
+      });
+    }
   }
 
   return graph;

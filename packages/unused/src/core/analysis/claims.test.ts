@@ -804,6 +804,90 @@ describe("dependency claims (core)", () => {
   });
 });
 
+describe("per-unit hazard-cap scoping (T4 / reference-codebase §4.3)", () => {
+  // A three-unit workspace: root plus two members with no relationship.
+  const UNITS = [
+    { rootRelDir: "" },
+    { rootRelDir: "packages/pkg-a" },
+    { rootRelDir: "packages/pkg-b" },
+  ];
+  const runUnits = (
+    g: IRGraph,
+    units: readonly { rootRelDir: string }[],
+    dependencies?: DependencyClaimInput[],
+  ): Claim[] => {
+    const reachability = computePartitionedReachability(g);
+    return emitClaims({
+      graph: g,
+      reachability,
+      provenance: PROVENANCE,
+      units,
+      ...(dependencies !== undefined ? { dependencies } : {}),
+    });
+  };
+  const confByFile = (claims: Claim[]): Record<string, string> =>
+    Object.fromEntries(claims.map((c) => [c.subject.loc.file, c.confidence]));
+
+  it("a computed-require with no static prefix in unit A caps unit A's files but NOT unit B's", () => {
+    const g = new IRGraph();
+    addEntry(g, "packages/pkg-a/src/index.ts");
+    addEntry(g, "packages/pkg-b/src/index.ts");
+    addSymbol(g, "packages/pkg-a/src/dead-a.ts", "deadA");
+    addSymbol(g, "packages/pkg-b/src/dead-b.ts", "deadB");
+    // Empty-prefix (whole-package) computed-require hazard, sited in pkg-a.
+    hazard(g, "packages/pkg-a/src/index.ts", "computed-require");
+
+    const byFile = confByFile(runUnits(g, UNITS));
+    expect(byFile["packages/pkg-a/src/dead-a.ts"]).toBe("medium"); // pkg-a: capped by its own hazard
+    expect(byFile["packages/pkg-b/src/dead-b.ts"]).toBe("high"); // pkg-b: unrelated unit — never capped
+  });
+
+  it("a computed-require in a vendored top-level file (no member owns it) caps only the root unit", () => {
+    const g = new IRGraph();
+    addEntry(g, "packages/pkg-a/src/index.ts");
+    addSymbol(g, "packages/pkg-a/src/dead-a.ts", "deadA");
+    addFile(g, "vendor/bundle.js"); // root-owned (no member owns it)
+    hazard(g, "vendor/bundle.js", "computed-require"); // owner ⇒ root unit ""
+
+    const byFile = confByFile(runUnits(g, UNITS));
+    expect(byFile["vendor/bundle.js"]).toBe("medium"); // root-owned — capped
+    expect(byFile["packages/pkg-a/src/dead-a.ts"]).toBe("high"); // member — the root cap must not reach it
+  });
+
+  it("a whole-package hazard in unit A caps unit A's dependency claim but not unit B's", () => {
+    const g = new IRGraph();
+    addEntry(g, "packages/pkg-a/src/index.ts");
+    addEntry(g, "packages/pkg-b/src/index.ts");
+    hazard(g, "packages/pkg-a/src/index.ts", "computed-require");
+
+    const claims = runUnits(g, UNITS, [
+      { packageName: "dep-a", loc: { file: "packages/pkg-a/package.json", span: [3, 3] } },
+      { packageName: "dep-b", loc: { file: "packages/pkg-b/package.json", span: [3, 3] } },
+    ]);
+    const byName = Object.fromEntries(
+      claims
+        .filter((c) => c.subject.kind === "dependency")
+        .map((c) => [c.subject.name, c.confidence]),
+    );
+    expect(byName["dep-a"]).toBe("medium"); // declared in pkg-a — capped by pkg-a's hazard
+    expect(byName["dep-b"]).toBe("high"); // declared in pkg-b — not capped
+  });
+
+  it("no `units` supplied ⇒ one root unit ⇒ a whole-package cap covers the whole run (back-compat)", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addSymbol(g, "packages/a/dead.ts", "deadA");
+    addSymbol(g, "packages/b/dead.ts", "deadB");
+    hazard(g, "packages/a/loader.ts", "computed-require"); // empty prefix
+
+    // Default single root unit: every file is root-owned, so both are capped —
+    // byte-identical to the pre-`units` single-graph behaviour.
+    const byFile = confByFile(run(g));
+    expect(byFile["packages/a/dead.ts"]).toBe("medium");
+    expect(byFile["packages/b/dead.ts"]).toBe("medium");
+  });
+});
+
 describe("determinism", () => {
   it("emits claims sorted by id, identical across runs", () => {
     const g = new IRGraph();

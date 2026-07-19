@@ -1,0 +1,9 @@
+{
+  "name": "@agg/host",
+  "private": true,
+  "version": "0.0.0",
+  "devDependencies": {
+    "storybook": "8.0.0",
+    "@storybook/react-vite": "8.0.0"
+  }
+}

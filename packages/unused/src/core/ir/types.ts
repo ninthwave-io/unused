@@ -84,7 +84,8 @@ export type HazardClass =
   | "unresolvable-entrypoint-target"
   | "jsx-runtime-dependency"
   | "bin-only-dependency"
-  | "config-named-dependency";
+  | "config-named-dependency"
+  | "capacitor-platform-dependency";
 
 // ---------------------------------------------------------------------------
 // Nodes

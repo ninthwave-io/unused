@@ -1,0 +1,39 @@
+case: preset-storybook-aggregator
+description: >-
+  A "Storybook host" package whose `.storybook/main.ts` `stories` glob reaches UP
+  and OUT of its own package into sibling packages
+  (`../../packages/*/src/**/*.stories.@(ts|tsx)`) — the aggregator convention. The
+  sibling component package (@agg/ui) carries no Storybook config or dependency of
+  its own, so without cross-unit resolution its story files look like ordinary
+  dead code. The storybook preset rebases each glob repo-root-relative and matches
+  it against the whole analyzed file set, so a sibling's story (and the component
+  it renders) is seeded/kept alive wherever it lands; a genuine orphan with no
+  story stays a high-confidence dead claim.
+subjects:
+  - kind: file
+    name: packages/ui/src/Button.stories.tsx
+    file: packages/ui/src/Button.stories.tsx
+    expected: alive
+    because: >-
+      auto-discovered by the HOST package's aggregator `stories` glob
+      (`../../packages/*/src/**/*.stories.@(ts|tsx)`, rebased to
+      `packages/*/src/**/*.stories.{ts,tsx}` and matched cross-unit) and seeded as
+      a production entrypoint — even though @agg/ui has no Storybook marker of its
+      own; flagging it would be the exact escaping-glob false positive this closes.
+  - kind: file
+    name: packages/ui/src/Button.tsx
+    file: packages/ui/src/Button.tsx
+    expected: alive
+    because: >-
+      imported by packages/ui/src/Button.stories.tsx, a cross-unit preset-seeded
+      entrypoint — a component kept alive solely by its story rendered from a
+      different (host) package.
+  - kind: file
+    name: packages/ui/src/Orphan.tsx
+    file: packages/ui/src/Orphan.tsx
+    expected: dead
+    minConfidence: high
+    because: >-
+      no story renders it and no file imports it — a genuine orphan the aggregator
+      must not keep alive, flagged dead at high confidence because no hazard is in
+      scope.

@@ -31,14 +31,19 @@ import type { HazardClass } from "../ir/index.js";
 
 /**
  * Which subjects a hazard can plausibly affect.
- *  - `project`          — the whole project. With a `no-claim` cap this is the
- *                         unregistered-class fallback in `claims.ts` (whole-
- *                         project suppression); with a `medium`/`low` cap it
- *                         caps every file (and its exports) at that ceiling —
- *                         used by `unresolvable-entrypoint-target`.
+ *  - `project`          — a whole workspace package. With a `no-claim` cap this is
+ *                         the unregistered-class fallback in `claims.ts` (whole-
+ *                         project suppression); with a `medium`/`low` cap it caps
+ *                         every file (and its exports) OWNED BY THE HAZARD SITE'S
+ *                         workspace unit — a member's unresolvable entrypoint caps
+ *                         that member, not its siblings — plus that unit's
+ *                         dependency claims. Used by `unresolvable-entrypoint-target`.
  *  - `directory-subtree`— every file whose repo-relative path starts with the
  *                         annotation's `subtreePrefix` (absent ⇒ `""` ⇒ the
- *                         importer's whole package). Caps the file claim AND any
+ *                         hazard site's OWNING workspace package, i.e. the unit
+ *                         that owns the annotation's file — never the whole
+ *                         monorepo; `claims.ts` resolves the owning unit from the
+ *                         run's workspace boundaries). Caps the file claim AND any
  *                         dead-export claim of an in-scope file.
  *  - `file`             — exactly the annotation's file (its file claim and its
  *                         export claims).
@@ -73,14 +78,14 @@ export const HAZARD_REGISTRY: Readonly<Record<HazardClass, HazardClassEntry>> = 
     scope: "directory-subtree",
     cap: "medium",
     rationale:
-      "A dynamic import() with a computed specifier may resolve, at runtime, to any module under the specifier's static prefix (or the importer's whole package when there is no static prefix). Files in that subtree cannot be proven unreferenced, so they are capped at medium confidence.",
+      "A dynamic import() with a computed specifier may resolve, at runtime, to any module under the specifier's static prefix (or, when there is no static prefix, the importer's own workspace package — never the whole monorepo: a computed import in one package cannot reach a sibling package's private modules). Files in that scope cannot be proven unreferenced, so they are capped at medium confidence.",
   },
   "computed-require": {
     hazardClass: "computed-require",
     scope: "directory-subtree",
     cap: "medium",
     rationale:
-      "A require() with a computed (non-string-literal) argument may resolve, at runtime, to any module under the argument's static prefix (or the importer's whole package when there is no static prefix). Files in that subtree cannot be proven unreferenced, so they are capped at medium confidence.",
+      "A require() with a computed (non-string-literal) argument may resolve, at runtime, to any module under the argument's static prefix (or, when there is no static prefix, the importer's own workspace package — never the whole monorepo: a computed require in one package cannot reach a sibling package's private modules). Files in that scope cannot be proven unreferenced, so they are capped at medium confidence.",
   },
   "computed-cjs-exports": {
     hazardClass: "computed-cjs-exports",
@@ -171,14 +176,14 @@ export const HAZARD_REGISTRY: Readonly<Record<HazardClass, HazardClassEntry>> = 
     scope: "directory-subtree",
     cap: "medium",
     rationale:
-      "A tsconfig with `references` composes this project with sibling TypeScript projects that may consume its files across the project boundary — a cross-project use the single-project reference graph cannot see. Until real cross-project analysis lands (post-v1), the whole package is capped at medium rather than claimed dead. This is deliberately blunt: every claim in a project-referenced package is downgraded, trading recall for the guarantee that no externally-consumed file is confidently flagged.",
+      "A tsconfig with `references` composes this project with sibling TypeScript projects that may consume its files across the project boundary — a cross-project use the single-project reference graph cannot see. Until real cross-project analysis lands (post-v1), the whole package that owns the referencing tsconfig is capped at medium rather than claimed dead — scoped to that workspace unit, not the whole monorepo (a member's `references` caps that member, not its siblings). This is deliberately blunt: every claim in a project-referenced package is downgraded, trading recall for the guarantee that no externally-consumed file is confidently flagged.",
   },
   "unresolvable-entrypoint-target": {
     hazardClass: "unresolvable-entrypoint-target",
     scope: "project",
     cap: "medium",
     rationale:
-      "One or more declared package.json entrypoint targets (`main`/`module`/`exports`/`bin`) could not be resolved to a project file, even after a conservative `dist/**`→`src/**` remap — the declared public API could not be resolved, so the entrypoint assumption (that the declared entrypoints are the complete public API) is broken. This is the common `npx`-on-an-unbuilt-checkout case (targets point into a `dist/` that has not been built). With the public-API surface incomplete, any file could still be reachable from the missing entry, so no file can be confidently proven dead: the whole package is capped at medium rather than flagged. Deliberately blunt (every claim downgraded) — the precise fix is to build the project or configure the entrypoints so they resolve.",
+      "One or more declared package.json entrypoint targets (`main`/`module`/`exports`/`bin`) could not be resolved to a project file, even after a conservative `dist/**`→`src/**` remap — the declared public API could not be resolved, so the entrypoint assumption (that the declared entrypoints are the complete public API) is broken. This is the common `npx`-on-an-unbuilt-checkout case (targets point into a `dist/` that has not been built). With the public-API surface incomplete, any file could still be reachable from the missing entry, so no file can be confidently proven dead: the whole package that declared the target is capped at medium rather than flagged — scoped to that workspace unit, not the whole monorepo (one member's unbuilt `dist/` does not cap its siblings). Deliberately blunt (every claim in that package downgraded) — the precise fix is to build the project or configure the entrypoints so they resolve.",
   },
   "jsx-runtime-dependency": {
     hazardClass: "jsx-runtime-dependency",
@@ -200,6 +205,13 @@ export const HAZARD_REGISTRY: Readonly<Record<HazardClass, HazardClassEntry>> = 
     cap: "medium",
     rationale:
       "A declared dependency whose name — or its conventional plugin/preset shorthand (an `eslint-plugin-x` referenced as `x`, an `@scope/eslint-plugin-x` as `@scope/x`, a `babel-plugin-x`/`babel-preset-x` as `x`, and the common `@scope/plugin-x`/`@scope/preset-x` forms) — appears as a token inside a project config string or a package.json `scripts` value is wired in by configuration rather than a source import (an ESLint plugin named in `.eslintrc`, a tool named in a script). It is kept alive (never claimed) as a dependency-liveness keep-alive rationale. Deliberately generous: config matching only reduces recall, never adds a false positive.",
+  },
+  "capacitor-platform-dependency": {
+    hazardClass: "capacitor-platform-dependency",
+    scope: "none",
+    cap: "medium",
+    rationale:
+      "In a Capacitor app (a `capacitor.config.{ts,js,mjs,cjs,json}` present at the workspace root), the native-platform packages `@capacitor/ios` and `@capacitor/android`, and the `@capacitor/cli`, exist solely so the Capacitor CLI (`npx cap sync`/`cap add`) can locate and copy the native iOS/Android platform code — they are NEVER imported from JS/TS in any Capacitor app, by design. A pure reference-graph view therefore always sees zero references and would false-flag them as unused dependencies. Keyed off the presence of a `capacitor.config.*` at the unit root, they are kept alive (never claimed) — the same config-marker-activated keep-alive class as the vite/next presets, restricted to the platform/CLI packages (Capacitor *plugins* such as `@capacitor/camera` DO expose a JS API and are left claimable).",
   },
 };
 

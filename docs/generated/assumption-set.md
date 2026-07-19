@@ -59,6 +59,13 @@ path-prefixed set of files), `file`, `symbol-set` (a file's exports only),
 
 A declared dependency whose installed package.json declares a `bin` field is a command-line tool (e.g. a linter, bundler, or test runner) commonly invoked through package.json scripts, a Makefile, or a git hook rather than imported from source. Such a package can have zero static import edges yet still be genuinely used, so a declared dependency that ships a `bin` is kept alive (never claimed) as a dependency-liveness keep-alive rationale — a no-claim-effect entry, like the JSX runtime rule. Pre-install conservatism: when no `node_modules` is present to inspect (an un-installed or unbuilt checkout), a bin cannot be confirmed or ruled out, so every otherwise-unreferenced dependency is kept alive — a CLI whose bin name differs from its package name and is not named in scripts would otherwise false-flag. This trades recall (dependency claims are weaker before an install) for the zero-false-positive guarantee; a `workspace:` sibling, resolved by name and never a bin, is exempt.
 
+### capacitor-platform-dependency
+
+- **Scope:** none
+- **Confidence cap:** n/a (no claim effect)
+
+In a Capacitor app (a `capacitor.config.{ts,js,mjs,cjs,json}` present at the workspace root), the native-platform packages `@capacitor/ios` and `@capacitor/android`, and the `@capacitor/cli`, exist solely so the Capacitor CLI (`npx cap sync`/`cap add`) can locate and copy the native iOS/Android platform code — they are NEVER imported from JS/TS in any Capacitor app, by design. A pure reference-graph view therefore always sees zero references and would false-flag them as unused dependencies. Keyed off the presence of a `capacitor.config.*` at the unit root, they are kept alive (never claimed) — the same config-marker-activated keep-alive class as the vite/next presets, restricted to the platform/CLI packages (Capacitor *plugins* such as `@capacitor/camera` DO expose a JS API and are left claimable).
+
 ### checker-only-type-relationship
 
 - **Scope:** symbol-set
@@ -78,14 +85,14 @@ A computed CommonJS export assignment (`module.exports[k] = …` / `exports[k] =
 - **Scope:** directory-subtree
 - **Confidence cap:** medium
 
-A dynamic import() with a computed specifier may resolve, at runtime, to any module under the specifier's static prefix (or the importer's whole package when there is no static prefix). Files in that subtree cannot be proven unreferenced, so they are capped at medium confidence.
+A dynamic import() with a computed specifier may resolve, at runtime, to any module under the specifier's static prefix (or, when there is no static prefix, the importer's own workspace package — never the whole monorepo: a computed import in one package cannot reach a sibling package's private modules). Files in that scope cannot be proven unreferenced, so they are capped at medium confidence.
 
 ### computed-require
 
 - **Scope:** directory-subtree
 - **Confidence cap:** medium
 
-A require() with a computed (non-string-literal) argument may resolve, at runtime, to any module under the argument's static prefix (or the importer's whole package when there is no static prefix). Files in that subtree cannot be proven unreferenced, so they are capped at medium confidence.
+A require() with a computed (non-string-literal) argument may resolve, at runtime, to any module under the argument's static prefix (or, when there is no static prefix, the importer's own workspace package — never the whole monorepo: a computed require in one package cannot reach a sibling package's private modules). Files in that scope cannot be proven unreferenced, so they are capped at medium confidence.
 
 ### conditional-exports-divergence
 
@@ -169,14 +176,14 @@ A file the parser could not fully read: its references cannot be enumerated, so 
 - **Scope:** directory-subtree
 - **Confidence cap:** medium
 
-A tsconfig with `references` composes this project with sibling TypeScript projects that may consume its files across the project boundary — a cross-project use the single-project reference graph cannot see. Until real cross-project analysis lands (post-v1), the whole package is capped at medium rather than claimed dead. This is deliberately blunt: every claim in a project-referenced package is downgraded, trading recall for the guarantee that no externally-consumed file is confidently flagged.
+A tsconfig with `references` composes this project with sibling TypeScript projects that may consume its files across the project boundary — a cross-project use the single-project reference graph cannot see. Until real cross-project analysis lands (post-v1), the whole package that owns the referencing tsconfig is capped at medium rather than claimed dead — scoped to that workspace unit, not the whole monorepo (a member's `references` caps that member, not its siblings). This is deliberately blunt: every claim in a project-referenced package is downgraded, trading recall for the guarantee that no externally-consumed file is confidently flagged.
 
 ### unresolvable-entrypoint-target
 
 - **Scope:** project
 - **Confidence cap:** medium
 
-One or more declared package.json entrypoint targets (`main`/`module`/`exports`/`bin`) could not be resolved to a project file, even after a conservative `dist/**`→`src/**` remap — the declared public API could not be resolved, so the entrypoint assumption (that the declared entrypoints are the complete public API) is broken. This is the common `npx`-on-an-unbuilt-checkout case (targets point into a `dist/` that has not been built). With the public-API surface incomplete, any file could still be reachable from the missing entry, so no file can be confidently proven dead: the whole package is capped at medium rather than flagged. Deliberately blunt (every claim downgraded) — the precise fix is to build the project or configure the entrypoints so they resolve.
+One or more declared package.json entrypoint targets (`main`/`module`/`exports`/`bin`) could not be resolved to a project file, even after a conservative `dist/**`→`src/**` remap — the declared public API could not be resolved, so the entrypoint assumption (that the declared entrypoints are the complete public API) is broken. This is the common `npx`-on-an-unbuilt-checkout case (targets point into a `dist/` that has not been built). With the public-API surface incomplete, any file could still be reachable from the missing entry, so no file can be confidently proven dead: the whole package that declared the target is capped at medium rather than flagged — scoped to that workspace unit, not the whole monorepo (one member's unbuilt `dist/` does not cap its siblings). Deliberately blunt (every claim in that package downgraded) — the precise fix is to build the project or configure the entrypoints so they resolve.
 
 ### unresolvable-import
 

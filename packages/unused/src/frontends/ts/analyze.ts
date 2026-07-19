@@ -93,7 +93,13 @@ import { addConfigTokens, computeUnusedDependencies } from "./dependencies.js";
 import { discover } from "./discover.js";
 import { type EmitPackageUnit, emitIR, type PackageJsonLike } from "./emit.js";
 import { parseSource } from "./parse.js";
-import { activePresetsForUnit, matchPresetEntryPatterns, viteHtmlEntrypoints } from "./presets.js";
+import {
+  activePresetsForUnit,
+  cdkAppEntrypoints,
+  matchPresetEntryPatterns,
+  storybookStoryEntrypoints,
+  viteHtmlEntrypoints,
+} from "./presets.js";
 import { packageNameOf, Resolver } from "./resolve.js";
 import { detectWorkspaces, type WorkspaceLayout } from "./workspaces.js";
 
@@ -355,13 +361,36 @@ export async function analyzeProjectWithGraph(
 
   // Fix 2 + T3.1b, per package: expand each unit's wildcard `exports` subpaths into
   // production entrypoints, and keep-alive files reachable only under a non-selected
-  // package.json condition/browser branch. A tsconfig with `references` anywhere
-  // caps the whole project (medium — see the registry).
-  const unresolvedWildcardSubpaths: string[] = [];
+  // package.json condition/browser branch.
   for (const unit of units) {
-    unresolvedWildcardSubpaths.push(
-      ...seedWildcardExportEntrypoints(graph, root, unit.dir, files, unit.packageJson),
+    const unresolvedWildcardSubpaths = seedWildcardExportEntrypoints(
+      graph,
+      root,
+      unit.dir,
+      files,
+      unit.packageJson,
     );
+    // A wildcard `exports` subpath that matched no project source file — even
+    // after the dist/**→src/** remap — means a declared slice of the public API
+    // could not be resolved (typically an unbuilt `dist/`). Cap the whole package
+    // (the same `unresolvable-entrypoint-target` project hazard the singular-target
+    // path raises in `emit.ts`): with the public surface incomplete, no file can
+    // be proven dead. Sited at the OWNING unit's package.json so the whole-package
+    // cap scopes to that member, not the whole monorepo (T4.2). Never silent — the
+    // pre-fix behaviour dropped these wildcards with no signal at all.
+    if (unresolvedWildcardSubpaths.length > 0) {
+      const pkgRel = unit.rootRelDir === "" ? "package.json" : `${unit.rootRelDir}/package.json`;
+      graph.addHazard({
+        file: fileId(pkgRel),
+        hazardClass: "unresolvable-entrypoint-target",
+        detail:
+          `${unresolvedWildcardSubpaths.length} wildcard exports subpath pattern(s) ` +
+          `(e.g. \`${unresolvedWildcardSubpaths[0]}\`) matched no project source file, even after a ` +
+          "dist/**→src/** remap — the declared public API is incomplete (unbuilt dist/? misconfigured " +
+          "exports?), so no file can be proven dead. Whole-package cap: medium.",
+        site: { file: pkgRel, span: { ...CONFIG_SITE_SPAN } },
+      });
+    }
     addConditionalExportsDivergenceHazards(
       graph,
       root,
@@ -371,26 +400,24 @@ export async function analyzeProjectWithGraph(
       unit.packageJson,
     );
   }
-  // A wildcard `exports` subpath that matched no project source file — even
-  // after the dist/**→src/** remap — means a declared slice of the public API
-  // could not be resolved (typically an unbuilt `dist/`). Cap the whole package
-  // (the same `unresolvable-entrypoint-target` project hazard the singular-target
-  // path raises in `emit.ts`): with the public surface incomplete, no file can
-  // be proven dead. Never silent — the pre-fix behaviour dropped these wildcards
-  // with no signal at all.
-  if (unresolvedWildcardSubpaths.length > 0) {
-    graph.addHazard({
-      file: fileId("package.json"),
-      hazardClass: "unresolvable-entrypoint-target",
-      detail:
-        `${unresolvedWildcardSubpaths.length} wildcard exports subpath pattern(s) ` +
-        `(e.g. \`${unresolvedWildcardSubpaths[0]}\`) matched no project source file, even after a ` +
-        "dist/**→src/** remap — the declared public API is incomplete (unbuilt dist/? misconfigured " +
-        "exports?), so no file can be proven dead. Whole-package cap: medium.",
-      site: { file: "package.json", span: { ...CONFIG_SITE_SPAN } },
-    });
+  // A tsconfig with `references` composes projects across the project boundary
+  // (registry). The cap covers BOTH the referencing unit AND every referenced
+  // unit: a referenced leaf (a `composite` package with no `references` of its
+  // own) has its files consumed across the boundary — possibly by projects
+  // outside this analysis — so its exports cannot be proven dead either (reviewer
+  // fix). Each cap is sited at the OWNING unit's tsconfig, so it scopes to that
+  // member, not the whole monorepo.
+  const projectReferenceCapUnits = new Set<string>();
+  for (const unit of units) {
+    const referencedDirs = unitOwnTsconfigReferenceDirs(unit.dir);
+    if (referencedDirs === null) continue;
+    projectReferenceCapUnits.add(unit.rootRelDir); // the referencing unit
+    for (const refDir of referencedDirs) {
+      const owner = ownerUnitRootRelDir(units, refDir);
+      if (owner !== null) projectReferenceCapUnits.add(owner); // the referenced unit
+    }
   }
-  if (tsconfigOptions.hasReferences) addProjectReferencesHazard(graph);
+  for (const rootRelDir of projectReferenceCapUnits) addProjectReferencesHazard(graph, rootRelDir);
 
   // T4.3: config `entry` globs ADDITIVELY seed production entrypoints, on top
   // of auto-detection (never replacing it). Matched only against the
@@ -427,19 +454,34 @@ export async function analyzeProjectWithGraph(
   // `config.presets` is unset) — the T4.4 no-config/no-marker regression path.
   for (const unit of units) {
     const activePresets = await activePresetsForUnit(config, unit.dir);
+    if (activePresets.length === 0) continue;
+    // The unit's files, package-relative — the carrier presets (vite index.html,
+    // storybook story globs, cdk `cdk.json#app`) all match against this set.
+    // Computed once per unit, shared across its active presets.
+    const unitFilesPkgRel = new Set(
+      filesRel
+        .filter((rel) => unit.rootRelDir === "" || rel.startsWith(`${unit.rootRelDir}/`))
+        .map((rel) => (unit.rootRelDir === "" ? rel : rel.slice(unit.rootRelDir.length + 1))),
+    );
     for (const preset of activePresets) {
       for (const hit of matchPresetEntryPatterns(preset, filesRel, unit.rootRelDir)) {
         seedProductionEntrypoint(graph, hit.file, hit.reason);
       }
-      if (preset.name === "vite") {
-        const unitFilesPkgRel = new Set(
-          filesRel
-            .filter((rel) => unit.rootRelDir === "" || rel.startsWith(`${unit.rootRelDir}/`))
-            .map((rel) => (unit.rootRelDir === "" ? rel : rel.slice(unit.rootRelDir.length + 1))),
-        );
-        const htmlHits = await viteHtmlEntrypoints(unit.dir, unit.rootRelDir, unitFilesPkgRel);
-        for (const hit of htmlHits) seedProductionEntrypoint(graph, hit.file, hit.reason);
-      }
+      // Carrier presets read their own config file directly and seed the entry
+      // files it references (vite's index.html carrier, storybook's `stories`
+      // glob in `.storybook/main.*`, cdk's `cdk.json#app`).
+      const carrierHits =
+        preset.name === "vite"
+          ? await viteHtmlEntrypoints(unit.dir, unit.rootRelDir, unitFilesPkgRel)
+          : preset.name === "storybook"
+            ? // Storybook resolves its `stories` globs root-relative and matches
+              // the WHOLE file set, so an aggregator that collects a sibling
+              // package's stories seeds them wherever they land (reviewer fix).
+              await storybookStoryEntrypoints(unit.dir, unit.rootRelDir, filesRel)
+            : preset.name === "cdk"
+              ? await cdkAppEntrypoints(unit.dir, unit.rootRelDir, unitFilesPkgRel)
+              : [];
+      for (const hit of carrierHits) seedProductionEntrypoint(graph, hit.file, hit.reason);
     }
   }
 
@@ -449,9 +491,17 @@ export async function analyzeProjectWithGraph(
   await walkConfigTree(root, jsonFiles, packageRootDirs);
 
   // Fix 1: config roots become `config` reachability seeds (never claimed).
-  const configRoots = files.filter(
-    (file) => isConfigRootName(basename(file)) && packageRootDirs.has(dirname(file)),
-  );
+  // A `.storybook/*` config file (non-test) is also a config root: Storybook
+  // loads main/preview/decorators/handlers/etc., which import real app code that
+  // must stay alive (reference-codebase smoke — app modules referenced ONLY by a
+  // `.storybook` config would otherwise be confident false positives).
+  const configRoots = files.filter((file) => {
+    const rel = toPosixRel(root, file);
+    return (
+      isStorybookConfigFile(rel) ||
+      (isConfigRootName(basename(file)) && packageRootDirs.has(dirname(file)))
+    );
+  });
   for (const file of configRoots) {
     const rel = toPosixRel(root, file);
     graph.addNode({
@@ -550,6 +600,11 @@ export async function analyzeProjectWithGraph(
     fileLineCounts,
     dependencies,
     selfDependencyIds,
+    // Workspace-unit boundaries so a whole-package hazard cap (a computed
+    // require/import with no static prefix, an unresolvable entrypoint, a
+    // tsconfig `references`) scopes to the OWNING unit, not the whole run (T4/
+    // reference-codebase smoke §4.3). Single-package: one root unit ⇒ whole-run, as before.
+    units: units.map((u) => ({ rootRelDir: u.rootRelDir })),
   }).filter(
     (claim) =>
       claim.subject.kind === "dependency" ||
@@ -768,31 +823,86 @@ function buildWorkspaceMap(units: readonly AnalyzeUnit[]): Map<string, string> {
 }
 
 /**
- * `emitDecoratorMetadata` / project `references` / JSX-runtime packages across
- * all package units: any unit's tsconfig enabling a flag flips it on for the
- * run, and every unit with an automatic-runtime `jsx` setting contributes its
- * runtime package (`jsxImportSource` value, default `react`) to the keep-alive
- * set (T4.1). Over-approximating the resulting keep-alive/cap costs recall,
- * never precision — the safe direction.
+ * `emitDecoratorMetadata` / JSX-runtime packages across all package units: any
+ * unit's tsconfig enabling `emitDecoratorMetadata` flips it on for the run
+ * (over-approximating the keep-alive costs recall, never precision), and every
+ * unit with an automatic-runtime `jsx` setting contributes its runtime package
+ * (`jsxImportSource` value, default `react`) to the keep-alive set (T4.1).
+ *
+ * Project `references` is handled SEPARATELY, per unit (see
+ * {@link unitOwnTsconfigReferenceDirs}): its cap must be sited at the OWNING
+ * unit's tsconfig — the referencing unit AND each referenced unit — so it scopes
+ * to those members, not the whole monorepo, so it cannot be collapsed into a
+ * single run-wide boolean here.
  */
 function readTsconfigOptionsForUnits(units: readonly AnalyzeUnit[]): {
   emitDecoratorMetadata: boolean;
-  hasReferences: boolean;
   jsxRuntimePackages: Set<string>;
 } {
   let emitDecoratorMetadata = false;
-  let hasReferences = false;
   const jsxRuntimePackages = new Set<string>();
   for (const unit of units) {
     const opts = readTsconfigOptions(unit.dir);
     emitDecoratorMetadata = emitDecoratorMetadata || opts.emitDecoratorMetadata;
-    hasReferences = hasReferences || opts.hasReferences;
     if (opts.jsxAutomatic) {
       const source = opts.jsxImportSource ?? "react";
       jsxRuntimePackages.add(packageNameOf(source) ?? source);
     }
   }
-  return { emitDecoratorMetadata, hasReferences, jsxRuntimePackages };
+  return { emitDecoratorMetadata, jsxRuntimePackages };
+}
+
+/**
+ * The absolute directories the tsconfig `unitDir` OWNS (located at `unitDir`
+ * itself, not inherited from an ancestor) references via its top-level
+ * `references` array, or `null` when it has none / the tsconfig is inherited.
+ * Only a unit's own tsconfig triggers its `project-references` cap — a member
+ * that merely inherits a root tsconfig's `references` is not itself a composite
+ * project. Each `references[].path` (a directory or a `tsconfig.json` file path,
+ * package-relative) is resolved to its containing directory so the caller can map
+ * it to the referenced workspace unit.
+ */
+function unitOwnTsconfigReferenceDirs(unitDir: string): string[] | null {
+  let found: ReturnType<typeof getTsconfig>;
+  try {
+    found = getTsconfig(unitDir);
+  } catch {
+    found = null;
+  }
+  if (found === null) return null;
+  // The resolved tsconfig must be the unit's OWN (its directory === unitDir),
+  // not an ancestor's inherited config.
+  if (resolvePath(dirname(found.path)) !== resolvePath(unitDir)) return null;
+  const references = (found.config as { references?: unknown }).references;
+  if (!Array.isArray(references) || references.length === 0) return null;
+  const dirs: string[] = [];
+  for (const ref of references) {
+    const refPath = (ref as { path?: unknown } | null)?.path;
+    if (typeof refPath !== "string" || refPath === "") continue;
+    let abs = resolvePath(unitDir, refPath);
+    if (/\.json$/i.test(abs)) abs = dirname(abs); // a direct tsconfig path ⇒ its directory
+    dirs.push(abs);
+  }
+  return dirs;
+}
+
+/**
+ * The `rootRelDir` of the workspace unit that owns absolute directory `dir` (an
+ * exact unit-directory match, or the deepest unit containing it), or `null` when
+ * no unit owns it (a referenced project outside the analyzed workspace — its cap
+ * has nowhere to land, which is fine: an unanalysed referenced project cannot be
+ * claimed here anyway).
+ */
+function ownerUnitRootRelDir(units: readonly AnalyzeUnit[], dir: string): string | null {
+  const target = resolvePath(dir);
+  let best: AnalyzeUnit | null = null;
+  for (const unit of units) {
+    const unitAbs = resolvePath(unit.dir);
+    if (target === unitAbs || target.startsWith(`${unitAbs}${sep}`)) {
+      if (best === null || unit.dir.length > best.dir.length) best = unit;
+    }
+  }
+  return best === null ? null : best.rootRelDir;
 }
 
 /**
@@ -829,6 +939,23 @@ function isUnderExcluded(rel: string, excludedPrefixes: readonly string[]): bool
 
 function isConfigRootName(name: string): boolean {
   return CONFIG_ROOT_RE.test(name) || DOTRC_RE.test(name) || TOOL_CONFIG_ROOT_RE.test(name);
+}
+
+/**
+ * Is `rel` (root-relative POSIX) a Storybook config file — a non-test source
+ * file inside a `.storybook/` directory? These are seeded as `config`
+ * reachability roots so the app code they import (decorators, MSW handlers,
+ * store-reset helpers) stays alive and is never claimed. Test files under
+ * `.storybook/__tests__/` are excluded — they are ordinary test roots, tracked
+ * by {@link isTestFilePath}, not Storybook configuration.
+ */
+function isStorybookConfigFile(rel: string): boolean {
+  const segs = rel.split("/");
+  const idx = segs.indexOf(".storybook");
+  if (idx === -1) return false;
+  if (segs.slice(idx + 1).includes("__tests__")) return false;
+  const base = segs[segs.length - 1] ?? "";
+  return !TEST_FILE_RE.test(base);
 }
 
 /**
@@ -1107,18 +1234,21 @@ function readTsconfigOptions(root: string): {
 /**
  * A tsconfig `references` array composes this project with sibling TS projects
  * that may consume its files across the project boundary — a use the
- * single-project reference graph cannot see. Cap the whole package at medium
- * (directory-subtree with an empty prefix matches every file). Deliberately
- * blunt; real cross-project analysis is post-v1 (see the registry rationale).
+ * single-project reference graph cannot see. Cap the whole OWNING package at
+ * medium (directory-subtree with an empty prefix ⇒ the site's owning unit).
+ * Sited at the unit's own `tsconfig.json` (`<rootRelDir>/tsconfig.json`), so the
+ * claim engine scopes the cap to that workspace member, not the whole monorepo.
+ * Deliberately blunt; real cross-project analysis is post-v1 (registry rationale).
  */
-function addProjectReferencesHazard(graph: IRGraph): void {
+function addProjectReferencesHazard(graph: IRGraph, rootRelDir: string): void {
+  const tsconfigRel = rootRelDir === "" ? "tsconfig.json" : `${rootRelDir}/tsconfig.json`;
   graph.addHazard({
-    file: fileId("tsconfig.json"),
+    file: fileId(tsconfigRel),
     hazardClass: "project-references",
     detail:
       "tsconfig `references` composes this project with sibling projects that may consume its files across the project boundary (whole-package cap, medium)",
-    site: { file: "tsconfig.json", span: { ...CONFIG_SITE_SPAN } },
-    // no subtreePrefix ⇒ "" ⇒ the whole package is in scope
+    site: { file: tsconfigRel, span: { ...CONFIG_SITE_SPAN } },
+    // no subtreePrefix ⇒ "" ⇒ the hazard site's owning workspace unit is in scope
   });
 }
 

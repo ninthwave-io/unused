@@ -1,0 +1,37 @@
+case: preset-cdk
+description: >-
+  An AWS CDK app: the deployable entrypoint is declared in `cdk.json`'s `app`
+  field (`npx tsx bin/app.ts`), NOT in `package.json`'s `main`/`bin`. The entry
+  file instantiates real infrastructure stacks (live code). The cdk preset
+  (auto-activated by `cdk.json` or an `aws-cdk-lib` dependency) parses
+  `cdk.json#app` and seeds the CDK `bin/` entry-script convention as production
+  entrypoints, so the entry file and every stack it instantiates are alive rather
+  than a cascade of false `unused`/`test-only`/zombie claims. An unimported helper
+  under `lib/` stays a genuine high-confidence dead claim.
+subjects:
+  - kind: file
+    name: bin/app.ts
+    file: bin/app.ts
+    expected: alive
+    because: >-
+      the AWS CDK app entrypoint named in cdk.json#app ("npx tsx bin/app.ts") and
+      matched by the CDK `bin/` entry-script convention — seeded as a production
+      entrypoint by the cdk preset. Nothing statically imports a CDK bin entry (the
+      `cdk` CLI invokes it), so without this convention it would be a false positive.
+  - kind: file
+    name: lib/my-stack.ts
+    file: lib/my-stack.ts
+    expected: alive
+    because: >-
+      imported and instantiated by bin/app.ts (the CDK entrypoint) — live
+      infrastructure-as-code kept alive through the seeded entrypoint, not a
+      test-only cascade victim.
+  - kind: file
+    name: lib/orphan.ts
+    file: lib/orphan.ts
+    expected: dead
+    minConfidence: high
+    because: >-
+      no CDK bin entry references it and no file imports it — a genuine orphan the
+      cdk preset must not keep alive, flagged dead at high confidence because no
+      hazard is in scope.

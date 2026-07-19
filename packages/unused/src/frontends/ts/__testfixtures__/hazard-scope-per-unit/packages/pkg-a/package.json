@@ -1,0 +1,6 @@
+{
+  "name": "@scope/pkg-a",
+  "private": true,
+  "version": "0.0.0",
+  "main": "src/index.ts"
+}

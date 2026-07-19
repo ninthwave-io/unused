@@ -178,6 +178,9 @@ export function computeUnusedDependencies(input: DependencyAnalysisInput): Depen
   units.forEach((unit, unitIndex) => {
     const declared = readDeclaredDependencies(unit.dir);
     if (declared === null) return;
+    // Capacitor platform/CLI packages are kept alive when this unit is a
+    // Capacitor app (a `capacitor.config.*` at its root) — see below.
+    const capacitorApp = hasCapacitorConfig(unit.dir);
     const referencedExternal = referencedExternalByUnit[unitIndex] ?? EMPTY_SET;
     const crossRef = crossRefByUnit[unitIndex] ?? EMPTY_SET;
     const testReferencedExternal = testReferencedExternalByUnit[unitIndex] ?? EMPTY_SET;
@@ -196,6 +199,7 @@ export function computeUnusedDependencies(input: DependencyAnalysisInput): Depen
         (depName.startsWith("@types/") && anyTsFile) ||
         input.jsxRuntimePackages.has(depName) ||
         isConfigNamed(depName, input.configTokens) ||
+        (capacitorApp && CAPACITOR_KEPT_ALIVE_DEPS.has(depName)) ||
         (!isSibling && isMaybeBinDependency(depName, unit.dir, input.root));
       if (prodAlive) continue;
 
@@ -372,6 +376,41 @@ function dependencyLineMap(raw: string, wanted: ReadonlySet<string>): Map<string
 const TS_FILE_RE = /\.(?:ts|tsx|mts|cts)$/i;
 
 const EMPTY_SET: ReadonlySet<string> = new Set();
+
+/**
+ * Capacitor native-platform + CLI packages kept alive in a Capacitor app
+ * (reference-codebase FP class 3, `capacitor-platform-dependency` registry rationale).
+ * `@capacitor/ios`/`@capacitor/android` exist only so the Capacitor CLI can copy
+ * native platform code — never imported in JS by design — and `@capacitor/cli`
+ * is a bin tool. Capacitor *plugins* (`@capacitor/camera`, `@capacitor/screen-orientation`,
+ * …) DO expose a JS API and are deliberately NOT in this set (they stay claimable).
+ */
+const CAPACITOR_KEPT_ALIVE_DEPS: ReadonlySet<string> = new Set([
+  "@capacitor/ios",
+  "@capacitor/android",
+  "@capacitor/cli",
+]);
+
+const CAPACITOR_CONFIG_BASENAMES = [
+  "capacitor.config.ts",
+  "capacitor.config.js",
+  "capacitor.config.mjs",
+  "capacitor.config.cjs",
+  "capacitor.config.json",
+] as const;
+
+/** Does `dir` hold a `capacitor.config.*` — i.e. is this workspace unit a Capacitor app? */
+function hasCapacitorConfig(dir: string): boolean {
+  return CAPACITOR_CONFIG_BASENAMES.some((name) => isFile(join(dir, name)));
+}
+
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Is `depName` (or a conventional plugin/preset shorthand of it) present in the

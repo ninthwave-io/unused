@@ -1,0 +1,8 @@
+# This fixture needs a real (hand-authored, never `npm install`ed)
+# node_modules with bin-less manifests, so pre-install bin conservatism does
+# NOT blanket-keep every unreferenced dependency alive — that would mask the
+# capacitor-platform-dependency rule under test. The repo-root .gitignore
+# excludes every "node_modules/" directory; these negations re-include only this
+# fixture's own hand-authored one.
+!node_modules/
+!node_modules/**

@@ -99,8 +99,13 @@ import { stripJsonComments } from "./jsonc.js";
 
 export type GateThreshold = "high" | "medium" | "low";
 
-/** The T4.4 framework presets known in v1 (PRD §6: "v1 ships one or two"). */
-export type PresetName = "vite" | "next";
+/**
+ * The framework presets known in v1 (PRD §6). `vite`/`next` shipped at M4; the
+ * reference-codebase real-customer smoke round added `storybook` (auto-discovered
+ * `.stories.*` files are live via `.storybook/main`'s glob) and `cdk` (an AWS
+ * CDK app's entrypoint is declared in `cdk.json#app`, not `package.json`).
+ */
+export type PresetName = "vite" | "next" | "storybook" | "cdk";
 
 export interface WorkspaceConfigOverride {
   readonly entry: readonly string[];
@@ -289,7 +294,7 @@ const ALLOWED_TOP_LEVEL = new Set([
 const ALLOWED_WORKSPACE_OVERRIDE_KEYS = new Set(["entry", "project", "ignore"]);
 const ALLOWED_GATE_KEYS = new Set(["threshold"]);
 const GATE_THRESHOLDS: readonly GateThreshold[] = ["high", "medium", "low"];
-const PRESET_NAMES: readonly PresetName[] = ["vite", "next"];
+const PRESET_NAMES: readonly PresetName[] = ["vite", "next", "storybook", "cdk"];
 
 /**
  * Validate a parsed JSON value against the config contract, throwing

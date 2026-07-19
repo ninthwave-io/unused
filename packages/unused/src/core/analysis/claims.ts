@@ -176,6 +176,21 @@ export interface EmitClaimsInput {
    * Absent/empty ⇒ no self-name exemption (byte-identical to pre-T5.5).
    */
   readonly selfDependencyIds?: ReadonlySet<string>;
+  /**
+   * The run's workspace-unit boundaries (root-relative POSIX directories; `""`
+   * is the root package), so a WHOLE-PACKAGE hazard cap — a `project`-scope
+   * hazard, or a `directory-subtree` hazard with no static prefix (a computed
+   * `require`/`import()` with an opaque argument) — scopes to the OWNING
+   * workspace unit of the hazard site, never the whole monorepo (reference-codebase
+   * smoke: a single computed `require` in a vendored top-level file was capping
+   * every claim across all 18 packages). A file is owned by the deepest unit
+   * whose directory contains it; a file under no member (a vendored top-level
+   * file) is owned by the root unit. Absent/empty ⇒ a single root unit
+   * (`[{ rootRelDir: "" }]`) — every whole-package cap covers the whole run,
+   * byte-identical to the pre-fix single-graph behaviour (and to single-package
+   * analysis, where there is only ever one unit).
+   */
+  readonly units?: readonly { readonly rootRelDir: string }[];
 }
 
 /**
@@ -221,9 +236,9 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
   // `fileCap[F]`   caps F's file claim AND F's export claims (directory-subtree,
   //                file scopes). `exportCap[F]` caps only F's export claims
   //                (symbol-set scope). An unregistered class ⇒ project no-claim.
-  const caps = buildHazardCaps(graph);
+  const caps = buildHazardCaps(graph, input.units ?? DEFAULT_UNITS);
   if (caps.projectNoClaim) return [];
-  const { fileCap, exportCap, projectCap } = caps;
+  const { fileCap, exportCap, unitCap, ownerRootRelDir } = caps;
 
   // Every root file (production, config, or test) — never itself flagged as a
   // file or export; a test root can only surface as a zombie `test` claim.
@@ -364,8 +379,13 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
   // a project-level subject, unaffected by per-file/symbol-set hazards. The
   // entrypoint / no-claim guards above also gate these.
   for (const dep of input.dependencies ?? []) {
-    const confidence = confidenceForCap(projectCap);
-    claims.push(buildDependencyClaim(dep, input, confidence, noteForCap(projectCap)));
+    // A dependency claim carries its OWNING workspace unit's whole-package cap
+    // (its declaring package.json's unit) — not a run-wide cap: a computed
+    // require in one package must not downgrade a sibling package's dependency
+    // claims. `dep.loc.file` is the declaring package.json's path.
+    const depCap = unitCap.get(ownerRootRelDir(dep.loc.file));
+    const confidence = confidenceForCap(depCap);
+    claims.push(buildDependencyClaim(dep, input, confidence, noteForCap(depCap)));
   }
 
   claims.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
@@ -384,31 +404,65 @@ interface HazardCaps {
   /** fileId → strongest cap on the file's export claims only (symbol-set). */
   readonly exportCap: ReadonlyMap<string, AppliedCap>;
   /**
-   * The strongest cap that applies **project-wide** — a `project`-scoped hazard
-   * (`unresolvable-entrypoint-target`), or a whole-package `directory-subtree`
-   * hazard whose prefix is `""` (a `project-references` cap, a repo-root
-   * computed import). This is the ceiling a dependency claim (T4.1), which has
-   * no file to attach a per-file cap to, is emitted at. `undefined` ⇒ no
-   * project-wide hazard ⇒ dependency claims stay `high`.
+   * unit `rootRelDir` → the strongest WHOLE-PACKAGE cap owned by that unit — a
+   * `project`-scope hazard, or a `directory-subtree` hazard with an empty prefix
+   * (a computed require/import with no static prefix, a `project-references`
+   * cap), scoped to the unit that owns the hazard site. This is the ceiling a
+   * dependency claim declared in that unit (which has no file to attach a
+   * per-file cap to) is emitted at. A unit absent from the map ⇒ no whole-package
+   * hazard for it ⇒ its dependency claims stay `high`.
    */
-  readonly projectCap: AppliedCap | undefined;
+  readonly unitCap: ReadonlyMap<string, AppliedCap>;
+  /** Resolve a repo-relative POSIX path to its owning unit's `rootRelDir` (deepest containing unit; `""` for the root). */
+  readonly ownerRootRelDir: (path: string) => string;
 }
+
+/** The single-unit default when a caller supplies no workspace boundaries — the whole run is one package (single-package analysis, and every pre-`units` test caller). */
+const DEFAULT_UNITS: readonly { readonly rootRelDir: string }[] = [{ rootRelDir: "" }];
 
 /**
  * Resolve every hazard annotation through the registry into per-subject caps.
  * An unregistered class degrades the whole project to no-claim (never silent —
  * a loud internal warning fires, once per distinct unknown class).
+ *
+ * WHOLE-PACKAGE caps (a `project`-scope hazard, or a `directory-subtree` hazard
+ * with no static prefix) scope to the OWNING WORKSPACE UNIT of the hazard site —
+ * the deepest workspace boundary in `units` containing the hazard's file — never
+ * the whole shared multi-workspace graph. A file/dependency is then capped only
+ * when its own owning unit carries such a hazard, so a computed require in one
+ * package cannot downgrade a sibling package's claims (reference-codebase smoke §4.3).
  */
-function buildHazardCaps(graph: IRGraph): HazardCaps {
+function buildHazardCaps(
+  graph: IRGraph,
+  units: readonly { readonly rootRelDir: string }[],
+): HazardCaps {
   const fileCap = new Map<string, AppliedCap>();
   const exportCap = new Map<string, AppliedCap>();
   let projectNoClaim = false;
-  let projectCap: AppliedCap | undefined;
-  const raiseProjectCap = (applied: AppliedCap): void => {
-    if (projectCap === undefined || capIsStrongerOrEqual(applied.cap, projectCap.cap))
-      projectCap = applied;
-  };
   const warned = new Set<string>();
+
+  // Owning-unit resolver: the deepest unit `rootRelDir` that is a path prefix of
+  // the file (the root unit `""` owns everything no member claims), mirroring the
+  // frontend's `ownerResolver`. Kept core-local (core has no workspace concept of
+  // its own; the boundaries arrive as plain data on `EmitClaimsInput.units`).
+  const unitsByDepth = [...units].sort((a, b) => b.rootRelDir.length - a.rootRelDir.length);
+  const ownerRootRelDir = (path: string): string => {
+    for (const u of unitsByDepth) {
+      if (u.rootRelDir === "" || path === u.rootRelDir || path.startsWith(`${u.rootRelDir}/`)) {
+        return u.rootRelDir;
+      }
+    }
+    return "";
+  };
+
+  // Per-unit whole-package cap (dependency claims + every file the unit owns).
+  const unitCap = new Map<string, AppliedCap>();
+  const raiseUnitCap = (rootRelDir: string, applied: AppliedCap): void => {
+    const current = unitCap.get(rootRelDir);
+    if (current === undefined || capIsStrongerOrEqual(applied.cap, current.cap)) {
+      unitCap.set(rootRelDir, applied);
+    }
+  };
 
   // Precompute the file-node (id, path) list ONCE: every directory-subtree
   // hazard scans it, keeping the whole pass O(hazards + files) rather than
@@ -439,14 +493,14 @@ function buildHazardCaps(graph: IRGraph): HazardCaps {
         break; // provenance only
       case "project":
         // `no-claim` suppresses the whole project; a `medium`/`low` project cap
-        // instead lowers every file's ceiling (file claim AND its export claims),
-        // exactly like a directory-subtree hazard with an empty prefix, and caps
-        // dependency claims project-wide (they have no per-file cap).
+        // instead lowers the ceiling of every file the HAZARD'S OWNING UNIT owns
+        // (applied in the post-pass below) and caps that unit's dependency
+        // claims — a member's unresolvable entrypoint caps that member, not the
+        // whole monorepo.
         if (entry.cap === "no-claim") {
           projectNoClaim = true;
         } else {
-          for (const f of fileNodes) mergeCap(fileCap, f.id, applied);
-          raiseProjectCap(applied);
+          raiseUnitCap(ownerRootRelDir(hazard.site.file), applied);
         }
         break;
       case "file":
@@ -456,19 +510,32 @@ function buildHazardCaps(graph: IRGraph): HazardCaps {
         mergeCap(exportCap, hazard.file, applied);
         break;
       case "directory-subtree": {
-        const prefix = hazard.subtreePrefix ?? ""; // absent ⇒ whole package
-        for (const f of fileNodes) {
-          if (f.path.startsWith(prefix)) mergeCap(fileCap, f.id, applied);
+        const prefix = hazard.subtreePrefix ?? "";
+        if (prefix === "") {
+          // No static prefix ⇒ the importer's whole workspace package: cap the
+          // hazard site's OWNING UNIT (post-pass below), never the whole run.
+          raiseUnitCap(ownerRootRelDir(hazard.site.file), applied);
+        } else {
+          for (const f of fileNodes) {
+            if (f.path.startsWith(prefix)) mergeCap(fileCap, f.id, applied);
+          }
         }
-        // A whole-package (empty-prefix) subtree cap covers every file, so it is
-        // also a project-wide cap for the (file-less) dependency claims.
-        if (prefix === "") raiseProjectCap(applied);
         break;
       }
     }
   }
 
-  return { projectNoClaim, fileCap, exportCap, projectCap };
+  // Apply each unit's whole-package cap to every file that unit owns (a member's
+  // cap covers only that member's files; the root unit's cap covers only files
+  // no member owns — vendored top-level files included).
+  if (unitCap.size > 0) {
+    for (const f of fileNodes) {
+      const cap = unitCap.get(ownerRootRelDir(f.path));
+      if (cap !== undefined) mergeCap(fileCap, f.id, cap);
+    }
+  }
+
+  return { projectNoClaim, fileCap, exportCap, unitCap, ownerRootRelDir };
 }
 
 function appliedCap(hazard: HazardAnnotation, cap: ConfidenceCap): AppliedCap {

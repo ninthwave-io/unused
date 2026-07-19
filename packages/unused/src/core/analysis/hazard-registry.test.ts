@@ -33,6 +33,7 @@ const ALL_CLASSES: readonly HazardClass[] = [
   "jsx-runtime-dependency",
   "bin-only-dependency",
   "config-named-dependency",
+  "capacitor-platform-dependency",
 ];
 
 describe("HAZARD_REGISTRY — vocabulary coverage", () => {
