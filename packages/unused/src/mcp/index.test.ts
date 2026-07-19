@@ -7,11 +7,14 @@
  * `usage_evidence`'s explicit not-configured slots.
  */
 import { execFileSync, spawnSync } from "node:child_process";
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { beforeAll, describe, expect, it } from "vitest";
+import { configSignature } from "./index.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = resolve(HERE, "../..");
@@ -100,6 +103,55 @@ describe("MCP server — tool discovery", () => {
       return tools.map((t) => t.name).sort();
     });
     expect(names).toEqual(["find_unused", "usage_evidence", "why_alive"]);
+  });
+});
+
+describe("MCP config staleness signature", () => {
+  it("changes for applicable ancestor and nested .gitignore edits", async () => {
+    const repository = await mkdtemp(join(tmpdir(), "unused-mcp-gitignore-"));
+    const root = join(repository, "packages", "app");
+    try {
+      await mkdir(join(repository, ".git"), { recursive: true });
+      await mkdir(join(root, "src"), { recursive: true });
+      const ancestor = join(repository, ".gitignore");
+      await writeFile(ancestor, "packages/app/src/generated.ts\n");
+      const before = await configSignature(root);
+
+      await writeFile(ancestor, "packages/app/src/generated.ts\npackages/app/src/cache.ts\n");
+      const future = new Date(Date.now() + 5_000);
+      await utimes(ancestor, future, future);
+      const ancestorChanged = await configSignature(root);
+      expect(ancestorChanged).not.toBe(before);
+
+      await writeFile(join(root, "src/.gitignore"), "*.generated.ts\n");
+      const nestedChanged = await configSignature(root);
+      expect(nestedChanged).not.toBe(ancestorChanged);
+    } finally {
+      await rm(repository, { recursive: true, force: true });
+    }
+  });
+
+  it("watches discovery-relevant hidden directories without traversing .git", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unused-mcp-hidden-config-"));
+    try {
+      await mkdir(join(root, ".storybook"), { recursive: true });
+      await mkdir(join(root, ".github", "workflows"), { recursive: true });
+      await mkdir(join(root, ".git", "internal"), { recursive: true });
+      const before = await configSignature(root);
+
+      await writeFile(join(root, ".storybook", ".gitignore"), "generated.ts\n");
+      const storybookChanged = await configSignature(root);
+      expect(storybookChanged).not.toBe(before);
+
+      await writeFile(join(root, ".github", "workflows", ".gitignore"), "generated.yml\n");
+      const workflowsChanged = await configSignature(root);
+      expect(workflowsChanged).not.toBe(storybookChanged);
+
+      await writeFile(join(root, ".git", "internal", ".gitignore"), "objects\n");
+      expect(await configSignature(root)).toBe(workflowsChanged);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 

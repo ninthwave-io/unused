@@ -61,13 +61,14 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
     "get-tsconfig": "4.14.0",
+    "ignore": "7.0.6",
     "oxc-parser": "0.140.0",
-    "oxc-resolver": "11.24.2"
+    "oxc-resolver": "11.24.2",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.1",
     "ajv": "^8.20.0",
-    "ajv-formats": "^3.0.1",
-    "yaml": "^2.9.0"
+    "ajv-formats": "^3.0.1"
   }
 }

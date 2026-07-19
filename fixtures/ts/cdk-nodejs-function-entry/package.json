@@ -1,0 +1,5 @@
+{
+  "name": "fixture-cdk-function-entry-root",
+  "private": true,
+  "workspaces": ["packages/*"]
+}

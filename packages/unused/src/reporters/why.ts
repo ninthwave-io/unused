@@ -37,14 +37,14 @@ export interface WhyPathView {
 }
 
 export interface WhyCandidateView {
-  readonly kind: "export" | "file";
+  readonly kind: "export" | "file" | "dependency";
   readonly label: string;
   readonly file: string;
   readonly name?: string;
 }
 
 export interface WhySubjectView {
-  readonly kind: "export" | "file";
+  readonly kind: "export" | "file" | "dependency";
   readonly file: string;
   readonly name?: string;
   readonly line?: number;
@@ -106,6 +106,7 @@ export function renderWhyPath(path: WhyPathView, ascii: boolean): string {
 /** `src/foo.ts:12 bar` (export) or `src/foo.ts` (file) — the subject headline. */
 export function subjectLabel(subject: WhySubjectView): string {
   if (subject.kind === "file") return subject.file;
+  if (subject.kind === "dependency") return `${subject.name} (${subject.file})`;
   return subject.line !== undefined
     ? `${subject.file}:${subject.line} ${subject.name}`
     : `${subject.name} (${subject.file})`;
@@ -117,8 +118,8 @@ export function renderWhy(input: WhyReportInput, ascii: boolean): string {
   switch (input.outcome) {
     case "not-found":
       return (
-        `unused why: no symbol or file matching "${input.query}" found in this project.\n` +
-        "  Try a bare export name, a file path, or file.ts:exportName.\n"
+        `unused why: no symbol, file, or dependency matching "${input.query}" found in this project.\n` +
+        "  Try an export or dependency name, a file path, or file.ts:exportName.\n"
       );
 
     case "ambiguous": {

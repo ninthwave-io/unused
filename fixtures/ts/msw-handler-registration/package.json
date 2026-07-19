@@ -1,0 +1,6 @@
+{
+  "name": "fixture-msw-handler-registration",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts"
+}

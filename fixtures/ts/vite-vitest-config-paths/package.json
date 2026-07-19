@@ -1,0 +1,6 @@
+{
+  "name": "fixture-vite-vitest-config-paths",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts"
+}

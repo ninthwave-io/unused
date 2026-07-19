@@ -1,6 +1,6 @@
 /**
  * `analyzeProject` end-to-end config integration (T4.3 acceptance,
- * phasing.md M4): `entry`/`project`/`ignore`/`ignoreDependencies`/
+ * phasing.md M4): `entry`/`project`/`suppressions`/`ignoreDependencies`/
  * `workspaces` overrides, `--config <path>`, the hazard-scope interaction
  * note, and invalid-config → `ConfigError` (CLI maps to exit 3).
  */
@@ -39,15 +39,10 @@ function shapes(claims: readonly Claim[]): Shape[] {
     .sort((a, b) => `${a.kind} ${a.name} ${a.file}`.localeCompare(`${b.kind} ${b.name} ${b.file}`));
 }
 
-describe("config: entry (additive) + project (claimability) + ignore (undiscovery)", () => {
-  it("config-basic: extra-entry chain alive, project-scoped orphan flagged, ignored file invisible, out-of-project orphan just unclaimable", async () => {
+describe("config: entry + project + graph-preserving suppression", () => {
+  it("keeps suppressed files in analysis while marking their claims", async () => {
     const run = await analyzeProject(testfx("config-basic"), { now: FIXED_CLOCK });
-    // Only the genuinely-dead, claimable, non-ignored orphan is claimed.
-    // scripts/outside.ts is a real orphan too (nothing imports it either),
-    // but "project" only narrows claimability — it is still discovered and
-    // parsed (unlike the ignored src/generated/skip.ts), it just can never
-    // itself be flagged.
-    expect(shapes(run.claims)).toEqual([
+    expect(shapes(run.claims.filter((claim) => claim.suppression === undefined))).toEqual([
       {
         kind: "file",
         name: "src/orphan.ts",
@@ -56,26 +51,33 @@ describe("config: entry (additive) + project (claimability) + ignore (undiscover
         verdict: "unused",
       },
     ]);
+    expect(
+      run.claims.find((claim) => claim.subject.name === "src/generated/skip.ts")?.suppression,
+    ).toEqual({ reason: "generated source", source: "config", pattern: "src/generated/**" });
     const claimedFiles = run.claims.map((c) => c.subject.name);
     for (const notClaimed of [
       "src/index.ts", // an entrypoint
       "src/extra-entry.ts", // an entrypoint (config-seeded)
       "src/chained.ts", // alive via the extra-entry chain
-      "src/generated/skip.ts", // ignore-undiscovered
       "scripts/outside.ts", // out of project scope — unclaimable, not undiscovered
     ]) {
       expect(claimedFiles).not.toContain(notClaimed);
     }
   });
 
-  it("config-project-narrowing (reviewer fix, fooling input): an out-of-project importer keeps an in-project file alive; the out-of-project file is itself never claimed", async () => {
+  it("config-project-narrowing: preserves a dead out-of-project import edge without making it a liveness root", async () => {
     const run = await analyzeProject(testfx("config-project-narrowing"), { now: FIXED_CLOCK });
-    // src/helper.ts is referenced ONLY by scripts/build.ts (out of
-    // "project": ["src/**"]) — before the fix, build.ts was dropped from the
-    // graph entirely and helper.ts false-flagged as a confident "unused".
-    // scripts/build.ts itself is never claimable, even though nothing
-    // imports it. Only the genuine in-project orphan is flagged.
+    // scripts/build.ts remains represented in the graph, but project scope does
+    // not turn the otherwise-dead script into a production root. Its target is
+    // therefore truthfully dead too, while the script itself is unclaimable.
     expect(shapes(run.claims)).toEqual([
+      {
+        kind: "file",
+        name: "src/helper.ts",
+        file: "src/helper.ts",
+        confidence: "high",
+        verdict: "unused",
+      },
       {
         kind: "file",
         name: "src/orphan.ts",
@@ -85,7 +87,7 @@ describe("config: entry (additive) + project (claimability) + ignore (undiscover
       },
     ]);
     const claimedFiles = run.claims.map((c) => c.subject.name);
-    expect(claimedFiles).not.toContain("src/helper.ts");
+    expect(claimedFiles).toContain("src/helper.ts");
     expect(claimedFiles).not.toContain("scripts/build.ts");
   });
 });
@@ -131,18 +133,16 @@ describe("config: workspaces override (scoped, doesn't leak to sibling units)", 
   });
 });
 
-describe("config: hazard-scope interaction — an ignored file can't host a hazard", () => {
-  it("config-ignore-hazard: with the computed-import file ignored, the orphan it would have capped is a plain HIGH claim", async () => {
+describe("config: suppressions preserve graph hazards", () => {
+  it("keeps a suppressed computed-import carrier analyzed", async () => {
     const run = await analyzeProject(testfx("config-ignore-hazard"), { now: FIXED_CLOCK });
-    expect(shapes(run.claims)).toEqual([
-      {
-        kind: "file",
-        name: "src/mods/alpha.ts",
-        file: "src/mods/alpha.ts",
-        confidence: "high", // NOT medium — contrast with fixtures/ts/string-computed-import
-        verdict: "unused",
-      },
-    ]);
+    const loader = run.claims.find((claim) => claim.subject.name === "src/loader.ts");
+    expect(loader?.suppression).toEqual({
+      reason: "runtime loader retained by policy",
+      source: "config",
+      pattern: "src/loader.ts",
+    });
+    expect(run.fileCount).toBe(3);
   });
 });
 
@@ -166,9 +166,12 @@ describe("config: --config <path>", () => {
     await mkdir(join(root, "src"));
     await writeFile(join(root, "src", "index.ts"), "export const main = 1;\n");
     await writeFile(join(root, "src", "orphan.ts"), "export const orphan = 1;\n");
-    // A default-named config that would ignore the orphan, and a custom one
+    // A default-named config that would suppress the orphan, and a custom one
     // that doesn't — --config must select the custom one.
-    await writeFile(join(root, "unused.config.jsonc"), '{ "ignore": ["src/orphan.ts"] }');
+    await writeFile(
+      join(root, "unused.config.jsonc"),
+      '{ "suppressions": [{ "files": ["src/orphan.ts"], "kinds": ["file"], "reason": "default policy" }] }',
+    );
     await writeFile(join(root, "custom.jsonc"), "{}");
 
     const run = await analyzeProject(root, { now: FIXED_CLOCK, configPath: "custom.jsonc" });

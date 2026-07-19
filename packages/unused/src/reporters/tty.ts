@@ -134,10 +134,15 @@ const SECTIONS: readonly SectionDef[] = [
     noun: { singular: "test-only claim", plural: "test-only claims" },
     extraFooterLines: (run, ascii) => {
       const z = run.summary.zombieTests;
-      if (z === undefined) return [];
+      const actionableCount = countMatching(
+        run.claims,
+        (claim) => claim.subject.kind === "test" && claim.suppression === undefined,
+      );
+      if (z === undefined || actionableCount === 0) return [];
       const dash = ascii ? "--" : "—";
+      const estCiSecondsPerRun = actionableCount * z.avgSecondsPerTestFile;
       return [
-        `  ${formatCount(z.count)} zombie test${z.count === 1 ? "" : "s"} ${dash} ~${formatCount(z.estCiSecondsPerRun)}s CI per run (estimated).`,
+        `  ${formatCount(actionableCount)} zombie test${actionableCount === 1 ? "" : "s"} ${dash} ~${formatCount(estCiSecondsPerRun)}s CI per run (estimated).`,
       ];
     },
   },
@@ -208,18 +213,6 @@ function wrap(text: string, code: string, color: boolean): string {
  * `--show-suppressed`, a suppressed claim's reason is prefixed — the
  * mandatory `/* unused:ignore <reason> *\/` text PRD §4/§6 says must travel
  * into every report, not just `--json`/SARIF.
- *
- * `suppression.reason === ""` is how an invalid directive (`/* unused:ignore
- * *\/` with no reason) currently reaches the claim schema (`claims.ts`'s
- * `suppressionOf` coerces the frontend's `reason: null` to `""` — the
- * `valid`/`reasonMissing` distinction `suppression.ts` computes does not
- * survive into `Claim.suppression`, a pre-existing gap outside this
- * milestone's scope). Rendering `[suppressed: ]` would read as a rendering
- * bug rather than a source problem, so an empty reason gets the explicit
- * "missing reason" callout `suppression.ts`'s own docstring anticipates
- * ("so M6 renders the warning rather than silently dropping the
- * directive") instead of a blank.
- *
  * Exported for reuse by `reporters/check.ts` (T7.2) — `unused check`'s NEW-
  * claim rows render the identical one-line why (cli-ux §3: "each with the
  * same one-line why").
@@ -227,11 +220,7 @@ function wrap(text: string, code: string, color: boolean): string {
 export function whyText(claim: Claim, showSuppressed: boolean): string {
   const base = claim.evidence[0]?.detail ?? "";
   if (showSuppressed && claim.suppression !== undefined) {
-    const reason =
-      claim.suppression.reason === ""
-        ? "missing reason — add one to /* unused:ignore <reason> */"
-        : claim.suppression.reason;
-    return `[suppressed: ${reason}] ${base}`;
+    return `[suppressed: ${claim.suppression.reason}] ${base}`;
   }
   return base;
 }
@@ -266,12 +255,21 @@ function countMatching(claims: readonly Claim[], predicate: (c: Claim) => boolea
 
 function renderSummaryStrip(run: ClaimRun, ascii: boolean): string[] {
   const sep = ascii ? ", " : " · ";
-  const unusedExports = countMatching(run.claims, (c) => isUnusedKind(c, "export"));
-  const unusedFiles = countMatching(run.claims, (c) => isUnusedKind(c, "file"));
-  const unusedDeps = countMatching(run.claims, (c) => isUnusedKind(c, "dependency"));
+  const unusedExports = countMatching(
+    run.claims,
+    (c) => c.suppression === undefined && isUnusedKind(c, "export"),
+  );
+  const unusedFiles = countMatching(
+    run.claims,
+    (c) => c.suppression === undefined && isUnusedKind(c, "file"),
+  );
+  const unusedDeps = countMatching(
+    run.claims,
+    (c) => c.suppression === undefined && isUnusedKind(c, "dependency"),
+  );
   const testOnlySymbols = countMatching(
     run.claims,
-    (c) => c.verdict === "test-only" && c.subject.kind !== "test",
+    (c) => c.suppression === undefined && c.verdict === "test-only" && c.subject.kind !== "test",
   );
   const suppressedTotal = countMatching(run.claims, (c) => c.suppression !== undefined);
 

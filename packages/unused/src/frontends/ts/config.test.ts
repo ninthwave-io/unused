@@ -2,7 +2,9 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { Claim, SubjectKind } from "../../core/claims/index.js";
 import {
+  applyConfigSuppressions,
   ConfigError,
   collectConfigEntrypoints,
   EMPTY_CONFIG,
@@ -87,9 +89,14 @@ describe("loadConfig", () => {
 
   it("parses a strict .json file", async () => {
     const root = await makeTmpDir();
-    await writeFile(join(root, "unused.config.json"), '{ "ignore": ["dist/**"] }');
+    await writeFile(
+      join(root, "unused.config.json"),
+      '{ "suppressions": [{ "files": ["dist/**"], "kinds": ["file"], "reason": "generated" }] }',
+    );
     const config = await loadConfig(root);
-    expect(config.ignore).toEqual(["dist/**"]);
+    expect(config.suppressions).toEqual([
+      { files: ["dist/**"], kinds: ["file"], reason: "generated" },
+    ]);
   });
 
   it("malformed JSON is a ConfigError naming the fix", async () => {
@@ -116,7 +123,7 @@ describe("validateConfig", () => {
       {
         entry: ["src/index.ts", "src/pages/**/*.tsx"],
         project: ["src/**/*.{ts,tsx}"],
-        ignore: ["**/*.generated.ts", "src/legacy/**"],
+        suppressions: [{ files: ["**/*.generated.ts"], kinds: ["file"], reason: "generated" }],
         ignoreDependencies: ["@types/node"],
         workspaces: { "packages/api": { entry: ["src/server.ts"] } },
         gate: { threshold: "medium" },
@@ -125,10 +132,12 @@ describe("validateConfig", () => {
     );
     expect(config.entry).toEqual(["src/index.ts", "src/pages/**/*.tsx"]);
     expect(config.project).toEqual(["src/**/*.{ts,tsx}"]);
-    expect(config.ignore).toEqual(["**/*.generated.ts", "src/legacy/**"]);
+    expect(config.suppressions).toEqual([
+      { files: ["**/*.generated.ts"], kinds: ["file"], reason: "generated" },
+    ]);
     expect(config.ignoreDependencies).toEqual(["@types/node"]);
     expect(config.workspaces).toEqual({
-      "packages/api": { entry: ["src/server.ts"], project: [], ignore: [] },
+      "packages/api": { entry: ["src/server.ts"], project: [], suppressions: [] },
     });
     expect(config.gate).toEqual({ threshold: "medium" });
     expect(config.presets).toBeUndefined();
@@ -173,6 +182,24 @@ describe("validateConfig", () => {
     expect(() =>
       validateConfig({ workspaces: { "packages/api": { entry: "not-an-array" } } }, "c.jsonc"),
     ).toThrow(/workspaces\.packages\/api\.entry/);
+  });
+
+  it("requires structured suppression fields, explicit claim kinds, and a reason", () => {
+    expect(() => validateConfig({ suppressions: [{ files: ["src/**"] }] }, "c.jsonc")).toThrow(
+      /suppressions\[0\]\.kinds/,
+    );
+    expect(() =>
+      validateConfig(
+        { suppressions: [{ files: ["src/**"], kinds: ["file"], reason: " " }] },
+        "c.jsonc",
+      ),
+    ).toThrow(/suppressions\[0\]\.reason/);
+    expect(() =>
+      validateConfig(
+        { suppressions: [{ files: ["src/**"], kinds: ["unknown"], reason: "legacy" }] },
+        "c.jsonc",
+      ),
+    ).toThrow(/suppressions\[0\]\.kinds\[0\]/);
   });
 
   it("rejects gate that is not an object", () => {
@@ -259,8 +286,12 @@ describe("findWorkspaceOverride", () => {
   const config: UnusedConfig = {
     ...EMPTY_CONFIG,
     workspaces: {
-      "packages/api": { entry: ["src/server.ts"], project: [], ignore: [] },
-      "@scope/lib": { entry: [], project: [], ignore: ["**/*.gen.ts"] },
+      "packages/api": { entry: ["src/server.ts"], project: [], suppressions: [] },
+      "@scope/lib": {
+        entry: [],
+        project: [],
+        suppressions: [{ files: ["**/*.gen.ts"], kinds: ["file"], reason: "generated" }],
+      },
     },
   };
 
@@ -272,8 +303,9 @@ describe("findWorkspaceOverride", () => {
 
   it("matches by package name when the directory key doesn't match", () => {
     expect(
-      findWorkspaceOverride(config, { rootRelDir: "packages/lib", name: "@scope/lib" })?.ignore,
-    ).toEqual(["**/*.gen.ts"]);
+      findWorkspaceOverride(config, { rootRelDir: "packages/lib", name: "@scope/lib" })
+        ?.suppressions,
+    ).toEqual([{ files: ["**/*.gen.ts"], kinds: ["file"], reason: "generated" }]);
   });
 
   it("returns undefined when neither matches", () => {
@@ -305,25 +337,23 @@ describe("filterFilesByConfig", () => {
     expect(filterFilesByConfig(files, EMPTY_CONFIG, units)).toEqual(files);
   });
 
-  it("drops files matched by a root-level ignore glob", () => {
-    const config: UnusedConfig = { ...EMPTY_CONFIG, ignore: ["src/generated/**"] };
-    expect(filterFilesByConfig(files, config, units)).not.toContain("src/generated/skip.ts");
-  });
-
-  it("applies a workspace override's ignore only within that unit", () => {
+  it("never erases files from the graph for policy suppression", () => {
     const config: UnusedConfig = {
       ...EMPTY_CONFIG,
-      workspaces: { "packages/api": { entry: [], project: [], ignore: ["src/gen/**"] } },
+      suppressions: [
+        {
+          files: ["missing/**", "src/generated/**"],
+          kinds: ["file"],
+          reason: "generated",
+        },
+      ],
     };
-    const result = filterFilesByConfig(files, config, units);
-    expect(result).not.toContain("packages/api/src/gen/skip.ts");
-    // A same-shaped path outside the overridden unit is unaffected.
-    expect(result).toContain("src/generated/skip.ts");
+    expect(filterFilesByConfig(files, config, units)).toEqual(files);
   });
 
   it("does NOT drop files outside a `project` glob (reviewer fix: project is claimability, not discovery)", () => {
-    // Before the fix this behaved like a second `ignore` and silently
-    // dropped out-of-project files from the graph entirely — which broke
+    // Before the fix this silently dropped out-of-project files from the graph
+    // entirely — which broke
     // import edges FROM those files (see the `isClaimable` describe block
     // below and config-integration.test.ts's "project-narrowing" fixture
     // for the end-to-end false-positive this caused).
@@ -335,10 +365,100 @@ describe("filterFilesByConfig", () => {
   it("does NOT drop files outside a workspace override's `project` glob either", () => {
     const config: UnusedConfig = {
       ...EMPTY_CONFIG,
-      workspaces: { "packages/api": { entry: [], project: ["src/index.ts"], ignore: [] } },
+      workspaces: { "packages/api": { entry: [], project: ["src/index.ts"], suppressions: [] } },
     };
     const result = filterFilesByConfig(files, config, units);
     expect(result).toEqual(files);
+  });
+});
+
+describe("applyConfigSuppressions", () => {
+  const units = [
+    { rootRelDir: "", name: "root" },
+    { rootRelDir: "packages/api", name: "@x/api" },
+  ];
+
+  function makeClaim(file: string, kind: SubjectKind = "file", reason?: string): Claim {
+    return {
+      id: `${kind}:${file}`,
+      subject: { kind, name: file, loc: { file, span: [1, 1] } },
+      verdict: kind === "test" ? "test-only" : "unused",
+      confidence: "high",
+      evidence: [{ type: "static-reachability", detail: "unreachable", source: "test" }],
+      provenance: { analyzer: "test", version: "0", generatedAt: "2026-01-01T00:00:00Z" },
+      ...(reason === undefined ? {} : { suppression: { reason } }),
+    } as Claim;
+  }
+
+  it("marks matching claims without removing other claims or graph-visible files", () => {
+    const claims = [
+      makeClaim("src/generated/dead.ts"),
+      makeClaim("src/generated/dead.ts", "export"),
+    ];
+    const config: UnusedConfig = {
+      ...EMPTY_CONFIG,
+      suppressions: [
+        {
+          files: ["missing/**", "src/generated/**"],
+          kinds: ["file"],
+          reason: "generated",
+        },
+      ],
+    };
+    const result = applyConfigSuppressions(claims, config, units, ["src/generated/dead.ts"]);
+    expect(result).toHaveLength(2);
+    expect(result[0]?.suppression).toEqual({
+      reason: "generated",
+      source: "config",
+      pattern: "src/generated/**",
+    });
+    expect(result[1]?.suppression).toBeUndefined();
+  });
+
+  it("scopes workspace rules package-relative and preserves inline declaration reasons", () => {
+    const claims = [
+      makeClaim("packages/api/src/dead.ts"),
+      makeClaim("packages/api/src/inline.ts", "file", "inline reason"),
+      makeClaim("src/dead.ts"),
+    ];
+    const config: UnusedConfig = {
+      ...EMPTY_CONFIG,
+      workspaces: {
+        "packages/api": {
+          entry: [],
+          project: [],
+          suppressions: [{ files: ["src/**"], kinds: ["file"], reason: "workspace policy" }],
+        },
+      },
+    };
+    const result = applyConfigSuppressions(
+      claims,
+      config,
+      units,
+      claims.map((claim) => claim.subject.loc.file),
+    );
+    expect(result[0]?.suppression?.reason).toBe("workspace policy");
+    expect(result[1]?.suppression?.reason).toBe("inline reason");
+    expect(result[2]?.suppression).toBeUndefined();
+  });
+
+  it("warns for unmatched and stale suppression policies", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    applyConfigSuppressions(
+      [],
+      {
+        ...EMPTY_CONFIG,
+        suppressions: [
+          { files: ["missing/**"], kinds: ["file"], reason: "unmatched" },
+          { files: ["src/live.ts"], kinds: ["file"], reason: "stale" },
+        ],
+      },
+      units,
+      ["src/live.ts"],
+    );
+    expect(warn.mock.calls.map((call) => String(call[0])).join("\n")).toMatch(/matched no files/);
+    expect(warn.mock.calls.map((call) => String(call[0])).join("\n")).toMatch(/may be stale/);
+    warn.mockRestore();
   });
 });
 
@@ -366,15 +486,48 @@ describe("isClaimable", () => {
     expect(isClaimable("packages/api/src/index.ts", config, units)).toBe(false);
   });
 
+  it("evaluates root project inclusions and negations in order", () => {
+    const config: UnusedConfig = {
+      ...EMPTY_CONFIG,
+      project: ["src/**/*.ts", "!src/legacy/**", "src/legacy/keep.ts"],
+    };
+    expect(isClaimable("src/current.ts", config, units)).toBe(true);
+    expect(isClaimable("src/legacy/dead.ts", config, units)).toBe(false);
+    expect(isClaimable("src/legacy/keep.ts", config, units)).toBe(true);
+    expect(isClaimable("scripts/build.ts", config, units)).toBe(false);
+  });
+
+  it("treats a project list containing only negations as include-by-default", () => {
+    const config: UnusedConfig = { ...EMPTY_CONFIG, project: ["!src/legacy/**"] };
+    expect(isClaimable("src/current.ts", config, units)).toBe(true);
+    expect(isClaimable("src/legacy/dead.ts", config, units)).toBe(false);
+  });
+
   it("a workspace override's project (package-relative) narrows claimability only within that unit", () => {
     const config: UnusedConfig = {
       ...EMPTY_CONFIG,
-      workspaces: { "packages/api": { entry: [], project: ["src/index.ts"], ignore: [] } },
+      workspaces: { "packages/api": { entry: [], project: ["src/index.ts"], suppressions: [] } },
     };
     expect(isClaimable("packages/api/src/index.ts", config, units)).toBe(true);
     expect(isClaimable("packages/api/src/gen/skip.ts", config, units)).toBe(false);
     // Root-owned files are unaffected by a workspace-scoped project glob.
     expect(isClaimable("src/orphan.ts", config, units)).toBe(true);
+  });
+
+  it("evaluates workspace project negations package-relative and in order", () => {
+    const config: UnusedConfig = {
+      ...EMPTY_CONFIG,
+      workspaces: {
+        "packages/api": {
+          entry: [],
+          project: ["src/**", "!src/generated/**", "src/generated/keep.ts"],
+          suppressions: [],
+        },
+      },
+    };
+    expect(isClaimable("packages/api/src/current.ts", config, units)).toBe(true);
+    expect(isClaimable("packages/api/src/generated/dead.ts", config, units)).toBe(false);
+    expect(isClaimable("packages/api/src/generated/keep.ts", config, units)).toBe(true);
   });
 });
 
@@ -403,16 +556,16 @@ describe("collectConfigEntrypoints", () => {
   it("seeds a workspace-override entry glob, matched package-relative but reported root-relative", () => {
     const config: UnusedConfig = {
       ...EMPTY_CONFIG,
-      workspaces: { "packages/api": { entry: ["src/server.ts"], project: [], ignore: [] } },
+      workspaces: { "packages/api": { entry: ["src/server.ts"], project: [], suppressions: [] } },
     };
     expect(collectConfigEntrypoints(analyzedFiles, config, units)).toEqual([
       { file: "packages/api/src/server.ts", reason: "config:workspaces.packages/api.entry" },
     ]);
   });
 
-  it("never seeds a file that isn't in the already-filtered analyzed set (ignore wins over entry)", () => {
-    // src/legacy.ts is not part of `analyzedFiles` at all (as if `ignore` had
-    // already dropped it) — an entry glob matching it must not resurrect it.
+  it("never seeds a file that isn't in the graph-visible analyzed set", () => {
+    // src/legacy.ts is not part of `analyzedFiles`; an entry glob matching it
+    // cannot invent a source file that discovery never found.
     const config: UnusedConfig = { ...EMPTY_CONFIG, entry: ["src/legacy.ts"] };
     expect(collectConfigEntrypoints(analyzedFiles, config, units)).toEqual([]);
   });
@@ -446,7 +599,7 @@ describe("isIgnoredDependency", () => {
 
 describe("warnOnEmptyConfigMatches", () => {
   const discovered = ["src/index.ts", "src/orphan.ts", "packages/api/src/index.ts"];
-  const scoped = discovered; // no `ignore` in play for most of these cases
+  const scoped = discovered;
   const units = [
     { rootRelDir: "", name: "root" },
     { rootRelDir: "packages/api", name: "@x/api" },
@@ -468,7 +621,6 @@ describe("warnOnEmptyConfigMatches", () => {
     const config: UnusedConfig = {
       ...EMPTY_CONFIG,
       entry: ["src/index.ts"],
-      ignore: ["src/orphan.ts"],
     };
     warnOnEmptyConfigMatches(config, discovered, scoped, units);
     expect(warn).not.toHaveBeenCalled();
@@ -495,12 +647,11 @@ describe("warnOnEmptyConfigMatches", () => {
     warn.mockRestore();
   });
 
-  it("warns on a root-level ignore glob that matches nothing (checked against the PRE-ignore set)", () => {
+  it("checks a negated project pattern against its pattern body", () => {
     const warn = spyWarn();
-    const config: UnusedConfig = { ...EMPTY_CONFIG, ignore: ["nowhere/**"] };
+    const config: UnusedConfig = { ...EMPTY_CONFIG, project: ["src/**", "!src/orphan.ts"] };
     warnOnEmptyConfigMatches(config, discovered, scoped, units);
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(String(warn.mock.calls[0]?.[0])).toMatch(/"ignore"/);
+    expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
   });
 
@@ -508,7 +659,7 @@ describe("warnOnEmptyConfigMatches", () => {
     const warn = spyWarn();
     const config: UnusedConfig = {
       ...EMPTY_CONFIG,
-      workspaces: { "packages/typo": { entry: [], project: [], ignore: [] } },
+      workspaces: { "packages/typo": { entry: [], project: [], suppressions: [] } },
     };
     warnOnEmptyConfigMatches(config, discovered, scoped, units);
     expect(warn).toHaveBeenCalledTimes(1);
@@ -522,7 +673,9 @@ describe("warnOnEmptyConfigMatches", () => {
     const warn = spyWarn();
     const config: UnusedConfig = {
       ...EMPTY_CONFIG,
-      workspaces: { "packages/api": { entry: ["src/does-not-exist.ts"], project: [], ignore: [] } },
+      workspaces: {
+        "packages/api": { entry: ["src/does-not-exist.ts"], project: [], suppressions: [] },
+      },
     };
     warnOnEmptyConfigMatches(config, discovered, scoped, units);
     expect(warn).toHaveBeenCalledTimes(1);
@@ -534,7 +687,7 @@ describe("warnOnEmptyConfigMatches", () => {
     const warn = spyWarn();
     const config: UnusedConfig = {
       ...EMPTY_CONFIG,
-      workspaces: { "packages/api": { entry: ["src/index.ts"], project: [], ignore: [] } },
+      workspaces: { "packages/api": { entry: ["src/index.ts"], project: [], suppressions: [] } },
     };
     warnOnEmptyConfigMatches(config, discovered, scoped, units);
     expect(warn).not.toHaveBeenCalled();

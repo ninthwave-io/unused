@@ -57,9 +57,17 @@ describe("HAZARD_REGISTRY — scope/cap per class group (T3.1a)", () => {
     expect(HAZARD_REGISTRY[cls]).toMatchObject(part);
   };
 
-  it("computed import/require are directory-subtree, cap medium", () => {
-    expectEntry("computed-dynamic-import", { scope: "directory-subtree", cap: "medium" });
-    expectEntry("computed-require", { scope: "directory-subtree", cap: "medium" });
+  it("computed import/require are carrier-activated directory-subtree caps", () => {
+    expectEntry("computed-dynamic-import", {
+      scope: "directory-subtree",
+      cap: "medium",
+      activation: "carrier-reachable",
+    });
+    expectEntry("computed-require", {
+      scope: "directory-subtree",
+      cap: "medium",
+      activation: "carrier-reachable",
+    });
   });
 
   it("computed-cjs-exports is symbol-set, cap medium (exports capped, file liveness free)", () => {
@@ -118,6 +126,20 @@ describe("HAZARD_REGISTRY — scope/cap per class group (T3.1a)", () => {
     // simply not claimed), they document why a declared dependency is spared.
     expect(HAZARD_REGISTRY["bin-only-dependency"].scope).toBe("none");
     expect(HAZARD_REGISTRY["config-named-dependency"].scope).toBe("none");
+  });
+
+  it("all non-outgoing hazards remain always active; Elixir dynamic dispatch follows its carrier", () => {
+    expect(HAZARD_REGISTRY["elixir-dynamic-dispatch"].activation).toBe("carrier-reachable");
+    for (const [cls, entry] of Object.entries(HAZARD_REGISTRY)) {
+      if (
+        cls === "computed-dynamic-import" ||
+        cls === "computed-require" ||
+        cls === "elixir-dynamic-dispatch"
+      ) {
+        continue;
+      }
+      expect(entry.activation, cls).toBe("always");
+    }
   });
 });
 

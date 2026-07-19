@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://unused.dev/schema/deletion-plan.schema.json",
+  "title": "unused counterfactual deletion plan",
+  "description": "Standalone why --delete --json contract (ADR 0012). Plans are not claims and never participate in gates or baselines.",
+  "type": "object",
+  "required": ["schemaVersion", "selected", "supported", "reExportEdits", "stages"],
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "properties": {
+        "supported": { "const": true },
+        "selected": { "$ref": "#/$defs/consequenceSubject" },
+        "unsupportedReason": false
+      }
+    },
+    {
+      "required": ["unsupportedReason"],
+      "properties": {
+        "supported": { "const": false },
+        "unsupportedReason": { "type": "string", "minLength": 1 },
+        "reExportEdits": { "type": "array", "maxItems": 0 },
+        "stages": { "type": "array", "maxItems": 0 }
+      }
+    }
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.2.0" },
+    "selected": { "$ref": "#/$defs/subject" },
+    "supported": { "type": "boolean" },
+    "unsupportedReason": { "type": "string", "minLength": 1 },
+    "reExportEdits": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/reExportEdit" }
+    },
+    "stages": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/stage" }
+    }
+  },
+  "$defs": {
+    "subject": {
+      "oneOf": [
+        { "$ref": "#/$defs/exportSubject" },
+        { "$ref": "#/$defs/fileSubject" },
+        { "$ref": "#/$defs/dependencySubject" }
+      ]
+    },
+    "consequenceSubject": {
+      "oneOf": [{ "$ref": "#/$defs/exportSubject" }, { "$ref": "#/$defs/fileSubject" }]
+    },
+    "exportSubject": {
+      "type": "object",
+      "required": ["kind", "file", "name"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "export" },
+        "file": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "line": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "fileSubject": {
+      "type": "object",
+      "required": ["kind", "file"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "file" },
+        "file": { "type": "string", "minLength": 1 }
+      }
+    },
+    "dependencySubject": {
+      "type": "object",
+      "required": ["kind", "file", "name"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "dependency" },
+        "file": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 }
+      }
+    },
+    "site": {
+      "type": "object",
+      "required": ["file", "span"],
+      "additionalProperties": false,
+      "properties": {
+        "file": { "type": "string", "minLength": 1 },
+        "span": {
+          "type": "object",
+          "required": ["start", "end", "startLine", "endLine"],
+          "additionalProperties": false,
+          "properties": {
+            "start": { "type": "integer", "minimum": 0 },
+            "end": { "type": "integer", "minimum": 0 },
+            "startLine": { "type": "integer", "minimum": 1 },
+            "endLine": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
+    "reExportEdit": {
+      "type": "object",
+      "required": ["kind", "file", "line", "targetFile", "site"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "remove-re-export" },
+        "file": { "type": "string", "minLength": 1 },
+        "line": { "type": "integer", "minimum": 1 },
+        "exportedName": { "type": "string", "minLength": 1 },
+        "targetFile": { "type": "string", "minLength": 1 },
+        "targetName": { "type": "string", "minLength": 1 },
+        "site": { "$ref": "#/$defs/site" }
+      }
+    },
+    "stage": {
+      "type": "object",
+      "required": ["stage", "newlyDead"],
+      "additionalProperties": false,
+      "properties": {
+        "stage": { "type": "integer", "minimum": 1 },
+        "newlyDead": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/consequenceSubject" }
+        }
+      }
+    }
+  }
+}

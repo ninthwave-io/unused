@@ -82,6 +82,22 @@ const DEAD_HAZARD: WhyReportInput = {
   ],
 };
 
+const DEAD_DEPENDENCY: WhyReportInput = {
+  outcome: "dead",
+  query: "unused-package",
+  subject: { kind: "dependency", file: "package.json", name: "unused-package" },
+  verdict: "unused",
+  confidence: "high",
+  evidence: [
+    {
+      type: "static-reachability",
+      detail: "Declared in dependencies but not referenced from this workspace.",
+      source: "package-manifest",
+    },
+  ],
+  hazards: [],
+};
+
 const AMBIGUOUS: WhyReportInput = {
   outcome: "ambiguous",
   query: "dup",
@@ -164,6 +180,15 @@ describe("renderWhy", () => {
     `);
   });
 
+  it("dead dependency claim", () => {
+    expect(renderWhy(DEAD_DEPENDENCY, false)).toContain(
+      "unused-package (package.json) — unused (confidence: high)",
+    );
+    expect(renderWhy(DEAD_DEPENDENCY, false)).toContain(
+      "Declared in dependencies but not referenced from this workspace.",
+    );
+  });
+
   it("ambiguous (candidate list)", () => {
     expect(renderWhy(AMBIGUOUS, false)).toMatchInlineSnapshot(`
       "unused why: "dup" is ambiguous — 2 candidates. Re-ask with one of:
@@ -175,8 +200,8 @@ describe("renderWhy", () => {
 
   it("not-found", () => {
     expect(renderWhy(NOT_FOUND, false)).toMatchInlineSnapshot(`
-      "unused why: no symbol or file matching "ghost" found in this project.
-        Try a bare export name, a file path, or file.ts:exportName.
+      "unused why: no symbol, file, or dependency matching "ghost" found in this project.
+        Try an export or dependency name, a file path, or file.ts:exportName.
       "
     `);
   });

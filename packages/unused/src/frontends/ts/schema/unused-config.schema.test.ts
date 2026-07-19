@@ -29,7 +29,9 @@ function compileSchema() {
 const PRD_WORKED_EXAMPLE = {
   entry: ["src/index.ts", "src/pages/**/*.tsx"],
   project: ["src/**/*.{ts,tsx}"],
-  ignore: ["**/*.generated.ts", "src/legacy/**"],
+  suppressions: [
+    { files: ["**/*.generated.ts"], kinds: ["file", "export"], reason: "generated source" },
+  ],
   ignoreDependencies: ["@types/node"],
   workspaces: {
     "packages/api": { entry: ["src/server.ts"] },

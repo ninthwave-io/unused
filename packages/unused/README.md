@@ -6,7 +6,7 @@ npx @ninthwave-io/unused
 
 No install, no config, no account. Point it at a TS/JS repo and it tells you what's truly dead — with a confidence grade and a one-line "why" for every claim, so you (or your coding agent) can trust the answer enough to delete.
 
-`unused` never modifies code and never opens a PR. It's a detector, not a fixer — and it never phones home: **zero telemetry, always.**
+Analysis is read-only by default, and `unused` never opens a PR or commits for you. An explicit, conservative `--fix` can apply reviewable working-tree edits — and the tool never phones home: **zero telemetry, always.**
 
 ## The evidence ladder
 
@@ -66,11 +66,21 @@ Zero-config: it auto-detects entrypoints, workspaces, tsconfig, and test files. 
 
 ```
 npx @ninthwave-io/unused why formatCurrency
+npx @ninthwave-io/unused why --delete formatCurrency
 ```
 
-Prints the shortest reference path if it's alive (entrypoint kind labelled — production, test, or config), or the verdict, confidence, and evidence if it's dead. Works for *any* symbol, not just ones already flagged — "I'm about to touch this, is it safe?" is the actual question, both for a human and for an agent holding the delete key.
+Prints the shortest reference path if it's alive (entrypoint kind labelled — production, test, or config), or the verdict, confidence, and evidence if it's dead. `--delete` adds required re-export edits and staged “this becomes newly dead” consequences without changing files. It also works for dependency claims.
 
-**3. Gate CI on new dead weight, not the backlog**
+**3. Apply conservative fixes, then review the diff**
+
+```
+npx @ninthwave-io/unused --fix
+npx @ninthwave-io/unused --fix --fix-type files --allow-remove-files
+```
+
+The default fixes only unsuppressed, high-confidence unused exports and dependencies. File removal has two explicit opt-ins. A run freezes its initial claim set, edits only safely matched shapes, re-analyses, and reports newly exposed work; it never stages or commits.
+
+**4. Gate CI on new dead weight, not the backlog**
 
 ```
 npx @ninthwave-io/unused baseline   # once, on main: bless the current state
@@ -79,7 +89,7 @@ npx @ninthwave-io/unused check      # every PR: fail only on claims new since ba
 
 A hard "fail everything" gate on a codebase with years of history gets ignored within a week. `check` compares against a committed baseline and fails only on what a PR *adds*.
 
-**4. Give it to your coding agent**
+**5. Give it to your coding agent**
 
 ```
 npx @ninthwave-io/unused mcp
@@ -117,8 +127,15 @@ Zero-config is the default path — most first runs happen before anyone's decid
 {
   // Next.js preset seeds file-based route entrypoints; these add to it.
   "entry": ["src/index.ts", "src/pages/**/*.tsx"],
-  "project": ["src/**/*.{ts,tsx}"],
-  "ignore": ["**/*.generated.ts", "src/legacy/**"],
+  // Ordered claimability patterns; files remain visible to the graph.
+  "project": ["src/**/*.{ts,tsx}", "!src/generated/**"],
+  "suppressions": [
+    {
+      "files": ["src/legacy/**", "**/*.generated.ts"],
+      "kinds": ["export", "file"],
+      "reason": "generated or retained during the legacy migration"
+    }
+  ],
   "ignoreDependencies": ["@types/node"],
   "workspaces": {
     "packages/api": { "entry": ["src/server.ts"] }
@@ -134,7 +151,7 @@ Suppress a single false positive inline, with a mandatory reason so it's still l
 export function legacyHandler() { /* ... */ }
 ```
 
-Suppressed claims are still counted and shown (`--show-suppressed`) in every report — never silently dropped.
+Suppressed claims remain in JSON and SARIF with their reason and policy provenance. Human output hides them from the actionable list and reports a separate suppressed count; use `--show-suppressed` to inspect them. Discovery respects applicable nested `.gitignore` rules by default; `--no-gitignore` provides an explicit audit view.
 
 ## Zero telemetry, always
 

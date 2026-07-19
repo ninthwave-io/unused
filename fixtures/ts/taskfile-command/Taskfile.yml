@@ -1,0 +1,69 @@
+version: "3"
+
+vars:
+  ROOT_VALUE:
+    sh: node ./scripts/root-variable.mjs
+
+env:
+  ROOT_ENV:
+    sh: node ./scripts/root-environment.mjs
+
+includes:
+  maintenance:
+    taskfile: ./tasks/maintenance.yml
+    dir: ./automation
+    vars:
+      INCLUDE_VALUE:
+        sh: node ./include-variable.mjs
+
+tasks:
+  assets:
+    cmds:
+      - node ./scripts/generate-assets.mjs
+  singular:
+    cmd: node ./scripts/singular.mjs
+  simple: node ./scripts/simple.mjs
+  array:
+    - node ./scripts/array.mjs
+  dynamic-variables:
+    vars:
+      TASK_VALUE:
+        sh: node ./scripts/task-variable.mjs
+    env:
+      TASK_ENV:
+        sh: node ./scripts/task-environment.mjs
+    cmd: echo "{{.ROOT_VALUE}} {{.TASK_VALUE}} $ROOT_ENV $TASK_ENV"
+  executable-hooks:
+    if: node ./scripts/condition.mjs
+    status:
+      - node ./scripts/status.mjs
+    preconditions:
+      - node ./scripts/precondition.mjs
+      - sh: node ./scripts/precondition-object.mjs
+    cmds:
+      - defer: node ./scripts/deferred.mjs
+      - cmd: node ./scripts/command-object.mjs
+        if: node ./scripts/command-condition.mjs
+  metadata-only:
+    desc: node ./scripts/orphan.mjs
+  read-only-source-argument:
+    cmd: grep "marker" ./scripts/read-only-argument.mjs
+  runtime-templates:
+    cmds:
+      - node ./runtime/node-{{.TARGET}}.mjs
+      - k6 run ./runtime/load-{{.SCENARIO}}.js
+      - ./runtime/direct-{{.TASK}}.mjs
+      - node ./runtime/static-runner.mjs ./runtime/argument-{{.TARGET}}.mjs
+      - 'node "./runtime/spaced-{{ .TARGET | default "alpha beta" }}.mjs"'
+      - node ./runtime/pipeline-{{ .TARGET | default "alpha" }}.mjs
+      - node ./runtime/unsafe-{{ .TARGET | default "alpha" }}.mjs
+      - node {{.CLI_ARGS}} ./runtime/cli-node.mjs
+      - k6 run {{ .CLI_ARGS }} ./runtime/cli-k6-{{ .SCENARIO | default "smoke" }}.js
+      - node "{{.CLI_ARGS}}" ./runtime/cli-node-quoted.mjs
+      - k6 run '{{ .CLI_ARGS }}' ./runtime/cli-k6-quoted-{{ .SCENARIO | default "smoke" }}.js
+  non-executable-direct:
+    cmds:
+      - ./runtime/nonexec-direct.mjs
+      - '"./runtime/nonexec-quoted.mjs"'
+  non-executable-array:
+    - ./runtime/nonexec-array.mjs

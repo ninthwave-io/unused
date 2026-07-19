@@ -56,6 +56,7 @@ describe("exports", () => {
       expect.objectContaining({
         kind: "local",
         exportedName: "default",
+        localNameKind: "Name",
         localName: "baz",
         isDefault: true,
       }),
@@ -68,10 +69,29 @@ describe("exports", () => {
       expect.objectContaining({
         kind: "local",
         exportedName: "default",
+        localNameKind: "None",
         localName: null,
         isDefault: true,
       }),
     );
+  });
+
+  it("keeps default-assignment identity distinct from a named alias", () => {
+    const r = rec(`const value = 1; export default value; export { value as alias };`);
+    expect(r.exports).toEqual([
+      expect.objectContaining({
+        kind: "local",
+        exportedName: "default",
+        localNameKind: "Default",
+        localName: "value",
+      }),
+      expect.objectContaining({
+        kind: "local",
+        exportedName: "alias",
+        localNameKind: "Name",
+        localName: "value",
+      }),
+    ]);
   });
 
   it("`export { x as y } from` is a named re-export with source", () => {

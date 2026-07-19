@@ -208,6 +208,8 @@ export function emitIR(input: EmitInput): IRGraph {
         id,
         file: fileRel,
         exportedName,
+        ...(exp.kind === "local" ? { localNameKind: exp.localNameKind } : {}),
+        ...(isLocal && localName !== null && localName !== exportedName ? { localName } : {}),
         isDefault,
         typeOnly: exp.typeOnly,
         local: isLocal,

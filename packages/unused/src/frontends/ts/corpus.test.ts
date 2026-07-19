@@ -44,6 +44,7 @@ describe("corpus module records", () => {
         {
           kind: "local",
           exportedName: "add",
+          localNameKind: "Name",
           localName: "add",
           isDefault: false,
           typeOnly: false,
@@ -52,6 +53,7 @@ describe("corpus module records", () => {
         {
           kind: "local",
           exportedName: "subtract",
+          localNameKind: "Name",
           localName: "subtract",
           isDefault: false,
           typeOnly: false,

@@ -152,21 +152,6 @@ const suppressedExport = claim({
     },
   ],
 });
-const suppressedNoReason = claim({
-  id: "exp_7",
-  subject: { kind: "export", name: "shim", loc: { file: "src/shim.ts", span: [1, 2] } },
-  verdict: "unused",
-  confidence: "high",
-  suppression: { reason: "" },
-  evidence: [
-    {
-      type: "static-reachability",
-      detail: "no refs from any entrypoint",
-      source: "reference-graph",
-    },
-  ],
-});
-
 const MOCK_CLAIMS = [formatCurrency, parseLegacyId, getFlags, oldHelper, orderMapper] as const;
 
 function makeRun(claims: readonly Claim[], overrides: Partial<ClaimRun["summary"]> = {}): ClaimRun {
@@ -324,7 +309,15 @@ describe("renderTtyReport — suppression rendering", () => {
     const run = makeRun([formatCurrency, suppressedExport]);
     const out = renderTtyReport({ run, ...CTX }, BASE_OPTIONS);
     expect(out).not.toContain("keepForNow");
+    expect(out).toContain("1 unused export");
     expect(out).toContain("1 suppressed — `unused --show-suppressed`");
+  });
+
+  it("does not blend a suppressed claim into the actionable summary total", () => {
+    const run = makeRun([suppressedExport]);
+    const out = renderTtyReport({ run, ...CTX }, BASE_OPTIONS);
+    expect(out).toContain("0 unused exports");
+    expect(out).toContain("1 suppressed");
   });
 
   it("--show-suppressed lists them, marked with the suppression reason", () => {
@@ -333,19 +326,6 @@ describe("renderTtyReport — suppression rendering", () => {
     expect(out).toContain("keepForNow");
     expect(out).toContain("[suppressed: migration pending]");
     expect(out).toContain("1 suppressed (shown above)");
-  });
-
-  it("a missing-reason suppression (reason: '') renders an explicit callout, never a blank", () => {
-    const run = makeRun([suppressedNoReason]);
-    // Wide columns so the why text isn't truncated mid-callout — this test
-    // is about the *content* of the callout, not column-fit truncation
-    // (covered separately by the narrow/plain snapshots).
-    const out = renderTtyReport(
-      { run, ...CTX },
-      { ...BASE_OPTIONS, columns: 200, showSuppressed: true },
-    );
-    expect(out).toContain("[suppressed: missing reason — add one to /* unused:ignore <reason> */]");
-    expect(out).not.toContain("[suppressed: ]");
   });
 });
 
@@ -358,6 +338,45 @@ describe("renderTtyReport — test-only section + zombie CI-seconds line (T5.3)"
     expect(out).toContain("TEST-ONLY (production-dead, kept alive by tests)");
     expect(out).toContain("OrderMapper");
     expect(out).toContain("1 zombie test — ~14s CI per run (estimated).");
+  });
+
+  it("excludes suppressed zombie tests from actionable cost and does not render an empty section", () => {
+    const suppressedZombie = {
+      ...zombieTest,
+      suppression: { reason: "temporarily retained" },
+    } as Claim;
+    const run = makeRun([suppressedZombie], {
+      zombieTests: { count: 1, estCiSecondsPerRun: 14, estimated: true, avgSecondsPerTestFile: 14 },
+    });
+
+    const hidden = renderTtyReport({ run, ...CTX }, BASE_OPTIONS);
+    expect(hidden).not.toContain("TEST-ONLY");
+    expect(hidden).not.toContain("zombie test");
+
+    const shown = renderTtyReport({ run, ...CTX }, { ...BASE_OPTIONS, showSuppressed: true });
+    expect(shown).toContain("orders.spec.ts");
+    expect(shown).not.toContain("zombie test");
+  });
+
+  it("charges only unsuppressed zombie tests when the summary also contains suppressed ones", () => {
+    const suppressedZombie = {
+      ...zombieTest,
+      id: "tst_suppressed",
+      verdict: "test-only",
+      subject: {
+        kind: "test",
+        name: "suppressed.spec.ts",
+        loc: zombieTest.subject.loc,
+      },
+      suppression: { reason: "temporarily retained" },
+    } as Claim;
+    const run = makeRun([zombieTest, suppressedZombie], {
+      zombieTests: { count: 2, estCiSecondsPerRun: 28, estimated: true, avgSecondsPerTestFile: 14 },
+    });
+
+    const out = renderTtyReport({ run, ...CTX }, BASE_OPTIONS);
+    expect(out).toContain("1 zombie test — ~14s CI per run (estimated).");
+    expect(out).not.toContain("2 zombie tests");
   });
 
   it("the zombie line still appears even if every test-only row is hidden (low confidence, no explicit floor)", () => {

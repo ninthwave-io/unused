@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { discover } from "./discover.js";
+import { discover, filterGitignoredRelativePaths } from "./discover.js";
 
 const created: string[] = [];
 
@@ -85,5 +85,93 @@ describe("discover", () => {
     }
     const found = (await discover(root)).map((p) => relative(root, p).split(sep).join("/"));
     expect(found).toEqual(["real/a.ts"]);
+  });
+
+  it("respects root and nested .gitignore rules, including negations", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unused-gitignore-"));
+    created.push(root);
+    const files = [
+      "src/live.ts",
+      "src/generated/dead.ts",
+      "src/generated/keep.ts",
+      "src/nested/drop.ts",
+      "src/nested/keep.ts",
+    ];
+    for (const rel of files) {
+      const abs = join(root, rel);
+      await mkdir(join(abs, ".."), { recursive: true });
+      await writeFile(abs, "export const value = 1;\n");
+    }
+    await writeFile(join(root, ".gitignore"), "src/generated/*\n!src/generated/keep.ts\n");
+    await writeFile(join(root, "src/nested/.gitignore"), "*.ts\n!keep.ts\n");
+
+    const found = (await discover(root)).map((p) => relative(root, p).split(sep).join("/"));
+    expect(found).toEqual(["src/generated/keep.ts", "src/live.ts", "src/nested/keep.ts"]);
+  });
+
+  it("can disable .gitignore handling", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unused-no-gitignore-"));
+    created.push(root);
+    await mkdir(join(root, "src"), { recursive: true });
+    await writeFile(join(root, ".gitignore"), "src/ignored.ts\n");
+    await writeFile(join(root, "src/ignored.ts"), "export const ignored = 1;\n");
+
+    expect(await discover(root)).toEqual([]);
+    const found = (await discover(root, { gitignore: false })).map((p) =>
+      relative(root, p).split(sep).join("/"),
+    );
+    expect(found).toEqual(["src/ignored.ts"]);
+  });
+
+  it("applies ancestor .gitignore rules when the analysis root is below the Git root", async () => {
+    const repository = await mkdtemp(join(tmpdir(), "unused-ancestor-gitignore-"));
+    created.push(repository);
+    const root = join(repository, "packages", "app");
+    await mkdir(join(repository, ".git"), { recursive: true });
+    await mkdir(join(root, "src"), { recursive: true });
+    await writeFile(join(repository, ".gitignore"), "packages/app/src/ignored.ts\n");
+    await writeFile(join(root, "src/ignored.ts"), "export const ignored = 1;\n");
+    await writeFile(join(root, "src/live.ts"), "export const live = 1;\n");
+
+    const found = (await discover(root)).map((p) => relative(root, p).split(sep).join("/"));
+    expect(found).toEqual(["src/live.ts"]);
+
+    const audit = (await discover(root, { gitignore: false })).map((p) =>
+      relative(root, p).split(sep).join("/"),
+    );
+    expect(audit).toEqual(["src/ignored.ts", "src/live.ts"]);
+  });
+
+  it("applies ancestor rules outermost-to-innermost with negations", async () => {
+    const repository = await mkdtemp(join(tmpdir(), "unused-ancestor-negation-"));
+    created.push(repository);
+    const root = join(repository, "packages", "app");
+    await mkdir(join(repository, ".git"), { recursive: true });
+    await mkdir(join(root, "src"), { recursive: true });
+    await writeFile(join(repository, ".gitignore"), "packages/app/src/*.ts\n");
+    await writeFile(join(repository, "packages/.gitignore"), "!app/src/keep.ts\n");
+    await writeFile(join(root, "src/drop.ts"), "export const drop = 1;\n");
+    await writeFile(join(root, "src/keep.ts"), "export const keep = 1;\n");
+
+    const found = (await discover(root)).map((p) => relative(root, p).split(sep).join("/"));
+    expect(found).toEqual(["src/keep.ts"]);
+  });
+
+  it("filters compiler-discovered non-JavaScript paths through the same ignore stack", async () => {
+    const repository = await mkdtemp(join(tmpdir(), "unused-compiler-gitignore-"));
+    created.push(repository);
+    const root = join(repository, "apps", "service");
+    await mkdir(join(repository, ".git"), { recursive: true });
+    await mkdir(join(root, "lib/generated"), { recursive: true });
+    await writeFile(join(repository, ".gitignore"), "apps/service/lib/generated/*\n");
+    await writeFile(join(root, "lib/generated/.gitignore"), "!keep.ex\n");
+
+    await expect(
+      filterGitignoredRelativePaths(root, [
+        "lib/app.ex",
+        "lib/generated/drop.ex",
+        "lib/generated/keep.ex",
+      ]),
+    ).resolves.toEqual(["lib/app.ex", "lib/generated/keep.ex"]);
   });
 });

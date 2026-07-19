@@ -1,0 +1,72 @@
+case: cdk-nodejs-function-entry
+description: >-
+  A reachable CDK construct composes a sibling workspace's TypeScript handler
+  path through a const binding and a second path.join call. The option creates
+  a liveness edge from the construct to the bundled handler even though there
+  is no import. A sibling handler absent from every construct remains a
+  dead/high control.
+subjects:
+  - kind: file
+    name: packages/runtime/src/handler.ts
+    file: packages/runtime/src/handler.ts
+    expected: alive
+    because: >-
+      named by the reachable CDK construct's const-composed, cross-workspace
+      path-valued entry option and bundled as executable code, so the absence
+      of an import does not make it unused.
+  - kind: file
+    name: packages/runtime/src/namespace-handler.ts
+    file: packages/runtime/src/namespace-handler.ts
+    expected: alive
+    because: >-
+      named by a reachable CDK construct using the real Program __dirname;
+      a same-named var declared inside a TypeScript namespace has its own scope
+      and cannot shadow that path primitive.
+  - kind: file
+    name: packages/runtime/src/namespace-local-handler.ts
+    file: packages/runtime/src/namespace-local-handler.ts
+    expected: alive
+    because: >-
+      a reachable construct inside a TypeScript namespace composes its entry
+      through a namespace-local proven const path binding.
+  - kind: file
+    name: packages/infra/lib/local-handler.ts
+    file: packages/infra/lib/local-handler.ts
+    expected: alive
+    because: >-
+      a relative NodejsFunction entry is resolved from the declaring stack
+      source directory, matching the CDK contract.
+  - kind: file
+    name: packages/infra/local-handler.ts
+    file: packages/infra/local-handler.ts
+    expected: dead
+    minConfidence: high
+    because: >-
+      this same-name package-root control is not the target of the relative
+      entry declared from lib/stack.ts.
+  - kind: file
+    name: packages/runtime/src/orphan.ts
+    file: packages/runtime/src/orphan.ts
+    expected: dead
+    minConfidence: high
+    because: >-
+      its only apparent construct path depends on a Program-scoped var shadow
+      of __dirname, so the path cannot be evaluated safely; no proven construct
+      entry, import, test, or config reference reaches this sibling handler.
+  - kind: file
+    name: packages/runtime/src/namespace-shadowed.ts
+    file: packages/runtime/src/namespace-shadowed.ts
+    expected: dead
+    minConfidence: high
+    because: >-
+      its apparent construct path uses a var named __dirname in the construct's
+      own TypeScript namespace scope, so the real source directory cannot be
+      substituted safely and no proven reference reaches this handler.
+  - kind: file
+    name: packages/runtime/src/module-shadowed.ts
+    file: packages/runtime/src/module-shadowed.ts
+    expected: dead
+    minConfidence: high
+    because: >-
+      its apparent construct path calls a var named path in the construct's
+      own TypeScript module scope, not the proven outer Node path import.

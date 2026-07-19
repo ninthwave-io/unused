@@ -1,0 +1,11 @@
+name: Verify repository scripts
+on: push
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "checking bundle"
+          node ./scripts/verify-bundle.mjs --strict
+          grep "marker" ./scripts/read-only-argument.mjs
+          cp ./scripts/read-only-argument.mjs /tmp/read-only-argument.mjs

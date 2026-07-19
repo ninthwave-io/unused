@@ -1,7 +1,7 @@
 {
   // Narrow CLAIMABILITY to src/** only. scripts/** is still discovered and
-  // parsed — its import edges still count toward reachability — it just can
-  // never itself receive an "unused" claim (config.ts's "project vs ignore"
-  // distinction: project narrows claimability, not visibility).
+  // parsed and its import edges are retained — it just can never itself
+  // receive an "unused" claim. Only edges reached from a real root confer
+  // liveness (ADR 0012).
   "project": ["src/**"]
 }

@@ -43,6 +43,7 @@ interface PackageJson {
   readonly exports?: Record<string, unknown>;
   readonly files?: readonly string[];
   readonly scripts?: Record<string, string>;
+  readonly dependencies?: Record<string, string>;
 }
 
 describe("packaging — package.json metadata (T9.1 acceptance)", () => {
@@ -85,5 +86,9 @@ describe("packaging — package.json metadata (T9.1 acceptance)", () => {
     const script = pkg.scripts?.["prepublishOnly"] ?? "";
     expect(script).toMatch(/\brun build\b/);
     expect(script).toMatch(/\brun ci\b/);
+  });
+
+  it("ships the YAML parser used by Task and workflow discovery as a runtime dependency", () => {
+    expect(pkg.dependencies?.["yaml"]).toMatch(/^\^?2\./);
   });
 });

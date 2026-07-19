@@ -17,3 +17,9 @@ subjects:
     expected: dead
     minConfidence: high
     because: re-exported through src/barrel.ts, but the barrel's `unusedThing` binding is never imported by any consumer; the re-export edge terminates with zero inbound references, and no hazard applies.
+  - kind: file
+    name: src/lib/unusedThing.ts
+    file: src/lib/unusedThing.ts
+    expected: dead
+    minConfidence: high
+    because: the only inbound edge belongs to an unconsumed re-export; no production, config, or test root reaches this file.

@@ -1,0 +1,6 @@
+{
+  "name": "fixture-browser-extension-manifest",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts"
+}

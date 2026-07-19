@@ -7,12 +7,8 @@ description: >-
   counted" (PRD §4/§6), never a silent drop. Verified empirically
   (dist/cli/index.js --json) that the reason-carrying claim's
   `suppression.reason` is exactly "migration pending", and the
-  reason-missing claim's `suppression.reason` is the empty string with no
-  extra warning field on the claim itself — rendering that warning to the
-  user is documented as deferred to M6 (suppression.ts: "so M6 renders the
-  warning rather than silently dropping the directive"); today's contract is
-  only that the directive is captured and the claim still emitted, which
-  this case's expected labels hold the analyzer to. Also verified: the
+  reason-missing directive is diagnosed and does not create a schema-invalid
+  suppression object, so its claim remains visible and gating. Also verified: the
   fixture-corpus scoring harness (testing/corpus/metrics.ts) joins claims to
   labels purely by (kind, name, file) and does not special-case a claim's
   `suppression` field, so both suppressed claims here are scored as normal
@@ -42,8 +38,6 @@ subjects:
     because: >-
       unreferenced anywhere and preceded directly by a reason-less
       `/* unused:ignore */` — still claimed dead/high per the same
-      never-silently-drop contract; the directive is captured
-      (reasonMissing) but today's Claim schema only carries a `reason`
-      string (empty here), not a separate missing-reason warning field —
-      that user-facing warning is documented (M6) as deferred, not yet
-      rendered.
+      never-silently-drop contract; the directive is diagnosed as invalid and
+      the claim remains unsuppressed because canonical suppression reasons are
+      mandatory.

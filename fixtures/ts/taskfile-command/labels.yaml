@@ -1,0 +1,319 @@
+case: taskfile-command
+description: >-
+  A Task task executes a repository script from its command list. The Taskfile
+  is an external config carrier, so the named script is config-live while an
+  uninvoked sibling remains a dead/high control.
+subjects:
+  - kind: file
+    name: scripts/generate-assets.mjs
+    file: scripts/generate-assets.mjs
+    expected: alive
+    because: >-
+      the Taskfile command executes this explicit source path, making it a
+      config root despite having no JavaScript importer.
+  - kind: file
+    name: scripts/singular.mjs
+    file: scripts/singular.mjs
+    expected: alive
+    because: >-
+      the Taskfile task-level singular cmd executes this explicit source path.
+  - kind: file
+    name: scripts/simple.mjs
+    file: scripts/simple.mjs
+    expected: alive
+    because: >-
+      the Taskfile simple-string task executes this explicit source path.
+  - kind: file
+    name: scripts/array.mjs
+    file: scripts/array.mjs
+    expected: alive
+    because: >-
+      the Taskfile array-form task executes this explicit source path.
+  - kind: file
+    name: automation/included.mjs
+    file: automation/included.mjs
+    expected: alive
+    because: >-
+      a local included Taskfile executes this script from its explicit include
+      working directory; the included file has a non-conventional basename and
+      is reachable only through the root Taskfile's includes map.
+  - kind: file
+    name: scripts/root-variable.mjs
+    file: scripts/root-variable.mjs
+    expected: alive
+    because: >-
+      a root-level Task dynamic variable executes this literal sh command and
+      its source path is therefore config-live.
+  - kind: file
+    name: scripts/root-environment.mjs
+    file: scripts/root-environment.mjs
+    expected: alive
+    because: >-
+      a root-level Task dynamic environment value executes this literal sh
+      command before the task consumes the environment value.
+  - kind: file
+    name: scripts/task-variable.mjs
+    file: scripts/task-variable.mjs
+    expected: alive
+    because: >-
+      a task-level dynamic variable executes this literal sh command when the
+      callable task resolves its referenced value.
+  - kind: file
+    name: scripts/task-environment.mjs
+    file: scripts/task-environment.mjs
+    expected: alive
+    because: >-
+      a task-level dynamic environment value executes this literal sh command
+      when the callable task resolves its environment.
+  - kind: file
+    name: automation/include-variable.mjs
+    file: automation/include-variable.mjs
+    expected: alive
+    because: >-
+      the local include passes a dynamic variable whose literal sh command is
+      resolved from the include's explicit working directory.
+  - kind: file
+    name: scripts/condition.mjs
+    file: scripts/condition.mjs
+    expected: alive
+    because: the task-level if hook executes this script.
+  - kind: file
+    name: scripts/status.mjs
+    file: scripts/status.mjs
+    expected: alive
+    because: the task status hook executes this script.
+  - kind: file
+    name: scripts/precondition.mjs
+    file: scripts/precondition.mjs
+    expected: alive
+    because: the string-form task precondition executes this script.
+  - kind: file
+    name: scripts/precondition-object.mjs
+    file: scripts/precondition-object.mjs
+    expected: alive
+    because: the object-form task precondition executes this script through sh.
+  - kind: file
+    name: scripts/deferred.mjs
+    file: scripts/deferred.mjs
+    expected: alive
+    because: the official deferred-command form executes this cleanup script.
+  - kind: file
+    name: scripts/command-object.mjs
+    file: scripts/command-object.mjs
+    expected: alive
+    because: the object-form Task command executes this script.
+  - kind: file
+    name: scripts/command-condition.mjs
+    file: scripts/command-condition.mjs
+    expected: alive
+    because: the command-level if hook executes this script.
+  - kind: file
+    name: runtime/node-alpha.mjs
+    file: runtime/node-alpha.mjs
+    expected: alive
+    because: >-
+      the executed Node entry position contains a bounded Task template whose
+      literal runtime/node- prefix and .mjs suffix match this analyzed file.
+  - kind: file
+    name: runtime/node-beta.mjs
+    file: runtime/node-beta.mjs
+    expected: alive
+    because: >-
+      the same bounded Node runtime template can select this second matching
+      script at Task execution time, so every possible match is config-live.
+  - kind: file
+    name: runtime/load-smoke.js
+    file: runtime/load-smoke.js
+    expected: alive
+    because: >-
+      the executed k6 entry position contains a bounded Task template whose
+      literal prefix and suffix select this load script.
+  - kind: file
+    name: runtime/load-stress.js
+    file: runtime/load-stress.js
+    expected: alive
+    because: >-
+      the bounded k6 runtime template can select this second matching load
+      script, making it a config root.
+  - kind: file
+    name: runtime/direct-build.mjs
+    file: runtime/direct-build.mjs
+    expected: alive
+    because: >-
+      the direct executable source position contains a bounded Task template
+      that can resolve to this script.
+  - kind: file
+    name: runtime/direct-clean.mjs
+    file: runtime/direct-clean.mjs
+    expected: alive
+    because: >-
+      the direct executable template can select this second matching script.
+  - kind: file
+    name: runtime/static-runner.mjs
+    file: runtime/static-runner.mjs
+    expected: alive
+    because: >-
+      this literal Node entry executes before a templated data argument and is
+      independently config-live.
+  - kind: file
+    name: runtime/spaced-alpha beta.mjs
+    file: runtime/spaced-alpha beta.mjs
+    expected: alive
+    because: >-
+      the executed Node entry is shell-quoted, so a valid spaced Go-template
+      directive can safely render a single path segment containing whitespace.
+  - kind: file
+    name: runtime/pipeline-alpha.mjs
+    file: runtime/pipeline-alpha.mjs
+    expected: alive
+    because: >-
+      whitespace and a pipeline inside the unquoted Go-template directive are
+      protected before shell tokenization, while its rendered value is a safe
+      single path segment.
+  - kind: file
+    name: runtime/cli-node.mjs
+    file: runtime/cli-node.mjs
+    expected: alive
+    because: >-
+      Task's special CLI_ARGS expansion occupies Node's option region and is
+      skipped before resolving this following literal entrypoint.
+  - kind: file
+    name: runtime/cli-k6-smoke.js
+    file: runtime/cli-k6-smoke.js
+    expected: alive
+    because: >-
+      Task's spaced CLI_ARGS directive occupies k6's option region and is
+      skipped before expanding the following bounded runtime entry template.
+  - kind: file
+    name: runtime/cli-node-quoted.mjs
+    file: runtime/cli-node-quoted.mjs
+    expected: alive
+    because: >-
+      an exactly quoted Task CLI_ARGS directive remains one uncertainty token
+      in Node's option region and is skipped before this literal entrypoint.
+  - kind: file
+    name: runtime/cli-k6-quoted-smoke.js
+    file: runtime/cli-k6-quoted-smoke.js
+    expected: alive
+    because: >-
+      an exactly single-quoted Task CLI_ARGS directive remains one uncertainty
+      token in k6's option region before this bounded runtime entry template.
+  - kind: file
+    name: automation/runtime/include-alpha.mjs
+    file: automation/runtime/include-alpha.mjs
+    expected: alive
+    because: >-
+      the included Taskfile's bounded runtime template is resolved from the
+      include's explicit automation working directory and can select this file.
+  - kind: file
+    name: automation/runtime/include-beta.mjs
+    file: automation/runtime/include-beta.mjs
+    expected: alive
+    because: >-
+      the included Taskfile template can select this second matching file under
+      its inherited explicit working directory.
+  - kind: file
+    name: runtime/argument-control.mjs
+    file: runtime/argument-control.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      its Task template appears only in an arbitrary argument after a static
+      Node entry; argument positions are not executable source roots.
+  - kind: file
+    name: runtime/node-nested/hidden.mjs
+    file: runtime/node-nested/hidden.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      a Task placeholder matches only within one path segment, so the bounded
+      runtime/node- template cannot cross into this nested child path.
+  - kind: file
+    name: runtime/nonexec-direct.mjs
+    file: runtime/nonexec-direct.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      Task places this path directly in command position, but the regular file
+      has no executable mode bit and therefore cannot be invoked by the shell.
+  - kind: file
+    name: runtime/nonexec-quoted.mjs
+    file: runtime/nonexec-quoted.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      shell quoting preserves this direct path as data but does not make its
+      non-executable file mode runnable.
+  - kind: file
+    name: runtime/nonexec-array.mjs
+    file: runtime/nonexec-array.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      Task's array-form command still delegates direct execution to the shell,
+      which cannot invoke this non-executable source file.
+  - kind: file
+    name: runtime/unsafe-alpha beta.mjs
+    file: runtime/unsafe-alpha beta.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      this path would require an unquoted Task placeholder to render whitespace,
+      which the shell splits rather than executing as one source token.
+  - kind: file
+    name: runtime/unsafe-alpha;beta.mjs
+    file: runtime/unsafe-alpha;beta.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      this path would require an unquoted Task placeholder to render a shell
+      statement separator, so it is not one executable source token.
+  - kind: file
+    name: runtime/unsafe-alpha|beta.mjs
+    file: runtime/unsafe-alpha|beta.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      this path would require an unquoted Task placeholder to render a shell
+      pipeline operator, so the full filename is not executed.
+  - kind: file
+    name: runtime/unsafe-alpha&beta.mjs
+    file: runtime/unsafe-alpha&beta.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      this path would require an unquoted Task placeholder to render a shell
+      background operator, so the full filename is not executed.
+  - kind: file
+    name: runtime/include-root-control.mjs
+    file: runtime/include-root-control.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      the included Taskfile template resolves from its explicit automation
+      working directory, not from the repository root where this control lives.
+  - kind: file
+    name: scripts/orphan.mjs
+    file: scripts/orphan.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      it appears only in descriptive Task metadata, not in a supported command
+      field; no Task command, package entrypoint, import, or other config
+      reference reaches this sibling script.
+  - kind: file
+    name: scripts/dist-overridden.mjs
+    file: scripts/dist-overridden.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      it is named only by Taskfile.dist.yml, which is dormant because the same
+      directory contains the higher-priority Taskfile.yml selected by Task.
+  - kind: file
+    name: scripts/read-only-argument.mjs
+    file: scripts/read-only-argument.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      a Task command passes this path to grep as read-only input; naming a
+      JavaScript file as data does not execute it or make it a config root.

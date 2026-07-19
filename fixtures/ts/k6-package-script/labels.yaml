@@ -1,0 +1,20 @@
+case: k6-package-script
+description: >-
+  A package script explicitly invokes a k6 entry file. The command is an
+  external config carrier, so the named load script is config-live while an
+  uninvoked sibling remains a dead/high control.
+subjects:
+  - kind: file
+    name: load/smoke.js
+    file: load/smoke.js
+    expected: alive
+    because: >-
+      a package script invokes this exact path with k6 run.
+  - kind: file
+    name: load/orphan.js
+    file: load/orphan.js
+    expected: dead
+    minConfidence: high
+    because: >-
+      no package command, entrypoint, import, or other config references this
+      sibling load script.

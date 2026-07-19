@@ -1,0 +1,25 @@
+case: browser-extension-manifest
+description: >-
+  A browser-extension manifest explicitly names background and content scripts
+  as production entrypoints. An unnamed sibling remains a dead/high control.
+subjects:
+  - kind: file
+    name: extension/background.ts
+    file: extension/background.ts
+    expected: alive
+    because: >-
+      the browser-extension manifest names this background service worker.
+  - kind: file
+    name: extension/content.ts
+    file: extension/content.ts
+    expected: alive
+    because: >-
+      the browser-extension manifest names this content script.
+  - kind: file
+    name: extension/orphan.ts
+    file: extension/orphan.ts
+    expected: dead
+    minConfidence: high
+    because: >-
+      the extension manifest does not name this sibling and no import or other
+      production entrypoint reaches it.

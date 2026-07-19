@@ -28,7 +28,7 @@ import { HAZARD_REGISTRY, type HazardClassEntry } from "./hazard-registry.js";
  * wording or the set of globals (a behaviour-affecting change), so a consumer
  * pinning a version can detect it. Independent of the analyzer/tool version.
  */
-export const ASSUMPTION_SET_VERSION = "1.6.0";
+export const ASSUMPTION_SET_VERSION = "1.7.0";
 
 /** One global analysis assumption (independent of any single hazard class). */
 export interface GlobalAssumption {
@@ -93,6 +93,12 @@ export const GLOBAL_ASSUMPTIONS: readonly GlobalAssumption[] = [
       "Neither discovery nor resolution follows symlinks (`symlinks: false`): a symlinked directory is not descended and a symlinked file is not collected or `realpath()`-ed. This avoids cycles and escaping the project tree. Workspace members are resolved by package name (see above), so a symlinked monorepo layout is handled without following the symlink; a module reachable only through some other symlink still degrades toward alive (an outside-project keep-alive), never a confident dead claim.",
   },
   {
+    id: "podfile-literal-scanning-is-conservative",
+    title: "Podfile token scanning prefers keep-alives over Ruby lexer guesses",
+    detail:
+      "Native-config discovery recognizes exact literal Node commands in bare Ruby `system` calls and calls explicitly owned by `Kernel`. For Podfiles it inspects every receiver-eligible `system` token without carrying guessed quote, comment, percent-literal, regex, heredoc, interpolation, or `=begin`/`=end` state across the source; exact literal argv (or a single literal shell command) is still required. Ruby's lexical boundaries and malformed-file recovery are context-sensitive, so guessed state can hide an executable same-line or later call and produce a false dead claim. Consequently, an apparent literal call inside inert text or a comment may conservatively keep a dead script alive. This bounded recall loss is intentional: native configuration that cannot be disproved stays alive.",
+  },
+  {
     id: "elixir-frontend-compiles-the-project",
     title: "Elixir analysis compiles the project (experimental frontend, ADR 0011)",
     detail:
@@ -134,9 +140,11 @@ export function renderAssumptionSet(): string {
     "## Per-hazard downgrade clauses",
     "",
     "Each mechanism below is one where syntax cannot prove a reference absent",
-    "(architecture.md §4). A subject inside a hazard's **scope** is capped at its",
-    "**confidence cap** — or suppressed entirely when the cap is `no-claim` —",
-    "never emitted as a confident `unused`. Scope kinds: `directory-subtree` (a",
+    "(architecture.md §4). Its **activation** policy says whether it always applies",
+    "or requires a carrier reachable from a root or an already-active dynamic scope.",
+    "A subject inside an active hazard's **scope** is capped at its **confidence",
+    "cap** — or suppressed entirely when the cap is `no-claim` — never emitted",
+    "as a confident `unused`. Scope kinds: `directory-subtree` (a",
     "path-prefixed set of files), `file`, `symbol-set` (a file's exports only),",
     "`none` (provenance only, no claim effect).",
     "",
@@ -146,6 +154,7 @@ export function renderAssumptionSet(): string {
     lines.push(
       `### ${entry.hazardClass}`,
       "",
+      `- **Activation:** ${entry.activation}`,
       `- **Scope:** ${entry.scope}`,
       `- **Confidence cap:** ${entry.scope === "none" ? "n/a (no claim effect)" : entry.cap}`,
       "",

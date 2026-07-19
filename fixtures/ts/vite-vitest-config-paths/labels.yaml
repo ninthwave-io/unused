@@ -1,0 +1,26 @@
+case: vite-vitest-config-paths
+description: >-
+  Vite Rollup input and Vitest setupFiles explicitly name source files from
+  config. Those path-valued references keep their targets config-live while an
+  unrelated source file remains a dead/high control.
+subjects:
+  - kind: file
+    name: src/client.ts
+    file: src/client.ts
+    expected: alive
+    because: >-
+      vite.config.ts names this file as build.rollupOptions.input.
+  - kind: file
+    name: src/test/setup.ts
+    file: src/test/setup.ts
+    expected: alive
+    because: >-
+      vitest.config.ts names this file in test.setupFiles.
+  - kind: file
+    name: src/orphan.ts
+    file: src/orphan.ts
+    expected: dead
+    minConfidence: high
+    because: >-
+      no entrypoint, import, or supported Vite or Vitest path-valued config
+      property references this file.

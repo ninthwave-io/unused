@@ -1,0 +1,6 @@
+{
+  "name": "fixture-taskfile-command",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts"
+}

@@ -1,0 +1,6 @@
+{
+  "name": "fixture-github-actions-run-script",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts"
+}

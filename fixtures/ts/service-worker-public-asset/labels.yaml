@@ -1,0 +1,21 @@
+case: service-worker-public-asset
+description: >-
+  Reachable browser code registers a root-relative public service worker. The
+  source-carried reference keeps that exact asset alive while an unrelated
+  sibling remains a dead/high control.
+subjects:
+  - kind: file
+    name: public/runtime-worker.js
+    file: public/runtime-worker.js
+    expected: alive
+    because: >-
+      the production entrypoint registers this root-relative public service
+      worker.
+  - kind: file
+    name: public/orphan-worker.js
+    file: public/orphan-worker.js
+    expected: dead
+    minConfidence: high
+    because: >-
+      no reachable service-worker registration, import, or other entrypoint
+      references this sibling public asset.

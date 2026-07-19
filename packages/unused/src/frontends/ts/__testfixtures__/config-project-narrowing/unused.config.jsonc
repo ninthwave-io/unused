@@ -1,7 +1,7 @@
 {
   // "project" narrows CLAIMABILITY, not discovery (reviewer fix): scripts/
   // build.ts is outside this scope so it can never itself be claimed, but it
-  // is still parsed and still contributes its import of src/helper.ts as a
-  // real reference edge — otherwise helper.ts would false-flag as unused.
+  // remains parsed and contributes its import edge for graph/counterfactual
+  // analysis. The dead script is not promoted to a production root.
   "project": ["src/**"],
 }

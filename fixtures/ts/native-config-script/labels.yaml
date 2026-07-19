@@ -1,0 +1,365 @@
+case: native-config-script
+description: >-
+  A native project build phase explicitly executes a repository script. The
+  native config is an external carrier, so the named script is config-live
+  while an uninvoked sibling remains a dead/high control.
+subjects:
+  - kind: file
+    name: scripts/prepare-mobile.mjs
+    file: scripts/prepare-mobile.mjs
+    expected: alive
+    because: >-
+      the native project shellScript executes this exact source path through
+      Xcode's PROJECT_DIR variable, anchored at the owning project directory.
+  - kind: file
+    name: scripts/prepare-srcroot.mjs
+    file: scripts/prepare-srcroot.mjs
+    expected: alive
+    because: >-
+      the native project shellScript executes this exact source path through
+      Xcode's SRCROOT variable, anchored at the owning project directory.
+  - kind: file
+    name: scripts/prepare-pods.mjs
+    file: scripts/prepare-pods.mjs
+    expected: alive
+    because: a literal Podfile system call executes this Node script.
+  - kind: file
+    name: scripts/prepare-gradle.mjs
+    file: scripts/prepare-gradle.mjs
+    expected: alive
+    because: a literal Gradle commandLine call executes this Node script.
+  - kind: file
+    name: scripts/prepare-pods-command-line.mjs
+    file: scripts/prepare-pods-command-line.mjs
+    expected: alive
+    because: >-
+      the Podfile passes a single literal command line to Ruby system, which
+      executes this Node script through the shell.
+  - kind: file
+    name: scripts/prepare-pods-kernel.mjs
+    file: scripts/prepare-pods-kernel.mjs
+    expected: alive
+    because: >-
+      the Podfile invokes the proven Ruby Kernel.system receiver with a single
+      literal Node command line, which executes this script through the shell.
+  - kind: file
+    name: scripts/prepare-pods-root-kernel.mjs
+    file: scripts/prepare-pods-root-kernel.mjs
+    expected: alive
+    because: >-
+      the Podfile invokes the explicitly root-qualified Ruby ::Kernel.system
+      receiver with literal Node arguments.
+  - kind: file
+    name: scripts/prepare-pods-kernel-colon.mjs
+    file: scripts/prepare-pods-kernel-colon.mjs
+    expected: alive
+    because: >-
+      the Podfile invokes Ruby Kernel::system with literal Node arguments.
+  - kind: file
+    name: scripts/prepare-pods-command-comment.mjs
+    file: scripts/prepare-pods-command-comment.mjs
+    expected: alive
+    because: >-
+      a bare Ruby command-form system call invokes this script with exact
+      literal arguments before a trailing line comment.
+  - kind: file
+    name: scripts/prepare-pods-command-modifier.mjs
+    file: scripts/prepare-pods-command-modifier.mjs
+    expected: alive
+    because: >-
+      an explicitly received Kernel.system command-form call invokes this
+      script with exact literal arguments before a statement modifier.
+  - kind: file
+    name: scripts/prepare-pods-command-semicolon.mjs
+    file: scripts/prepare-pods-command-semicolon.mjs
+    expected: alive
+    because: >-
+      an explicitly root-qualified Kernel.system command-form call invokes this
+      script before a semicolon-delimited following statement.
+  - kind: file
+    name: scripts/prepare-pods-command-multiline.mjs
+    file: scripts/prepare-pods-command-multiline.mjs
+    expected: alive
+    because: >-
+      a bare Ruby command-form system call invokes this script with exact
+      literal argv continued after a top-level comma onto the next line.
+  - kind: file
+    name: scripts/prepare-pods-kernel-multiline.mjs
+    file: scripts/prepare-pods-kernel-multiline.mjs
+    expected: alive
+    because: >-
+      an explicitly received Kernel.system command-form call invokes this
+      script with exact literal argv continued onto the next line.
+  - kind: file
+    name: scripts/prepare-pods-command-comment-continuation.mjs
+    file: scripts/prepare-pods-command-comment-continuation.mjs
+    expected: alive
+    because: >-
+      a bare Ruby command-form system call invokes this script with exact
+      literal argv continued after a comma and an intervening line comment.
+  - kind: file
+    name: scripts/prepare-pods-kernel-comment-continuation.mjs
+    file: scripts/prepare-pods-kernel-comment-continuation.mjs
+    expected: alive
+    because: >-
+      an explicitly received Kernel.system command-form call invokes this
+      script with exact literal argv continued after an intervening comment.
+  - kind: file
+    name: scripts/prepare-pods-command-and.mjs
+    file: scripts/prepare-pods-command-and.mjs
+    expected: alive
+    because: >-
+      a bare command-form system call invokes this script before a top-level
+      Ruby and suffix.
+  - kind: file
+    name: scripts/prepare-pods-kernel-or.mjs
+    file: scripts/prepare-pods-kernel-or.mjs
+    expected: alive
+    because: >-
+      an explicitly received Kernel.system command-form call invokes this
+      script before a top-level Ruby or suffix.
+  - kind: file
+    name: scripts/prepare-pods-command-symbol-and.mjs
+    file: scripts/prepare-pods-command-symbol-and.mjs
+    expected: alive
+    because: >-
+      a bare command-form system call invokes this script before a top-level
+      symbolic-and suffix.
+  - kind: file
+    name: scripts/prepare-pods-kernel-symbol-or.mjs
+    file: scripts/prepare-pods-kernel-symbol-or.mjs
+    expected: alive
+    because: >-
+      an explicitly root-qualified Kernel.system command-form call invokes this
+      script before a top-level symbolic-or suffix.
+  - kind: file
+    name: scripts/prepare-pods-after-unicode.mjs
+    file: scripts/prepare-pods-after-unicode.mjs
+    expected: alive
+    because: >-
+      a real Podfile system call remains visible after an astral-character
+      prefix and a percent literal because the conservative token scan does not
+      carry guessed Ruby lexical state across the source.
+  - kind: file
+    name: scripts/prepare-pods-after-shift.mjs
+    file: scripts/prepare-pods-after-shift.mjs
+    expected: alive
+    because: >-
+      a real Podfile system call follows the valid Ruby append expression
+      items <<ITEM, which is not a heredoc opener and therefore cannot shield
+      later executable code.
+  - kind: file
+    name: scripts/prepare-pods-after-literal-shift.mjs
+    file: scripts/prepare-pods-after-literal-shift.mjs
+    expected: alive
+    because: >-
+      a real Podfile system call follows the executable Ruby integer shift
+      __LINE__ <<ITEM_NUMBER; the ambiguous adjacent-token form cannot hide
+      later executable configuration.
+  - kind: file
+    name: scripts/prepare-pods-after-parameter-shift.mjs
+    file: scripts/prepare-pods-after-parameter-shift.mjs
+    expected: alive
+    because: >-
+      a real Podfile system call follows an append through an unparenthesized
+      method parameter, exercising a valid Ruby local receiver without relying
+      on a heuristic local-variable table.
+  - kind: file
+    name: scripts/prepare-pods-after-chained-assignment.mjs
+    file: scripts/prepare-pods-after-chained-assignment.mjs
+    expected: alive
+    because: >-
+      a real Podfile system call follows an append through a local introduced by
+      a chained assignment, another valid Ruby binding shape that must not
+      suppress the executable tail.
+  - kind: file
+    name: scripts/prepare-pods-interpolated-heredoc.mjs
+    file: scripts/prepare-pods-interpolated-heredoc.mjs
+    expected: alive
+    because: >-
+      a Ruby system call inside interpolation of a squiggly heredoc executes
+      while the Podfile constructs the string and therefore roots its literal
+      Node script target.
+  - kind: file
+    name: scripts/prepare-pods-interpolated-string.mjs
+    file: scripts/prepare-pods-interpolated-string.mjs
+    expected: alive
+    because: >-
+      a Ruby system call inside interpolation of an ordinary double-quoted
+      string executes while the Podfile constructs the string and therefore
+      roots its literal Node script target.
+  - kind: file
+    name: scripts/prepare-pods-after-percent-quote.mjs
+    file: scripts/prepare-pods-after-percent-quote.mjs
+    expected: alive
+    because: >-
+      a real Podfile system call follows a valid percent literal containing an
+      unmatched double quote; literal contents cannot hide the executable tail.
+  - kind: file
+    name: scripts/prepare-pods-after-heredoc-quote.mjs
+    file: scripts/prepare-pods-after-heredoc-quote.mjs
+    expected: alive
+    because: >-
+      a real Podfile system call follows a valid heredoc whose inert body
+      contains an unmatched double quote; heredoc contents cannot poison later
+      token discovery.
+  - kind: file
+    name: scripts/prepare-pods-after-block-quote.mjs
+    file: scripts/prepare-pods-after-block-quote.mjs
+    expected: alive
+    because: >-
+      a real Podfile system call follows a valid =begin/=end comment containing
+      an unmatched double quote; comment contents cannot poison later tokens.
+  - kind: file
+    name: scripts/prepare-pods-after-regex-quote.mjs
+    file: scripts/prepare-pods-after-regex-quote.mjs
+    expected: alive
+    because: >-
+      a real Podfile system call follows a slash-regex literal containing a
+      double quote; regex contents cannot hide the executable tail.
+  - kind: file
+    name: scripts/prepare-pods-after-regex-hash.mjs
+    file: scripts/prepare-pods-after-regex-hash.mjs
+    expected: alive
+    because: >-
+      a real Podfile system call follows a slash-regex hash on the same line;
+      the regex hash cannot be guessed to begin a Ruby line comment.
+  - kind: file
+    name: scripts/pod-receiver-control.mjs
+    file: scripts/pod-receiver-control.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      it appears only in a system-named method call on an arbitrary Podfile
+      receiver, which does not prove that Ruby's shell-executing system method
+      will run the literal command line.
+  - kind: file
+    name: scripts/pod-line-comment-control.mjs
+    file: scripts/pod-line-comment-control.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      it appears only in an ordinary Ruby line comment, whose apparent system
+      call is semantically inert. The precision-first Podfile token scan
+      intentionally keeps it alive as a bounded recall miss rather than risk
+      mistaking a regex hash for a comment boundary.
+  - kind: file
+    name: scripts/pod-quoted-string-control.mjs
+    file: scripts/pod-quoted-string-control.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      it appears only as inert text in an ordinary double-quoted Ruby string
+      with no interpolation, not as an executable Podfile method call. The
+      precision-first scanner intentionally keeps this target alive as a
+      bounded recall miss rather than let guessed quote state hide later code.
+  - kind: file
+    name: scripts/pod-percent-raw-control.mjs
+    file: scripts/pod-percent-raw-control.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      its apparent system call is inert text inside a Ruby %q literal, not
+      executable Podfile code.
+  - kind: file
+    name: scripts/pod-percent-interpolated-control.mjs
+    file: scripts/pod-percent-interpolated-control.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      its apparent system call is inert text inside a Ruby %Q literal with no
+      executable interpolation.
+  - kind: file
+    name: scripts/pod-regex-control.mjs
+    file: scripts/pod-regex-control.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      its apparent system call is text inside a Ruby %r regular-expression
+      literal, not a method invocation.
+  - kind: file
+    name: scripts/pod-heredoc-control.mjs
+    file: scripts/pod-heredoc-control.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      its apparent system call is inert text inside a Ruby heredoc and is not
+      executed by the Podfile.
+  - kind: file
+    name: scripts/pod-block-comment-control.mjs
+    file: scripts/pod-block-comment-control.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      its apparent system call is inside a Ruby =begin/=end block comment.
+  - kind: file
+    name: scripts/pod-backtick-heredoc-control.mjs
+    file: scripts/pod-backtick-heredoc-control.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      its apparent system call is inert Ruby source text inside a valid
+      backtick-delimited heredoc rather than a Ruby method invocation.
+  - kind: file
+    name: scripts/pod-malformed-heredoc-control.mjs
+    file: scripts/pod-malformed-heredoc-control.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      its apparent system call is inert body text inside a valid heredoc. The
+      precision-first scanner deliberately keeps the historically named control
+      alive as a bounded recall miss.
+  - kind: file
+    name: scripts/pod-expression-heredoc-control.mjs
+    file: scripts/pod-expression-heredoc-control.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      every apparent system call is inert heredoc body text in a valid Ruby
+      expression context: command-form puts, return, logical-or, or either arm
+      of a ternary expression.
+  - kind: file
+    name: scripts/pod-punctuation-heredoc-control.mjs
+    file: scripts/pod-punctuation-heredoc-control.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      its apparent system calls are inert body text under valid quoted and
+      backtick heredoc terminators containing punctuation (END! and CMD!).
+  - kind: file
+    name: scripts/pod-member-heredoc-control.mjs
+    file: scripts/pod-member-heredoc-control.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      its apparent system call is inert body text in a valid heredoc argument
+      to an explicitly received Ruby method; the conservative Podfile scanner
+      intentionally keeps this target alive rather than risk hiding code.
+  - kind: file
+    name: scripts/pod-uppercase-heredoc-control.mjs
+    file: scripts/pod-uppercase-heredoc-control.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      its apparent system call is inert body text in a valid heredoc argument
+      to an uppercase-named Ruby command; the conservative Podfile scanner
+      intentionally records this as a recall miss.
+  - kind: file
+    name: scripts/pod-scope-heredoc-control.mjs
+    file: scripts/pod-scope-heredoc-control.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      its apparent system call is inert body text in a top-level command
+      heredoc; an unrelated local binding in an earlier method scope does not
+      change that Ruby parse, and the conservative scanner keeps it alive.
+  - kind: file
+    name: scripts/orphan.mjs
+    file: scripts/orphan.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      it appears only behind an unknown native build variable, whose value
+      cannot be resolved safely, in native comments/descriptive fields, and in
+      a Gradle single-string commandLine that names no executable path; no
+      proven command, entrypoint, import, or other config reference reaches it.

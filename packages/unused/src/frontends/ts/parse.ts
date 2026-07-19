@@ -251,9 +251,12 @@ function buildExports(mod: OxcModule, li: LineIndex): ExportRecord[] {
         }
       } else {
         const isDefault = e.exportName.kind === "Default";
+        const localNameKind =
+          e.localName.kind === "Name" || e.localName.kind === "Default" ? e.localName.kind : "None";
         out.push({
           kind: "local",
           exportedName: isDefault ? "default" : (e.exportName.name ?? ""),
+          localNameKind,
           localName: e.localName.name,
           isDefault,
           typeOnly: e.isType,

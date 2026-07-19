@@ -171,7 +171,13 @@ export interface LocalExport {
   kind: "local";
   /** Public name; `"default"` for a default export. */
   exportedName: string;
-  /** Local binding name; `null` for an anonymous default (`export default function () {}`). */
+  /**
+   * Oxc's local-name discriminator. Only `Name` proves that `localName` is a
+   * declaration binding; `Default` is the synthetic binding created by an
+   * `export default <expression>`, and `None` has no local spelling.
+   */
+  localNameKind: "Name" | "Default" | "None";
+  /** Local spelling reported by Oxc; `null` when `localNameKind` is `None`. */
   localName: string | null;
   isDefault: boolean;
   /** `export type { X }` / `export { type X }` / `export type T = …`. */

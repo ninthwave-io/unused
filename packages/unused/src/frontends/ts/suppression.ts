@@ -15,8 +15,9 @@
  *
  * ## Missing reason
  * The reason is mandatory (PRD §6). `/* unused:ignore *\/` (no reason) is
- * still captured, with `valid: false` + `reasonMissing: true`, so M6 renders
- * the warning rather than silently dropping the directive.
+ * still captured, with `valid: false` + `reasonMissing: true`, so claim
+ * emission warns on stderr and leaves the claim unsuppressed (and gate-eligible)
+ * rather than silently accepting or dropping the invalid directive.
  *
  * ## Scope of targets
  * Directives are recognised on top-level declarations/exports and on class /

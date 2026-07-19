@@ -22,6 +22,7 @@ const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 /** [source relative to package root, destination filename under schemas/]. */
 const SCHEMAS = [
   ["src/core/claims/schema/claim-run.schema.json", "claim-run.schema.json"],
+  ["src/core/claims/schema/deletion-plan.schema.json", "deletion-plan.schema.json"],
   ["src/frontends/ts/schema/unused-config.schema.json", "unused-config.schema.json"],
   ["src/reporters/schema/sarif-2.1.0.schema.json", "sarif-2.1.0.schema.json"],
 ];

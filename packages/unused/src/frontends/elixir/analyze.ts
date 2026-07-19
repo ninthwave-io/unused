@@ -18,15 +18,28 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { computePartitionedReachability, emitClaims } from "../../core/analysis/index.js";
+import {
+  computePartitionedReachability,
+  emitClaims,
+  type PartitionedReachability,
+} from "../../core/analysis/index.js";
 import {
   type ClaimRun,
   computeSummary,
   type Provenance,
   SCHEMA_VERSION,
 } from "../../core/claims/index.js";
-import { fileId, type IRGraph } from "../../core/ir/index.js";
-import type { AnalyzeOptions, AnalyzeResult } from "../ts/analyze.js";
+import { entrypointId, fileId, type IRGraph } from "../../core/ir/index.js";
+import type { AnalyzeInternalOptions, AnalyzeOptions, AnalyzeResult } from "../ts/analyze.js";
+import {
+  applyConfigSuppressions,
+  collectConfigEntrypoints,
+  computeConfigHash,
+  isClaimable,
+  loadConfig,
+  warnOnEmptyConfigMatches,
+} from "../ts/config.js";
+import { filterGitignoredRelativePaths } from "../ts/discover.js";
 import { detectElixirProject } from "./detect.js";
 import { emitElixirIR } from "./emit.js";
 import { ElixirFrontendError, runTracer } from "./runner.js";
@@ -42,6 +55,7 @@ const MODULE_TOKEN_RE = /\b[A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*\b/g;
 export interface AnalyzeElixirWithGraph {
   readonly result: AnalyzeResult;
   readonly graph: IRGraph;
+  readonly reachability: PartitionedReachability;
 }
 
 /**
@@ -59,6 +73,7 @@ export async function analyzeElixirProject(
 export async function analyzeElixirProjectWithGraph(
   rootDir: string,
   options: AnalyzeOptions = {},
+  internal: AnalyzeInternalOptions = {},
 ): Promise<AnalyzeElixirWithGraph> {
   const start = Date.now();
   const now = options.now ?? new Date();
@@ -68,9 +83,12 @@ export async function analyzeElixirProjectWithGraph(
   if (project === null) {
     throw new ElixirFrontendError(`not an Elixir project: no mix.exs found in ${rootDir}.`);
   }
+  const config = await loadConfig(project.projectDir, options.configPath);
 
   // The one place user code runs (disclosed). Throws on every refusal path.
   const traceResult = runTracer(project.projectDir);
+  const appName = readAppName(project.mixExsPath) ?? basename(project.projectDir);
+  const configUnits = [{ rootRelDir: "", name: appName }] as const;
 
   // Config roots: modules named as tokens in config/*.exs are kept alive.
   const projectModules = new Set(traceResult.modules.map((m) => m.mod));
@@ -83,6 +101,20 @@ export async function analyzeElixirProjectWithGraph(
   const distinctFiles = new Set<string>();
   for (const mod of traceResult.modules) distinctFiles.add(mod.file);
   for (const fn of traceResult.functions) distinctFiles.add(fn.file);
+  const analyzedFiles =
+    options.gitignore === false
+      ? [...distinctFiles]
+      : await filterGitignoredRelativePaths(project.projectDir, [...distinctFiles]);
+  const analyzedFileSet = new Set(analyzedFiles);
+  for (const hit of collectConfigEntrypoints(analyzedFiles, config, configUnits)) {
+    graph.addNode({
+      kind: "entrypoint",
+      id: entrypointId("production", hit.file),
+      entryKind: "production",
+      file: hit.file,
+      reason: hit.reason,
+    });
+  }
   for (const rel of distinctFiles) {
     try {
       const content = readFileSync(join(project.projectDir, rel), "utf8");
@@ -100,38 +132,49 @@ export async function analyzeElixirProjectWithGraph(
     generatedAt: now.toISOString(),
   };
 
-  const claims = emitClaims({
+  const emittedClaims = emitClaims({
     graph,
     reachability,
     provenance,
     fileLineCounts,
     language: CLAIM_LANGUAGE,
+  }).filter(
+    (claim) =>
+      analyzedFileSet.has(claim.subject.loc.file) &&
+      (claim.subject.kind === "dependency" ||
+        isClaimable(claim.subject.loc.file, config, configUnits)),
+  );
+
+  if (internal.emitConfigMatchWarnings !== false) {
+    warnOnEmptyConfigMatches(config, analyzedFiles, analyzedFiles, configUnits);
+  }
+  const claims = applyConfigSuppressions(emittedClaims, config, configUnits, analyzedFiles, {
+    emitWarnings: internal.emitConfigMatchWarnings !== false,
   });
 
-  const appName = readAppName(project.mixExsPath) ?? basename(project.projectDir);
   const run: ClaimRun = {
     schemaVersion: SCHEMA_VERSION,
     tool: { name: "unused", version },
     run: {
       root: project.projectDir,
-      configHash: "elixir",
+      configHash: computeConfigHash(config),
       startedAt: now.toISOString(),
       durationMs: Date.now() - start,
     },
     claims,
-    summary: computeSummary(claims, {}),
+    summary: computeSummary(claims, { ciSecondsPerTestFile: config.ciSecondsPerTestFile }),
   };
 
   const result: AnalyzeResult = {
     ...run,
     productionEntrypointCount: reachability.production.productionEntrypointFiles.size,
-    fileCount: distinctFiles.size,
+    fileCount: analyzedFiles.length,
     workspaceCount: 1,
     repoName: appName,
     units: [{ rootRelDir: "", name: appName }],
-    gateThreshold: "high",
+    gateThreshold: config.gate?.threshold ?? "high",
   };
-  return { result, graph };
+  return { result, graph, reachability };
 }
 
 /**

@@ -97,17 +97,16 @@ describe("project-references — the cap covers the referenced leaf, not only th
   });
 });
 
-describe("per-unit hazard-cap scoping — a computed require in one package can't cap a sibling (§4.3)", () => {
-  it("caps pkg-a's dead file to medium but leaves pkg-b's dead file at high", async () => {
+describe("per-unit hazard activation — an unreachable carrier can't cap any workspace (§4.3)", () => {
+  it("leaves both the carrier's package and its sibling at high confidence", async () => {
     const run = await analyzeProject(testFx("hazard-scope-per-unit"), { now: FIXED_CLOCK });
-    // pkg-a owns the opaque `require(moduleName)` — its dead code is a plausible
-    // runtime target, so it is correctly capped to medium.
+    // pkg-a contains an opaque require, but its carrier is unreachable and
+    // cannot execute. It therefore cannot dynamically load pkg-a's dead code.
     expect(claimFor(run.claims, "packages/pkg-a/src/dead-a.ts")).toMatchObject({
       verdict: "unused",
-      confidence: "medium",
+      confidence: "high",
     });
-    // pkg-b has no hazard and no relationship to pkg-a — the leak that capped the
-    // whole 18-package reference-codebase run to medium must not touch it.
+    // pkg-b has no hazard and no relationship to pkg-a.
     expect(claimFor(run.claims, "packages/pkg-b/src/dead-b.ts")).toMatchObject({
       verdict: "unused",
       confidence: "high",

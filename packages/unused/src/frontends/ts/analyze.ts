@@ -79,6 +79,7 @@ import {
   type Site,
 } from "../../core/ir/index.js";
 import {
+  applyConfigSuppressions,
   type ConfigUnit,
   collectConfigEntrypoints,
   computeConfigHash,
@@ -89,6 +90,18 @@ import {
   loadConfig,
   warnOnEmptyConfigMatches,
 } from "./config.js";
+import {
+  browserCarrierRoots,
+  browserRuntimeAssetReferences,
+  type ConventionSource,
+  cdkNodejsFunctionReferences,
+  githubActionsRunRoots,
+  k6PackageScriptRoots,
+  mswWorkerRoots,
+  nativeConfigScriptRoots,
+  taskfileCommandRoots,
+  viteVitestConfigReferences,
+} from "./convention-references.js";
 import { addConfigTokens, computeUnusedDependencies } from "./dependencies.js";
 import { discover } from "./discover.js";
 import { type EmitPackageUnit, emitIR, type PackageJsonLike } from "./emit.js";
@@ -143,6 +156,14 @@ export interface AnalyzeOptions {
    * (CLI exit 3), never a silent fall-through to the zero-config default.
    */
   readonly configPath?: string;
+  /** Respect nested `.gitignore` rules unless the CLI passed `--no-gitignore`. */
+  readonly gitignore?: boolean;
+}
+
+/** Frontend-composition controls that are intentionally absent from CLI options. */
+export interface AnalyzeInternalOptions {
+  /** Defer config-match diagnostics so mixed dispatch can evaluate the language union once. */
+  readonly emitConfigMatchWarnings?: boolean;
 }
 
 /**
@@ -179,10 +200,9 @@ export interface AnalyzeResult extends ClaimRun {
   /** Count of production entrypoint files found before claim emission. */
   readonly productionEntrypointCount: number;
   /**
-   * Number of files discovered and parsed for this run, after config
-   * `ignore` narrows discovery. Config `project` does NOT reduce this count:
-   * per `config.ts`'s "ignore vs project" semantics, `project` narrows
-   * claimability only, not discovery — a file outside `project` (e.g. a
+   * Number of files discovered and parsed for this run after `.gitignore`
+   * handling. Config `project` does NOT reduce this count: it narrows
+   * claimability only, not graph visibility — a file outside `project` (e.g. a
    * build script that imports analysed source) is still discovered, parsed,
    * and counted here, even though it can never itself receive a claim.
    */
@@ -255,6 +275,7 @@ export async function analyzeProject(
 export async function analyzeProjectWithGraph(
   rootDir: string,
   options: AnalyzeOptions = {},
+  internal: AnalyzeInternalOptions = {},
 ): Promise<AnalyzeWithGraph> {
   const start = Date.now();
   const now = options.now ?? new Date();
@@ -288,14 +309,13 @@ export async function analyzeProjectWithGraph(
   // glob) are dropped from the analyzable set entirely: they get no entrypoints,
   // so keeping their sources in scope would flag externally-built files as dead.
   // Out-of-scope like `node_modules`/`dist` — an import of one resolves
-  // outside-project (keep-alive), never a claim. T4.3's config `ignore`/`project`
-  // narrow the set the exact same way: an ignored/out-of-project file is
-  // undiscovered — never read, never parsed, never an importer or import
-  // target, never claimed, never a root (PRD §6 item 5). A no-op against
-  // `EMPTY_CONFIG` (`filterFilesByConfig` returns its input unchanged, in
-  // order) — the T4.3 no-config regression contract.
+  // outside-project (keep-alive), never a claim. Project/suppression config is
+  // deliberately graph-preserving (`filterFilesByConfig` returns its input
+  // unchanged); `.gitignore` discovery is the only user-controlled filesystem
+  // exclusion here and can be disabled with `--no-gitignore`.
   const excludedPrefixes = layout.excludedDirs.map((dir) => `${dir}/`);
-  const discovered = (await discover(root))
+  const useGitignore = options.gitignore !== false;
+  const discovered = (await discover(root, { gitignore: useGitignore }))
     .filter((file) => !isUnderExcluded(toPosixRel(root, file), excludedPrefixes))
     .map((file) => ({ abs: file, rel: toPosixRel(root, file) }));
   const scopedRel = new Set(
@@ -421,25 +441,30 @@ export async function analyzeProjectWithGraph(
 
   // T4.3: config `entry` globs ADDITIVELY seed production entrypoints, on top
   // of auto-detection (never replacing it). Matched only against the
-  // already-scoped `files` set (post-`ignore` — `project` no longer narrows
-  // this set, see `config.ts`'s "project vs ignore" docs), so an ignored file
-  // can never be resurrected as an entry — "ignore wins over entry" (PRD §6
-  // item 5). No-op against `EMPTY_CONFIG`.
+  // graph-visible `files` set. `project` affects claimability only; suppression
+  // is applied after claims are emitted. No-op against `EMPTY_CONFIG`.
   const filesRel = files.map((file) => toPosixRel(root, file));
+  const analyzedFileSet = new Set(filesRel);
+  const conventionSources: ConventionSource[] = files.map((file) => ({
+    file: toPosixRel(root, file),
+    source: contentByAbs.get(file) ?? "",
+  }));
   for (const hit of collectConfigEntrypoints(filesRel, config, configUnits)) {
     seedProductionEntrypoint(graph, hit.file, hit.reason);
   }
 
-  // Reviewer-adopted optional item: warn (stderr) when an entry/project/
-  // ignore glob or a workspaces key matches nothing — typo self-detection,
+  // Reviewer-adopted optional item: warn (stderr) when an entry/project glob
+  // or a workspaces key matches nothing — typo self-detection,
   // Knip parity. Diagnostic only; never affects claims. No-op against
   // `EMPTY_CONFIG`.
-  warnOnEmptyConfigMatches(
-    config,
-    discovered.map((d) => d.rel),
-    filesRel,
-    configUnits,
-  );
+  if (internal.emitConfigMatchWarnings !== false) {
+    warnOnEmptyConfigMatches(
+      config,
+      discovered.map((d) => d.rel),
+      filesRel,
+      configUnits,
+    );
+  }
 
   // T4.4: framework presets (vite/next), per package unit — auto-activated on
   // a marker config file/dependency, or forced uniformly by config `presets`
@@ -463,6 +488,9 @@ export async function analyzeProjectWithGraph(
         .filter((rel) => unit.rootRelDir === "" || rel.startsWith(`${unit.rootRelDir}/`))
         .map((rel) => (unit.rootRelDir === "" ? rel : rel.slice(unit.rootRelDir.length + 1))),
     );
+    const unitSources = conventionSources.filter(
+      (source) => ownerUnitForFile(units, source.file) === unit,
+    );
     for (const preset of activePresets) {
       for (const hit of matchPresetEntryPatterns(preset, filesRel, unit.rootRelDir)) {
         seedProductionEntrypoint(graph, hit.file, hit.reason);
@@ -482,7 +510,57 @@ export async function analyzeProjectWithGraph(
               ? await cdkAppEntrypoints(unit.dir, unit.rootRelDir, unitFilesPkgRel)
               : [];
       for (const hit of carrierHits) seedProductionEntrypoint(graph, hit.file, hit.reason);
+
+      if (preset.name === "cdk") {
+        for (const reference of cdkNodejsFunctionReferences(
+          root,
+          unit,
+          unitSources,
+          analyzedFileSet,
+        )) {
+          addConventionReference(graph, reference);
+        }
+      }
     }
+  }
+
+  // Source-carried conventions become graph edges: dead callers do not keep
+  // their targets alive, while reachable config/browser callers propagate
+  // liveness exactly like a resolved dynamic import.
+  for (const unit of units) {
+    const unitSources = conventionSources.filter(
+      (source) => ownerUnitForFile(units, source.file) === unit,
+    );
+    const references = [
+      ...browserRuntimeAssetReferences(unit, unitSources, analyzedFileSet),
+      ...viteVitestConfigReferences(root, unit, unitSources, analyzedFileSet),
+    ];
+    for (const reference of references) {
+      addConventionReference(graph, reference);
+    }
+  }
+
+  // External config carriers have no graph node of their own, so their explicit
+  // targets become config roots. Browser HTML/extension manifests are runtime
+  // production carriers and therefore contribute production roots.
+  for (const unit of units) {
+    for (const hit of mswWorkerRoots(unit, analyzedFileSet)) {
+      seedConfigEntrypoint(graph, hit.file, hit.reason);
+    }
+    for (const hit of k6PackageScriptRoots(root, unit, analyzedFileSet)) {
+      seedConfigEntrypoint(graph, hit.file, hit.reason);
+    }
+  }
+  const configCarrierHits = [
+    ...(await githubActionsRunRoots(root, analyzedFileSet, useGitignore)),
+    ...(await taskfileCommandRoots(root, analyzedFileSet, useGitignore)),
+    ...(await nativeConfigScriptRoots(root, analyzedFileSet, useGitignore)),
+  ];
+  for (const hit of configCarrierHits) {
+    seedConfigEntrypoint(graph, hit.file, hit.reason);
+  }
+  for (const hit of await browserCarrierRoots(root, units, analyzedFileSet, useGitignore)) {
+    seedProductionEntrypoint(graph, hit.file, hit.reason);
   }
 
   // One config-tree walk: JSON config files + the set of package-root directories.
@@ -539,9 +617,8 @@ export async function analyzeProjectWithGraph(
   // The same pass collects the config/scripts token corpus for T4.1's
   // `config-named-dependency` keep-alive.
   const configScan = await scanConfigReferences(root, files, jsonFiles, configRoots, contentByAbs);
-  for (const abs of configScan.referenced) {
+  for (const [abs, site] of configScan.referenced) {
     const rel = toPosixRel(root, abs);
-    const site: Site = { file: rel, span: { start: 0, end: 0, startLine: 1, endLine: 1 } };
     graph.addHazard({
       file: fileId(rel),
       hazardClass: "config-referenced-file",
@@ -558,7 +635,7 @@ export async function analyzeProjectWithGraph(
   // runtime is configured and any source file exists (blunt, false-positive-proof).
   // T4.3: `ignoreDependencies` drops any matching claim before it reaches
   // core — names or glob patterns (e.g. `"@internal/*"`), same engine as
-  // `entry`/`project`/`ignore`. No-op against `EMPTY_CONFIG`.
+  // `entry`/`project`/`suppressions`. No-op against `EMPTY_CONFIG`.
   const dependencies = computeUnusedDependencies({
     root,
     units,
@@ -578,8 +655,8 @@ export async function analyzeProjectWithGraph(
     generatedAt: now.toISOString(),
   };
   // T4.3 (reviewer fix): `project` narrows CLAIMABILITY, not discovery — an
-  // out-of-project file was already parsed above (so it acts as an importer;
-  // see `filterFilesByConfig`'s "ignore vs project" docs), it just can never
+  // out-of-project file was already parsed above (so it acts as an importer),
+  // it just can never
   // itself be claimed. Applied post-`emitClaims` rather than pre-filtering
   // the graph, since core has no config concept and must not import it
   // (ADR 0003/dependency-cruiser); dependency claims are exempt (`project` is
@@ -593,7 +670,7 @@ export async function analyzeProjectWithGraph(
     if (unit.name !== null) selfDependencyIds.add(dependencyId(unit.name));
   }
 
-  const claims = emitClaims({
+  const emittedClaims = emitClaims({
     graph,
     reachability,
     provenance,
@@ -609,6 +686,14 @@ export async function analyzeProjectWithGraph(
     (claim) =>
       claim.subject.kind === "dependency" ||
       isClaimable(claim.subject.loc.file, config, configUnits),
+  );
+
+  const claims = applyConfigSuppressions(
+    emittedClaims,
+    config,
+    configUnits,
+    files.map((file) => toPosixRel(root, file)),
+    { emitWarnings: internal.emitConfigMatchWarnings !== false },
   );
 
   // Populate `subject.loc.package` in a monorepo (schema field; each claim tagged
@@ -653,6 +738,33 @@ function seedProductionEntrypoint(graph: IRGraph, rel: string, reason: string): 
     entryKind: "production",
     file: rel,
     reason,
+  });
+}
+
+function seedConfigEntrypoint(graph: IRGraph, rel: string, reason: string): void {
+  graph.addNode({
+    kind: "entrypoint",
+    id: entrypointId("config", rel),
+    entryKind: "config",
+    file: rel,
+    reason,
+  });
+}
+
+function addConventionReference(
+  graph: IRGraph,
+  reference: {
+    readonly fromFile: string;
+    readonly targetFile: string;
+    readonly site: Site;
+  },
+): void {
+  graph.addEdge({
+    kind: "references",
+    referenceKind: "dynamic-resolved",
+    from: fileId(reference.fromFile),
+    to: fileId(reference.targetFile),
+    site: reference.site,
   });
 }
 
@@ -820,6 +932,21 @@ function buildWorkspaceMap(units: readonly AnalyzeUnit[]): Map<string, string> {
     if (unit.name !== null && !map.has(unit.name)) map.set(unit.name, unit.dir);
   }
   return map;
+}
+
+/** Deepest package unit owning a root-relative source path (root is fallback). */
+function ownerUnitForFile(units: readonly AnalyzeUnit[], file: string): AnalyzeUnit {
+  let owner = units[0] as AnalyzeUnit;
+  for (const unit of units) {
+    if (
+      unit.rootRelDir !== "" &&
+      (file === unit.rootRelDir || file.startsWith(`${unit.rootRelDir}/`)) &&
+      unit.rootRelDir.length > owner.rootRelDir.length
+    ) {
+      owner = unit;
+    }
+  }
+  return owner;
 }
 
 /**
@@ -1013,8 +1140,9 @@ async function walkConfigTree(
 
 /**
  * Scans every JSON config and config-root source once, returning both:
- *  - `referenced` — absolute paths of discovered source files named as a string
- *    (the `config-referenced-file` keep-alive input);
+ *  - `referenced` — absolute paths of discovered source files named as a string,
+ *    mapped to the config source that named them (the
+ *    `config-referenced-file` keep-alive input and provenance);
  *  - `configTokens` — the identifier-ish tokens of every scanned config string
  *    and (package.json being a JSON config) every `scripts` value, the corpus a
  *    `config-named-dependency` keep-alive matches a dependency name against
@@ -1026,15 +1154,29 @@ async function scanConfigReferences(
   jsonFiles: readonly string[],
   configRoots: readonly string[],
   contentByAbs: ReadonlyMap<string, string>,
-): Promise<{ referenced: Set<string>; configTokens: Set<string> }> {
+): Promise<{ referenced: Map<string, Site>; configTokens: Set<string> }> {
   const discovered = new Set(discoveredAbs);
-  const referenced = new Set<string>();
+  const referenced = new Map<string, Site>();
   const configTokens = new Set<string>();
 
-  const matchPaths = (strings: Iterable<string>, fromDir: string): void => {
-    for (const value of strings) {
-      for (const candidate of candidatePaths(value, root, fromDir)) {
-        if (discovered.has(candidate)) referenced.add(candidate);
+  const matchPaths = (strings: Iterable<LocatedStringLiteral>, sourceFile: string): void => {
+    for (const literal of strings) {
+      for (const candidate of candidatePaths(literal.value, root, dirname(sourceFile))) {
+        if (discovered.has(candidate)) {
+          const sourceRel = toPosixRel(root, sourceFile);
+          const previous = referenced.get(candidate);
+          if (
+            previous !== undefined &&
+            (previous.file < sourceRel ||
+              (previous.file === sourceRel && previous.span.start <= literal.span.start))
+          ) {
+            continue;
+          }
+          referenced.set(candidate, {
+            file: sourceRel,
+            span: literal.span,
+          });
+        }
       }
     }
   };
@@ -1057,8 +1199,13 @@ async function scanConfigReferences(
     } catch {
       continue;
     }
-    // Path matching considers every string (a `name`/`version` is harmless there).
-    matchPaths(collectStringLeaves(parsed), dirname(jsonFile));
+    // Path matching considers every string VALUE (a `name`/`version` is harmless
+    // there), while preserving the literal's truthful config-source span.
+    const stringValues = new Set(collectStringLeaves(parsed));
+    matchPaths(
+      locatedStringLiteralsOf(raw).filter((literal) => stringValues.has(literal.value)),
+      jsonFile,
+    );
     // Config-named tokens: from a package.json only the config-bearing fields
     // (`scripts`, `eslintConfig`, …), never its metadata — a workspace member's
     // own `name` must not keep a sibling's `workspace:` dependency alive (T4.1).
@@ -1073,8 +1220,9 @@ async function scanConfigReferences(
   for (const configRoot of configRoots) {
     const source = contentByAbs.get(configRoot);
     if (source === undefined) continue;
-    matchPaths(stringLiteralsOf(source), dirname(configRoot));
-    addTokens(stringLiteralsOf(source));
+    const literals = locatedStringLiteralsOf(source);
+    matchPaths(literals, configRoot);
+    addTokens(literals.map((literal) => literal.value));
   }
 
   return { referenced, configTokens };
@@ -1143,16 +1291,42 @@ function packageJsonConfigLeaves(parsed: unknown): string[] {
   return out;
 }
 
-/** Extract quoted string literals from JS/TS source (best-effort, keep-alive only). */
-function stringLiteralsOf(source: string): string[] {
-  const out: string[] = [];
+interface LocatedStringLiteral {
+  readonly value: string;
+  readonly span: Site["span"];
+}
+
+/** Extract quoted literals with truthful source offsets/lines (best-effort). */
+function locatedStringLiteralsOf(source: string): LocatedStringLiteral[] {
+  const out: LocatedStringLiteral[] = [];
   STRING_LITERAL_RE.lastIndex = 0;
   let match: RegExpExecArray | null = STRING_LITERAL_RE.exec(source);
   while (match !== null) {
-    if (match[2] !== undefined) out.push(match[2]);
+    if (match[2] !== undefined) {
+      const start = match.index;
+      const end = STRING_LITERAL_RE.lastIndex;
+      const startLine = 1 + countNewlines(source, start);
+      let value = match[2];
+      if (match[1] === '"') {
+        try {
+          value = JSON.parse(match[0]) as string;
+        } catch {
+          // A JS/TS double-quoted literal need not be valid standalone JSON.
+        }
+      }
+      out.push({ value, span: { start, end, startLine, endLine: startLine } });
+    }
     match = STRING_LITERAL_RE.exec(source);
   }
   return out;
+}
+
+function countNewlines(source: string, end: number): number {
+  let lines = 0;
+  for (let index = 0; index < end; index += 1) {
+    if (source.charCodeAt(index) === 10) lines += 1;
+  }
+  return lines;
 }
 
 /**

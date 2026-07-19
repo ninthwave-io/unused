@@ -218,9 +218,10 @@ describe("file claims", () => {
     expect(run(g)).toEqual([]);
   });
 
-  it("does not claim a file that has an inbound reference edge to one of its symbols", () => {
+  it("claims every unreachable file even when dead code references its symbols", () => {
     // A barrel forwards `origin.ts#thing`, but the barrel entry is never consumed:
-    // origin.ts has an inbound re-export edge, so it is not a bare orphan file.
+    // The barrel is never consumed, so neither it nor its origin is reachable
+    // from a root. An inbound edge from dead code does not make origin.ts alive.
     const g = new IRGraph();
     addEntry(g, "src/index.ts");
     addFile(g, "src/barrel.ts");
@@ -245,8 +246,7 @@ describe("file claims", () => {
       name: "thing",
     });
 
-    // barrel.ts itself is a bare orphan → claimed; origin.ts has an inbound edge → not claimed.
-    expect(shape(run(g)).map((c) => c.name)).toEqual(["src/barrel.ts"]);
+    expect(shape(run(g)).map((c) => c.name)).toEqual(["src/barrel.ts", "src/origin.ts"]);
   });
 });
 
@@ -308,6 +308,58 @@ describe("hazard registry — scoped effects (T3.1)", () => {
       "src/a.ts:medium",
       "src/deep/b.ts:medium",
     ]);
+  });
+
+  it.each([
+    ["computed-dynamic-import", "src/plugins/"],
+    ["computed-require", undefined],
+  ] as const)("%s applies only while its carrier file is reachable", (hazardClass, prefix) => {
+    const build = (carrierReachable: boolean): Claim[] => {
+      const g = new IRGraph();
+      addEntry(g, "src/index.ts");
+      addFile(g, "src/loader.ts");
+      addFile(g, "src/plugins/candidate.ts");
+      hazard(g, "src/loader.ts", hazardClass, prefix);
+      if (carrierReachable) {
+        ref(g, "src/index.ts", fileId("src/loader.ts"), "side-effect");
+      }
+      return run(g);
+    };
+
+    const confidence = (claims: readonly Claim[]): string | undefined =>
+      claims.find((c) => c.subject.loc.file === "src/plugins/candidate.ts")?.confidence;
+    expect(confidence(build(false))).toBe("high");
+    expect(confidence(build(true))).toBe("medium");
+  });
+
+  it("activates an outgoing hazard whose carrier is reachable only from tests", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addTestEntry(g, "test/loader.test.ts");
+    addFile(g, "src/plugins/candidate.ts");
+    hazard(g, "test/loader.test.ts", "computed-dynamic-import", "src/plugins/");
+
+    const candidate = run(g).find((claim) => claim.subject.loc.file === "src/plugins/candidate.ts");
+    expect(candidate?.confidence).toBe("medium");
+  });
+
+  it("propagates carrier activation through a chain of dynamic hazard scopes", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addFile(g, "src/loader.ts");
+    addFile(g, "src/plugins/candidate.ts");
+    addFile(g, "src/handlers/candidate.ts");
+    ref(g, "src/index.ts", fileId("src/loader.ts"), "side-effect");
+    hazard(g, "src/loader.ts", "computed-dynamic-import", "src/plugins/");
+    hazard(g, "src/plugins/candidate.ts", "computed-require", "src/handlers/");
+
+    const byFile = Object.fromEntries(
+      run(g)
+        .filter((claim) => claim.subject.kind === "file")
+        .map((claim) => [claim.subject.loc.file, claim.confidence]),
+    );
+    expect(byFile["src/plugins/candidate.ts"]).toBe("medium");
+    expect(byFile["src/handlers/candidate.ts"]).toBe("medium");
   });
 
   it("config-referenced-file yields a file claim at medium (scoped, not suppressed)", () => {
@@ -376,7 +428,9 @@ describe("hazard registry — scoped effects (T3.1)", () => {
     const g = new IRGraph();
     addEntry(g, "src/index.ts");
     addFile(g, "src/mods/alpha.ts");
-    // Hazard site is src/loader.ts (the importer), the subtree is src/mods/.
+    // Hazard site is reachable src/loader.ts (the importer), the subtree is src/mods/.
+    addFile(g, "src/loader.ts");
+    ref(g, "src/index.ts", fileId("src/loader.ts"), "side-effect");
     hazard(g, "src/loader.ts", "computed-dynamic-import", "src/mods/");
 
     const [claim] = run(g);
@@ -409,6 +463,27 @@ describe("hazard registry — scoped effects (T3.1)", () => {
     const claims = run(g);
     expect(claims).toHaveLength(1);
     expect(claims[0]?.suppression).toEqual({ reason: "legacy shim, remove in v2" });
+  });
+
+  it("keeps a reasonless directive unsuppressed and emits an audit warning", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addSymbol(g, "src/lib.ts", "used");
+    addSymbol(g, "src/lib.ts", "dead", {
+      suppression: { reason: null, valid: false },
+    });
+    ref(g, "src/index.ts", symbolId("src/lib.ts", "used"), "static", "used");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const claims = run(g);
+      expect(claims).toHaveLength(1);
+      expect(claims[0]?.suppression).toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringMatching(/src\/lib\.ts:1.*requires a non-empty reason.*unsuppressed/),
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
@@ -842,15 +917,16 @@ describe("per-unit hazard-cap scoping (T4 / reference-codebase §4.3)", () => {
     expect(byFile["packages/pkg-b/src/dead-b.ts"]).toBe("high"); // pkg-b: unrelated unit — never capped
   });
 
-  it("a computed-require in a vendored top-level file (no member owns it) caps only the root unit", () => {
+  it("a config-reachable opaque carrier in a vendored top-level file caps only the root unit", () => {
     const g = new IRGraph();
     addEntry(g, "packages/pkg-a/src/index.ts");
     addSymbol(g, "packages/pkg-a/src/dead-a.ts", "deadA");
-    addFile(g, "vendor/bundle.js"); // root-owned (no member owns it)
+    addConfigEntry(g, "vendor/bundle.js"); // root-owned, reachable in the config partition
+    addFile(g, "vendor/dead.js");
     hazard(g, "vendor/bundle.js", "computed-require"); // owner ⇒ root unit ""
 
     const byFile = confByFile(runUnits(g, UNITS));
-    expect(byFile["vendor/bundle.js"]).toBe("medium"); // root-owned — capped
+    expect(byFile["vendor/dead.js"]).toBe("medium"); // root-owned — capped
     expect(byFile["packages/pkg-a/src/dead-a.ts"]).toBe("high"); // member — the root cap must not reach it
   });
 
@@ -873,12 +949,32 @@ describe("per-unit hazard-cap scoping (T4 / reference-codebase §4.3)", () => {
     expect(byName["dep-b"]).toBe("high"); // declared in pkg-b — not capped
   });
 
+  it("an unreachable whole-package carrier leaves every unit's dependency claims high", () => {
+    const g = new IRGraph();
+    addEntry(g, "packages/pkg-a/src/index.ts");
+    addEntry(g, "packages/pkg-b/src/index.ts");
+    addFile(g, "packages/pkg-a/src/dormant-loader.ts");
+    hazard(g, "packages/pkg-a/src/dormant-loader.ts", "computed-require");
+
+    const claims = runUnits(g, UNITS, [
+      { packageName: "dep-a", loc: { file: "packages/pkg-a/package.json", span: [3, 3] } },
+      { packageName: "dep-b", loc: { file: "packages/pkg-b/package.json", span: [3, 3] } },
+    ]);
+    const byName = Object.fromEntries(
+      claims
+        .filter((claim) => claim.subject.kind === "dependency")
+        .map((claim) => [claim.subject.name, claim.confidence]),
+    );
+    expect(byName).toMatchObject({ "dep-a": "high", "dep-b": "high" });
+  });
+
   it("no `units` supplied ⇒ one root unit ⇒ a whole-package cap covers the whole run (back-compat)", () => {
     const g = new IRGraph();
     addEntry(g, "src/index.ts");
+    addEntry(g, "packages/a/loader.ts");
     addSymbol(g, "packages/a/dead.ts", "deadA");
     addSymbol(g, "packages/b/dead.ts", "deadB");
-    hazard(g, "packages/a/loader.ts", "computed-require"); // empty prefix
+    hazard(g, "packages/a/loader.ts", "computed-require"); // reachable carrier, empty prefix
 
     // Default single root unit: every file is root-owned, so both are capped —
     // byte-identical to the pre-`units` single-graph behaviour.

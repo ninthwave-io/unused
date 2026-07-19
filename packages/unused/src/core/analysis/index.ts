@@ -16,9 +16,20 @@ export {
 } from "./assumption-set.js";
 export { type DependencyClaimInput, type EmitClaimsInput, emitClaims } from "./claims.js";
 export {
+  type ComputeDeletionPlanInput,
+  computeDeletionPlan,
+  type DeletionPlan,
+  type DeletionPlanConsequenceSubject,
+  type DeletionPlanStage,
+  type DeletionPlanSubject,
+  type ReExportEdit,
+  surfaceNameHasUniqueOrigin,
+} from "./deletion-plan.js";
+export {
   type ConfidenceCap,
   capIsStrongerOrEqual,
   HAZARD_REGISTRY,
+  type HazardActivation,
   type HazardClassEntry,
   type HazardScope,
   lookupHazard,

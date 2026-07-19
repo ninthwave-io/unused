@@ -150,18 +150,26 @@ describe("buildSarifLog — shape", () => {
     expect(buildSarifLog(makeRun([c])).runs[0]?.results[0]?.message.text).toBe("the reason");
   });
 
-  it("carries suppression.reason into properties.suppression when present, and omits the key otherwise", () => {
+  it("carries suppression provenance into properties.suppression when present, and omits the key otherwise", () => {
     const suppressed = claim({
       subject: { kind: "export", name: "a", loc: { file: "a.ts", span: [1, 1] } },
       verdict: "unused",
-      suppression: { reason: "migration pending" },
+      suppression: {
+        reason: "migration pending",
+        source: "config",
+        pattern: "src/legacy/**",
+      },
     });
     const clean = claim({
       subject: { kind: "export", name: "b", loc: { file: "b.ts", span: [1, 1] } },
       verdict: "unused",
     });
     const results = buildSarifLog(makeRun([suppressed, clean])).runs[0]?.results ?? [];
-    expect(results[0]?.properties.suppression).toEqual({ reason: "migration pending" });
+    expect(results[0]?.properties.suppression).toEqual({
+      reason: "migration pending",
+      source: "config",
+      pattern: "src/legacy/**",
+    });
     expect(results[1]?.properties).not.toHaveProperty("suppression");
   });
 

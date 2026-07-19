@@ -1,19 +1,19 @@
 {
   "analyzer": "ts-reference-graph",
   "corpus": {
-    "cases": 40,
-    "subjects": 115
+    "cases": 52,
+    "subjects": 237
   },
   "precision": 1,
-  "recall": 0.9433962264150944,
+  "recall": 0.826530612244898,
   "falsePositives": 0,
   "confidenceViolations": 0,
-  "misses": 3,
+  "misses": 17,
   "unlabelledClaims": 0,
   "byConfidenceTier": {
     "high": {
-      "claims": 39,
-      "truePositives": 39,
+      "claims": 70,
+      "truePositives": 70,
       "falsePositives": 0,
       "confidenceViolations": 0
     },
@@ -35,6 +35,17 @@
       "case": "ambient-dts",
       "subjects": 1,
       "deadLabels": 0,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "audio-worklet-public-asset",
+      "subjects": 2,
+      "deadLabels": 1,
       "precision": 1,
       "recall": 1,
       "falsePositives": 0,
@@ -68,6 +79,39 @@
       "case": "broken-paths-alias",
       "subjects": 2,
       "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "browser-extension-manifest",
+      "subjects": 3,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "browser-html-script",
+      "subjects": 2,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "cdk-nodejs-function-entry",
+      "subjects": 8,
+      "deadLabels": 4,
       "precision": 1,
       "recall": 1,
       "falsePositives": 0,
@@ -111,7 +155,7 @@
     {
       "case": "config-project-scope",
       "subjects": 2,
-      "deadLabels": 1,
+      "deadLabels": 2,
       "precision": 1,
       "recall": 1,
       "falsePositives": 0,
@@ -208,6 +252,17 @@
       "unlabelledClaims": 0
     },
     {
+      "case": "github-actions-run-script",
+      "subjects": 3,
+      "deadLabels": 2,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
       "case": "import-equals",
       "subjects": 4,
       "deadLabels": 1,
@@ -238,6 +293,50 @@
       "falsePositives": 0,
       "confidenceViolations": 0,
       "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "k6-package-script",
+      "subjects": 2,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "msw-handler-registration",
+      "subjects": 2,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "msw-worker-directory",
+      "subjects": 2,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "native-config-script",
+      "subjects": 47,
+      "deadLabels": 16,
+      "precision": 1,
+      "recall": 0.125,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 14,
       "unlabelledClaims": 0
     },
     {
@@ -319,10 +418,10 @@
     },
     {
       "case": "re-export-chain",
-      "subjects": 3,
-      "deadLabels": 1,
+      "subjects": 4,
+      "deadLabels": 2,
       "precision": 1,
-      "recall": 0,
+      "recall": 0.5,
       "falsePositives": 0,
       "confidenceViolations": 0,
       "misses": 1,
@@ -332,6 +431,17 @@
       "case": "require-expression",
       "subjects": 3,
       "deadLabels": 2,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "service-worker-public-asset",
+      "subjects": 2,
+      "deadLabels": 1,
       "precision": 1,
       "recall": 1,
       "falsePositives": 0,
@@ -365,6 +475,17 @@
       "case": "suppression-comment",
       "subjects": 3,
       "deadLabels": 2,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "taskfile-command",
+      "subjects": 45,
+      "deadLabels": 13,
       "precision": 1,
       "recall": 1,
       "falsePositives": 0,
@@ -429,6 +550,17 @@
     },
     {
       "case": "unresolvable-entrypoint",
+      "subjects": 3,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "vite-vitest-config-paths",
       "subjects": 3,
       "deadLabels": 1,
       "precision": 1,

@@ -191,6 +191,18 @@ describe("emitElixirIR — dynamic dispatch", () => {
   it("still keeps a statically-called function alive", () => {
     expect(claim(claims, "App.Handlers.ping/0")).toBeUndefined();
   });
+
+  it("does not cap the unit when the dispatch carrier is unreachable", () => {
+    const unreachableCarrier: TraceResult = {
+      ...DYNAMIC,
+      events: DYNAMIC.events.filter(
+        (event) => !(event.from_mod === "App.Application" && event.to_mod === "App.Router"),
+      ),
+    };
+    const c = claim(claimsFor(unreachableCarrier), "App.Handlers.dead_handler/0");
+    expect(c?.verdict).toBe("unused");
+    expect(c?.confidence).toBe("high");
+  });
 });
 
 // --- scenario 3: no production entrypoint => no claims ---------------------

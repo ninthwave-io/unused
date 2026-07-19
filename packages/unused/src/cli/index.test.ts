@@ -9,7 +9,7 @@
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { cp, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -46,6 +46,7 @@ const CONFIG_BASIC_FIXTURE = join(TESTFIXTURES, "config-basic"); // T4.3 entry/p
 const ZOMBIE_TEST_FIXTURE = join(FIXTURES_ROOT, "test-root-recognition"); // T5.3: one zombie test
 const MIXED_CONFIDENCE_FIXTURE = join(FIXTURES_ROOT, "string-computed-import"); // 1 high + 2 medium
 const SUPPRESSION_FIXTURE = join(FIXTURES_ROOT, "suppression-comment"); // 2 high, both suppressed
+const ELIXIR_FIXTURE = join(REPO_ROOT, "fixtures/elixir/basic-dead-function");
 
 function readSchema(): object {
   return JSON.parse(
@@ -295,16 +296,23 @@ describe("unused CLI — monorepo workspaces (T4.2)", () => {
 });
 
 describe("unused CLI — config (T4.3)", () => {
-  it("auto-discovers unused.config.jsonc at the root: entry/project/ignore apply", () => {
+  it("auto-discovers config and carries policy suppressions in machine output", () => {
     const result = runCli(["--json", "--cwd", CONFIG_BASIC_FIXTURE]);
     expect(result.status).toBe(0);
     const parsed: unknown = JSON.parse(result.stdout);
-    const claims = (parsed as { claims: { subject: { name: string } }[] }).claims;
-    expect(claims.map((c) => c.subject.name)).toEqual(["src/orphan.ts"]);
+    const claims = (
+      parsed as {
+        claims: { subject: { name: string }; suppression?: { reason: string } }[];
+      }
+    ).claims;
+    expect(claims.map((c) => c.subject.name)).toEqual(["src/generated/skip.ts", "src/orphan.ts"]);
+    expect(
+      claims.find((claim) => claim.subject.name === "src/generated/skip.ts")?.suppression,
+    ).toEqual({ reason: "generated source", source: "config", pattern: "src/generated/**" });
   });
 
   it("--config <path> selects a specific config file, overriding auto-discovery", () => {
-    // custom-empty.jsonc has none of config-basic's entry/project/ignore
+    // custom-empty.jsonc has none of config-basic's entry/project/suppression
     // fields — with it selected instead of unused.config.jsonc, every file
     // in the fixture is in scope and none of the config-seeded chain exists,
     // so this run's claim set differs from the auto-discovered one above.
@@ -341,6 +349,25 @@ describe("unused CLI — config (T4.3)", () => {
     const result = runCli(["--config"]);
     expect(result.status).toBe(3);
     expect(result.stderr).toMatch(/--config requires a path argument/);
+  });
+});
+
+describe("unused CLI — .gitignore discovery", () => {
+  it("respects .gitignore by default and --no-gitignore opts back in", async () => {
+    await withTempFixtureCopy(DEAD_FIXTURE, async (dir) => {
+      await writeFile(join(dir, ".gitignore"), "src/math.ts\n");
+
+      const defaultRun = runCli(["--json", "--cwd", dir]);
+      expect(defaultRun.status).toBe(0);
+      expect((JSON.parse(defaultRun.stdout) as { claims: unknown[] }).claims).toEqual([]);
+
+      const overrideRun = runCli(["--json", "--cwd", dir, "--no-gitignore"]);
+      expect(overrideRun.status).toBe(0);
+      const names = (
+        JSON.parse(overrideRun.stdout) as { claims: { subject: { name: string } }[] }
+      ).claims.map((claim) => claim.subject.name);
+      expect(names).toContain("subtract");
+    });
   });
 });
 
@@ -578,6 +605,778 @@ describe("unused CLI — --show-suppressed (T6.1, PRD §4/§6)", () => {
     };
     const withReason = parsed.claims.find((c) => c.subject.name === "withReason");
     expect(withReason?.suppression).toEqual({ reason: "migration pending" });
+    const withoutReason = parsed.claims.find((c) => c.subject.name === "withoutReason");
+    expect(withoutReason?.suppression).toBeUndefined();
+    expect(result.stderr).toMatch(/unused:ignore requires a non-empty reason.*unsuppressed/);
+  });
+});
+
+describe("unused CLI — --fix (ADR 0012)", () => {
+  it("makes an eligible unused export private, re-analyses, and never commits", async () => {
+    await withTempFixtureCopy(DEAD_FIXTURE, async (dir) => {
+      const result = runCli(["--cwd", dir, "--fix"]);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain(
+        "unused --fix: frozen eligible set: exports=1, dependencies=0.",
+      );
+      expect(result.stdout).toContain("fixed exports: src/math.ts");
+      expect(result.stdout).toContain("1 applied, 0 skipped, 0 eligible claims remain");
+      expect(result.stdout).toContain("0 newly exposed");
+
+      const source = await readFile(join(dir, "src/math.ts"), "utf8");
+      expect(source).toContain("function subtract");
+      expect(source).not.toContain("export function subtract");
+
+      const after = runCli(["--cwd", dir, "--json"]);
+      expect(after.status).toBe(0);
+      const run = JSON.parse(after.stdout) as { claims: Array<{ subject: { name: string } }> };
+      expect(run.claims.some((claim) => claim.subject.name === "subtract")).toBe(false);
+    });
+  });
+
+  it("removes required barrel re-exports before making their origin private", async () => {
+    await withTempFixtureCopy(join(FIXTURES_ROOT, "re-export-chain"), async (dir) => {
+      // Keep the origin file reachable independently so this is specifically
+      // an unused-export mutation, not a file-removal candidate.
+      await writeFile(
+        join(dir, "src/index.ts"),
+        'import { usedThing } from "./barrel.js";\nimport "./lib/unusedThing.js";\n\nconsole.log(usedThing());\n',
+      );
+      const result = runCli(["--cwd", dir, "--fix", "--fix-type", "exports"]);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("fixed exports: src/barrel.ts");
+      expect(result.stdout).toContain("fixed exports: src/lib/unusedThing.ts");
+
+      const barrel = await readFile(join(dir, "src/barrel.ts"), "utf8");
+      expect(barrel).not.toContain('from "./lib/unusedThing.js"');
+      expect(barrel).toContain('from "./lib/usedThing.js"');
+      const origin = await readFile(join(dir, "src/lib/unusedThing.ts"), "utf8");
+      expect(origin).toContain("function unusedThing");
+      expect(origin).not.toContain("export function unusedThing");
+    });
+  });
+
+  it("skips an export that still has an ordinary inbound reference from another file", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "unused-cli-fix-inbound-"));
+    try {
+      await mkdir(join(dir, "src"));
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({
+          name: "fixture-fix-inbound-export",
+          private: true,
+          type: "module",
+          main: "src/index.ts",
+        }),
+      );
+      await writeFile(join(dir, "src/index.ts"), 'import "./origin.js";\n');
+      const origin = 'export const dead = 1;\nconsole.log("origin loaded");\n';
+      await writeFile(join(dir, "src/origin.ts"), origin);
+      await writeFile(
+        join(dir, "src/unreachable.ts"),
+        'import { dead } from "./origin.js";\nconsole.log(dead);\n',
+      );
+
+      const result = runCli(["--cwd", dir, "--fix", "--fix-type", "exports"]);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("skipped exports: src/origin.ts");
+      expect(result.stdout).toContain(
+        "non-re-export inbound reference remains at src/unreachable.ts:1",
+      );
+      expect(await readFile(join(dir, "src/origin.ts"), "utf8")).toBe(origin);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips an export when an unreachable consumer imports it through a re-export chain", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "unused-cli-fix-forwarded-inbound-"));
+    try {
+      await mkdir(join(dir, "src"));
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({
+          name: "fixture-fix-forwarded-inbound",
+          private: true,
+          type: "module",
+          main: "src/index.ts",
+        }),
+      );
+      await writeFile(join(dir, "src/index.ts"), 'import "./origin.js";\n');
+      const origin = 'export const dead = 1;\nconsole.log("origin loaded");\n';
+      const innerBarrel = 'export { dead } from "./origin.js";\n';
+      const publicBarrel = 'export { dead } from "./inner-barrel.js";\n';
+      const consumer = 'import { dead } from "./public-barrel.js";\nconsole.log(dead);\n';
+      await writeFile(join(dir, "src/origin.ts"), origin);
+      await writeFile(join(dir, "src/inner-barrel.ts"), innerBarrel);
+      await writeFile(join(dir, "src/public-barrel.ts"), publicBarrel);
+      await writeFile(join(dir, "src/consumer.ts"), consumer);
+
+      const result = runCli(["--cwd", dir, "--fix", "--fix-type", "exports"]);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("skipped exports: src/origin.ts");
+      expect(result.stdout).toContain(
+        "non-re-export inbound reference remains at src/consumer.ts:1",
+      );
+      expect(await readFile(join(dir, "src/origin.ts"), "utf8")).toBe(origin);
+      expect(await readFile(join(dir, "src/inner-barrel.ts"), "utf8")).toBe(innerBarrel);
+      expect(await readFile(join(dir, "src/public-barrel.ts"), "utf8")).toBe(publicBarrel);
+      expect(await readFile(join(dir, "src/consumer.ts"), "utf8")).toBe(consumer);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips an export when an unreachable consumer imports it through a star re-export", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "unused-cli-fix-star-inbound-"));
+    try {
+      await mkdir(join(dir, "src"));
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({
+          name: "fixture-fix-star-inbound",
+          private: true,
+          type: "module",
+          main: "src/index.ts",
+        }),
+      );
+      await writeFile(join(dir, "src/index.ts"), 'import "./origin.js";\n');
+      const origin = 'export const dead = 1;\nconsole.log("origin loaded");\n';
+      const barrel = 'export * from "./origin.js";\n';
+      const consumer = 'import { dead } from "./barrel.js";\nconsole.log(dead);\n';
+      await writeFile(join(dir, "src/origin.ts"), origin);
+      await writeFile(join(dir, "src/barrel.ts"), barrel);
+      await writeFile(join(dir, "src/consumer.ts"), consumer);
+
+      const result = runCli(["--cwd", dir, "--fix", "--fix-type", "exports"]);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("skipped exports: src/origin.ts");
+      expect(result.stdout).toContain(
+        "non-re-export inbound reference remains at src/consumer.ts:1",
+      );
+      expect(await readFile(join(dir, "src/origin.ts"), "utf8")).toBe(origin);
+      expect(await readFile(join(dir, "src/barrel.ts"), "utf8")).toBe(barrel);
+      expect(await readFile(join(dir, "src/consumer.ts"), "utf8")).toBe(consumer);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not let a forwarding barrel exempt its own inbound import", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "unused-cli-fix-forward-self-inbound-"));
+    try {
+      await mkdir(join(dir, "src"));
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({
+          name: "fixture-fix-forward-self-inbound",
+          private: true,
+          type: "module",
+          main: "src/index.ts",
+        }),
+      );
+      await writeFile(join(dir, "src/index.ts"), 'import "./origin.js";\n');
+      const origin = 'export const dead = 1;\nconsole.log("origin loaded");\n';
+      const barrel =
+        'export { dead } from "./origin.js";\n' +
+        'import { dead as self } from "./barrel.js";\n' +
+        "console.log(self);\n";
+      await writeFile(join(dir, "src/origin.ts"), origin);
+      await writeFile(join(dir, "src/barrel.ts"), barrel);
+
+      const result = runCli(["--cwd", dir, "--fix", "--fix-type", "exports"]);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("skipped exports: src/origin.ts");
+      expect(result.stdout).toContain("non-re-export inbound reference remains at src/barrel.ts:2");
+      expect(await readFile(join(dir, "src/origin.ts"), "utf8")).toBe(origin);
+      expect(await readFile(join(dir, "src/barrel.ts"), "utf8")).toBe(barrel);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not block one star-forwarded export for a consumer of another name", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "unused-cli-fix-star-unrelated-"));
+    try {
+      await mkdir(join(dir, "src"));
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({
+          name: "fixture-fix-star-unrelated",
+          private: true,
+          type: "module",
+          main: "src/index.ts",
+        }),
+      );
+      await writeFile(join(dir, "src/index.ts"), 'import "./origin.js";\n');
+      await writeFile(
+        join(dir, "src/origin.ts"),
+        'export const dead = 1;\nexport const retained = 2;\nconsole.log("origin loaded");\n',
+      );
+      await writeFile(join(dir, "src/barrel.ts"), 'export * from "./origin.js";\n');
+      await writeFile(
+        join(dir, "src/consumer.ts"),
+        'import { retained } from "./barrel.js";\nconsole.log(retained);\n',
+      );
+
+      const result = runCli(["--cwd", dir, "--fix", "--fix-type", "exports"]);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("fixed exports: src/origin.ts");
+      expect(result.stdout).toContain("skipped exports: src/origin.ts");
+      const origin = await readFile(join(dir, "src/origin.ts"), "utf8");
+      expect(origin).toContain("const dead = 1");
+      expect(origin).not.toContain("export const dead");
+      expect(origin).toContain("export const retained = 2");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not propagate a default export through a star barrel", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "unused-cli-fix-star-default-"));
+    try {
+      await mkdir(join(dir, "src"));
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({
+          name: "fixture-fix-star-default",
+          private: true,
+          type: "module",
+          main: "src/index.ts",
+        }),
+      );
+      await writeFile(join(dir, "src/index.ts"), 'import "./origin.js";\n');
+      await writeFile(join(dir, "src/origin.ts"), "export default function dead() {}\n");
+      const barrel = 'export * from "./origin.js";\n';
+      const consumer = 'import * as api from "./barrel.js";\nconsole.log(api);\n';
+      await writeFile(join(dir, "src/barrel.ts"), barrel);
+      await writeFile(join(dir, "src/consumer.ts"), consumer);
+
+      const result = runCli(["--cwd", dir, "--fix", "--fix-type", "exports"]);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("fixed exports: src/origin.ts");
+      expect(result.stdout).not.toContain("skipped exports: src/origin.ts");
+      expect(await readFile(join(dir, "src/origin.ts"), "utf8")).toBe("function dead() {}\n");
+      expect(await readFile(join(dir, "src/barrel.ts"), "utf8")).toBe(barrel);
+      expect(await readFile(join(dir, "src/consumer.ts"), "utf8")).toBe(consumer);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("still blocks a default export consumed through a namespace re-export", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "unused-cli-fix-namespace-default-"));
+    try {
+      await mkdir(join(dir, "src"));
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({
+          name: "fixture-fix-namespace-default",
+          private: true,
+          type: "module",
+          main: "src/index.ts",
+        }),
+      );
+      await writeFile(join(dir, "src/index.ts"), 'import "./origin.js";\n');
+      const origin = "export default function retained() {}\n";
+      await writeFile(join(dir, "src/origin.ts"), origin);
+      await writeFile(join(dir, "src/barrel.ts"), 'export * as api from "./origin.js";\n');
+      await writeFile(
+        join(dir, "src/consumer.ts"),
+        'import { api } from "./barrel.js";\nconsole.log(api.default);\n',
+      );
+
+      const result = runCli(["--cwd", dir, "--fix", "--fix-type", "exports"]);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("skipped exports: src/origin.ts");
+      expect(result.stdout).toContain(
+        "non-re-export inbound reference remains at src/consumer.ts:1",
+      );
+      expect(await readFile(join(dir, "src/origin.ts"), "utf8")).toBe(origin);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not block a star source when an explicit supplier preserves the name", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "unused-cli-fix-star-alternate-"));
+    try {
+      await mkdir(join(dir, "src"));
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({
+          name: "fixture-fix-star-alternate",
+          private: true,
+          type: "module",
+          main: "src/index.ts",
+        }),
+      );
+      await writeFile(
+        join(dir, "src/index.ts"),
+        'import { shared } from "./barrel.js";\nimport "./selected.js";\nconsole.log(shared);\n',
+      );
+      await writeFile(join(dir, "src/selected.ts"), "export const shared = 1;\n");
+      await writeFile(join(dir, "src/alternate.ts"), "export const shared = 2;\n");
+      const barrel = 'export { shared } from "./alternate.js";\nexport * from "./selected.js";\n';
+      await writeFile(join(dir, "src/barrel.ts"), barrel);
+
+      const result = runCli(["--cwd", dir, "--fix", "--fix-type", "exports"]);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("fixed exports: src/selected.ts");
+      expect(result.stdout).not.toContain("skipped exports: src/selected.ts");
+      expect(await readFile(join(dir, "src/selected.ts"), "utf8")).toBe("const shared = 1;\n");
+      expect(await readFile(join(dir, "src/barrel.ts"), "utf8")).toBe(barrel);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not block exact consumers when the selected file has a star fallback", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "unused-cli-fix-same-surface-fallback-"));
+    try {
+      await mkdir(join(dir, "src"));
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({
+          name: "fixture-fix-same-surface-fallback",
+          private: true,
+          type: "module",
+          main: "src/index.ts",
+        }),
+      );
+      await writeFile(join(dir, "src/index.ts"), 'import "./selected.js";\n');
+      await writeFile(join(dir, "src/alternate.ts"), "export const shared = 2;\n");
+      await writeFile(
+        join(dir, "src/selected.ts"),
+        'export const shared = 1;\nexport * from "./alternate.js";\n',
+      );
+      const barrel = 'export { shared as forwarded } from "./selected.js";\n';
+      const consumer = 'import { shared } from "./selected.js";\nconsole.log(shared);\n';
+      await writeFile(join(dir, "src/barrel.ts"), barrel);
+      await writeFile(join(dir, "src/consumer.ts"), consumer);
+
+      const result = runCli(["--cwd", dir, "--fix", "--fix-type", "exports"]);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("fixed exports: src/selected.ts");
+      expect(result.stdout).not.toContain("skipped exports: src/selected.ts");
+      expect(await readFile(join(dir, "src/selected.ts"), "utf8")).toBe(
+        'const shared = 1;\nexport * from "./alternate.js";\n',
+      );
+      expect(await readFile(join(dir, "src/barrel.ts"), "utf8")).toBe(barrel);
+      expect(await readFile(join(dir, "src/consumer.ts"), "utf8")).toBe(consumer);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("treats exported aliases of one local binding as one star fallback origin", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "unused-cli-fix-alias-surface-fallback-"));
+    try {
+      await mkdir(join(dir, "src"));
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({
+          name: "fixture-fix-alias-surface-fallback",
+          private: true,
+          type: "module",
+          main: "src/index.ts",
+        }),
+      );
+      await writeFile(
+        join(dir, "src/index.ts"),
+        'import { first, second } from "./origin.js";\nimport "./selected.js";\nconsole.log(first, second);\n',
+      );
+      await writeFile(
+        join(dir, "src/origin.ts"),
+        "const binding = 2;\nexport { binding as first, binding as second };\n",
+      );
+      await writeFile(join(dir, "src/left.ts"), 'export { first as shared } from "./origin.js";\n');
+      await writeFile(
+        join(dir, "src/right.ts"),
+        'export { second as shared } from "./origin.js";\n',
+      );
+      const selected =
+        'export const shared = 1;\nexport * from "./left.js";\nexport * from "./right.js";\n';
+      const consumer = 'import { shared } from "./selected.js";\nconsole.log(shared);\n';
+      await writeFile(join(dir, "src/selected.ts"), selected);
+      await writeFile(join(dir, "src/consumer.ts"), consumer);
+
+      const result = runCli(["--cwd", dir, "--fix", "--fix-type", "exports"]);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("fixed exports: src/selected.ts");
+      expect(result.stdout).not.toContain("skipped exports: src/selected.ts");
+      expect(await readFile(join(dir, "src/selected.ts"), "utf8")).toBe(
+        'const shared = 1;\nexport * from "./left.js";\nexport * from "./right.js";\n',
+      );
+      expect(await readFile(join(dir, "src/consumer.ts"), "utf8")).toBe(consumer);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("treats namespace wrappers of one module as one star fallback origin", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "unused-cli-fix-namespace-surface-fallback-"));
+    try {
+      await mkdir(join(dir, "src"));
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({
+          name: "fixture-fix-namespace-surface-fallback",
+          private: true,
+          type: "module",
+          main: "src/index.ts",
+        }),
+      );
+      await writeFile(
+        join(dir, "src/index.ts"),
+        'import { value } from "./target.js";\nimport "./selected.js";\nconsole.log(value);\n',
+      );
+      await writeFile(join(dir, "src/target.ts"), "export const value = 2;\n");
+      await writeFile(join(dir, "src/left.ts"), 'export * as api from "./target.js";\n');
+      await writeFile(join(dir, "src/right.ts"), 'export * as api from "./target.js";\n');
+      const consumer = 'import { api } from "./selected.js";\nconsole.log(api.value);\n';
+      await writeFile(
+        join(dir, "src/selected.ts"),
+        'export const api = { local: true };\nexport * from "./left.js";\nexport * from "./right.js";\n',
+      );
+      await writeFile(join(dir, "src/consumer.ts"), consumer);
+
+      const result = runCli(["--cwd", dir, "--fix", "--fix-type", "exports"]);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("fixed exports: src/selected.ts");
+      expect(result.stdout).not.toContain("skipped exports: src/selected.ts");
+      expect(await readFile(join(dir, "src/selected.ts"), "utf8")).toBe(
+        'const api = { local: true };\nexport * from "./left.js";\nexport * from "./right.js";\n',
+      );
+      expect(await readFile(join(dir, "src/consumer.ts"), "utf8")).toBe(consumer);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks an exact consumer when same-file star fallback is ambiguous", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "unused-cli-fix-ambiguous-surface-fallback-"));
+    try {
+      await mkdir(join(dir, "src"));
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({
+          name: "fixture-fix-ambiguous-surface-fallback",
+          private: true,
+          type: "module",
+          main: "src/index.ts",
+        }),
+      );
+      await writeFile(join(dir, "src/index.ts"), 'import "./selected.js";\n');
+      await writeFile(join(dir, "src/alternate-a.ts"), "export const shared = 2;\n");
+      await writeFile(join(dir, "src/alternate-b.ts"), "export const shared = 3;\n");
+      const selected =
+        'export const shared = 1;\nexport * from "./alternate-a.js";\nexport * from "./alternate-b.js";\n';
+      const consumer = 'import { shared } from "./selected.js";\nconsole.log(shared);\n';
+      await writeFile(join(dir, "src/selected.ts"), selected);
+      await writeFile(join(dir, "src/consumer.ts"), consumer);
+
+      const result = runCli(["--cwd", dir, "--fix", "--fix-type", "exports"]);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("skipped exports: src/selected.ts");
+      expect(result.stdout).toContain(
+        "non-re-export inbound reference remains at src/consumer.ts:1",
+      );
+      expect(await readFile(join(dir, "src/selected.ts"), "utf8")).toBe(selected);
+      expect(await readFile(join(dir, "src/consumer.ts"), "utf8")).toBe(consumer);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps default-assignment and named-alias star fallbacks distinct", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "unused-cli-fix-default-identity-distinct-"));
+    try {
+      await mkdir(join(dir, "src"));
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({
+          name: "fixture-fix-default-identity-distinct",
+          private: true,
+          type: "module",
+          main: "src/index.ts",
+        }),
+      );
+      await writeFile(
+        join(dir, "src/index.ts"),
+        'import defaultValue, { named } from "./origin.js";\nimport "./selected.js";\nconsole.log(defaultValue, named);\n',
+      );
+      await writeFile(
+        join(dir, "src/origin.ts"),
+        "const binding = 2; export default binding; export { binding as named };\n",
+      );
+      await writeFile(
+        join(dir, "src/left.ts"),
+        'export { default as shared } from "./origin.js";\n',
+      );
+      await writeFile(
+        join(dir, "src/right.ts"),
+        'export { named as shared } from "./origin.js";\n',
+      );
+      const selected =
+        'export const shared = 1;\nexport * from "./left.js";\nexport * from "./right.js";\n';
+      const consumer = 'import { shared } from "./selected.js";\nconsole.log(shared);\n';
+      await writeFile(join(dir, "src/selected.ts"), selected);
+      await writeFile(join(dir, "src/consumer.ts"), consumer);
+
+      const result = runCli(["--cwd", dir, "--fix", "--fix-type", "exports"]);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("skipped exports: src/selected.ts");
+      expect(result.stdout).toContain(
+        "non-re-export inbound reference remains at src/consumer.ts:1",
+      );
+      expect(await readFile(join(dir, "src/selected.ts"), "utf8")).toBe(selected);
+      expect(await readFile(join(dir, "src/consumer.ts"), "utf8")).toBe(consumer);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("collapses named-default and named-alias star fallbacks to one binding", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "unused-cli-fix-default-identity-collapsed-"));
+    try {
+      await mkdir(join(dir, "src"));
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({
+          name: "fixture-fix-default-identity-collapsed",
+          private: true,
+          type: "module",
+          main: "src/index.ts",
+        }),
+      );
+      await writeFile(
+        join(dir, "src/index.ts"),
+        'import defaultValue, { named } from "./origin.js";\nimport "./selected.js";\nconsole.log(defaultValue, named);\n',
+      );
+      await writeFile(
+        join(dir, "src/origin.ts"),
+        "export default function binding() {} export { binding as named };\n",
+      );
+      await writeFile(
+        join(dir, "src/left.ts"),
+        'export { default as shared } from "./origin.js";\n',
+      );
+      await writeFile(
+        join(dir, "src/right.ts"),
+        'export { named as shared } from "./origin.js";\n',
+      );
+      const consumer = 'import { shared } from "./selected.js";\nconsole.log(shared);\n';
+      await writeFile(
+        join(dir, "src/selected.ts"),
+        'export const shared = 1;\nexport * from "./left.js";\nexport * from "./right.js";\n',
+      );
+      await writeFile(join(dir, "src/consumer.ts"), consumer);
+
+      const result = runCli(["--cwd", dir, "--fix", "--fix-type", "exports"]);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("fixed exports: src/selected.ts");
+      expect(result.stdout).not.toContain("skipped exports: src/selected.ts");
+      expect(await readFile(join(dir, "src/selected.ts"), "utf8")).toBe(
+        'const shared = 1;\nexport * from "./left.js";\nexport * from "./right.js";\n',
+      );
+      expect(await readFile(join(dir, "src/consumer.ts"), "utf8")).toBe(consumer);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("removes a downstream aliased named re-export across a multihop star chain", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "unused-cli-fix-star-named-chain-"));
+    try {
+      await mkdir(join(dir, "src"));
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({
+          name: "fixture-fix-star-named-chain",
+          private: true,
+          type: "module",
+          main: "src/index.ts",
+        }),
+      );
+      await writeFile(
+        join(dir, "src/index.ts"),
+        'import { retained } from "./origin.js";\nconsole.log(retained);\n',
+      );
+      await writeFile(
+        join(dir, "src/origin.ts"),
+        "export const dead = 1;\nexport const retained = 2;\n",
+      );
+      const inner = 'export * from "./origin.js";\n';
+      const mid = 'export * from "./inner.js";\n';
+      await writeFile(join(dir, "src/inner.ts"), inner);
+      await writeFile(join(dir, "src/mid.ts"), mid);
+      await writeFile(
+        join(dir, "src/public.ts"),
+        'export { dead as legacy, retained as other } from "./mid.js";\n',
+      );
+
+      const result = runCli(["--cwd", dir, "--fix", "--fix-type", "exports"]);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("fixed exports: src/public.ts");
+      expect(result.stdout).toContain("fixed exports: src/origin.ts");
+      expect(await readFile(join(dir, "src/origin.ts"), "utf8")).toBe(
+        "const dead = 1;\nexport const retained = 2;\n",
+      );
+      expect(await readFile(join(dir, "src/inner.ts"), "utf8")).toBe(inner);
+      expect(await readFile(join(dir, "src/mid.ts"), "utf8")).toBe(mid);
+      expect(await readFile(join(dir, "src/public.ts"), "utf8")).toBe(
+        'export { retained as other } from "./mid.js";\n',
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips file deletion when a suppressed dead file still imports the target", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "unused-cli-fix-file-inbound-"));
+    try {
+      await mkdir(join(dir, "src"));
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({
+          name: "fixture-fix-inbound-file",
+          private: true,
+          type: "module",
+          main: "src/index.ts",
+        }),
+      );
+      await writeFile(join(dir, "src/index.ts"), 'console.log("entry");\n');
+      const target = "export const target = 1;\n";
+      await writeFile(join(dir, "src/target.ts"), target);
+      await writeFile(
+        join(dir, "src/importer.ts"),
+        'import { target } from "./target.js";\nconsole.log(target);\n',
+      );
+      await writeFile(
+        join(dir, "unused.config.jsonc"),
+        JSON.stringify({
+          suppressions: [
+            {
+              files: ["src/importer.ts"],
+              kinds: ["file"],
+              reason: "retained by policy",
+            },
+          ],
+        }),
+      );
+
+      const result = runCli(["--cwd", dir, "--fix", "--fix-type", "files", "--allow-remove-files"]);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("skipped files: src/target.ts");
+      expect(result.stdout).toContain(
+        "non-re-export inbound reference remains at src/importer.ts:1",
+      );
+      expect(await readFile(join(dir, "src/target.ts"), "utf8")).toBe(target);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips file deletion when a suppressed consumer imports through a re-export chain", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "unused-cli-fix-forwarded-file-inbound-"));
+    try {
+      await mkdir(join(dir, "src"));
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({
+          name: "fixture-fix-forwarded-file-inbound",
+          private: true,
+          type: "module",
+          main: "src/index.ts",
+        }),
+      );
+      await writeFile(join(dir, "src/index.ts"), 'console.log("entry");\n');
+      const target = "export const target = 1;\n";
+      const barrel = 'export { target } from "./target.js";\n';
+      const consumer = 'import { target } from "./barrel.js";\nconsole.log(target);\n';
+      await writeFile(join(dir, "src/target.ts"), target);
+      await writeFile(join(dir, "src/barrel.ts"), barrel);
+      await writeFile(join(dir, "src/consumer.ts"), consumer);
+      await writeFile(
+        join(dir, "unused.config.jsonc"),
+        JSON.stringify({
+          suppressions: [
+            {
+              files: ["src/consumer.ts"],
+              kinds: ["file"],
+              reason: "retained by policy",
+            },
+          ],
+        }),
+      );
+
+      const result = runCli(["--cwd", dir, "--fix", "--fix-type", "files", "--allow-remove-files"]);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("skipped files: src/target.ts");
+      expect(result.stdout).toContain(
+        "non-re-export inbound reference remains at src/consumer.ts:1",
+      );
+      expect(await readFile(join(dir, "src/target.ts"), "utf8")).toBe(target);
+      expect(await readFile(join(dir, "src/barrel.ts"), "utf8")).toBe(barrel);
+      expect(await readFile(join(dir, "src/consumer.ts"), "utf8")).toBe(consumer);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("requires both explicit file-removal opt-ins", () => {
+    const missingPermission = runCli(["--fix", "--fix-type", "files"]);
+    expect(missingPermission.status).toBe(3);
+    expect(missingPermission.stderr).toContain("requires --allow-remove-files");
+
+    const missingType = runCli(["--fix", "--allow-remove-files"]);
+    expect(missingType.status).toBe(3);
+    expect(missingType.stderr).toContain("also requires --fix-type files");
+  });
+
+  it("rejects fix controls without --fix and machine-output composition", () => {
+    expect(runCli(["--fix-type", "exports"]).status).toBe(3);
+    const machine = runCli(["--fix", "--json"]);
+    expect(machine.status).toBe(3);
+    expect(machine.stderr).toContain("cannot be combined with --json or --sarif");
+  });
+
+  it("rejects empty fix types and report-only filters in mutation mode", () => {
+    const empty = runCli(["--fix", "--fix-type", ","]);
+    expect(empty.status).toBe(3);
+    expect(empty.stderr).toContain("requires at least one type");
+
+    for (const args of [
+      ["--filter", "file"],
+      ["--min-confidence", "high"],
+      ["--all"],
+      ["--show-suppressed"],
+    ]) {
+      const result = runCli(["--fix", ...args]);
+      expect(result.status).toBe(3);
+      expect(result.stderr).toContain("report-only");
+      expect(result.stderr).toContain("--fix-type");
+    }
   });
 });
 
@@ -714,7 +1513,7 @@ describe("unused baseline (T7.1)", () => {
       const header = JSON.parse(lines[0] as string);
       expect(header.analyzerVersion).toBe("0.1.0");
       expect(header.idVersion).toBe(1);
-      expect(header.schemaVersion).toBe("1.1.0");
+      expect(header.schemaVersion).toBe("1.2.0");
       expect(typeof header.configHash).toBe("string");
       expect(typeof header.generatedAt).toBe("string");
       const claim = JSON.parse(lines[1] as string);
@@ -963,11 +1762,11 @@ describe("unused check (T7.2)", () => {
   it("schemaVersion MINOR-only mismatch (e.g. 1.1.0 -> 1.2.0) still evaluates the gate — only a MAJOR change makes ids incomparable (ADR 0006)", async () => {
     await withTempFixtureCopy(DEAD_FIXTURE, async (dir) => {
       expect(runCli(["baseline", "--cwd", dir]).status).toBe(0);
-      await tamperBaselineHeader(dir, { schemaVersion: "1.2.0" });
+      await tamperBaselineHeader(dir, { schemaVersion: "1.1.0" });
 
       const check = runCli(["check", "--cwd", dir]);
       expect(check.status).toBe(0);
-      expect(check.stdout).toContain("schema version: baseline 1.2.0, current 1.1.0");
+      expect(check.stdout).toContain("schema version: baseline 1.1.0, current 1.2.0");
       expect(check.stdout).toContain("PASS no new dead weight since baseline -- exit 0");
       expect(check.stdout).not.toContain("gate not evaluated");
     });
@@ -1013,7 +1812,7 @@ describe("unused check (T7.2)", () => {
 
       const check = runCli(["check", "--cwd", dir]);
       expect(check.status).toBe(0);
-      expect(check.stdout).toContain("schema version: baseline 2.0.0, current 1.1.0");
+      expect(check.stdout).toContain("schema version: baseline 2.0.0, current 1.2.0");
       expect(check.stdout).toMatch(/gate not evaluated.*re-baseline required.*exit 0/);
     });
   });
@@ -1062,17 +1861,96 @@ describe("unused CLI — why (T8.2, cli-ux §4)", () => {
     expect(result.stdout).toContain("tier-2:");
   });
 
+  it("renders a read-only deletion plan with required re-export edits", () => {
+    const result = runCli(["why", "--delete", "src/lib/unusedThing.ts", "--cwd", REEXPORT_FIXTURE]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("deletion plan -- src/lib/unusedThing.ts");
+    expect(result.stdout).toContain("required re-export edits:");
+    expect(result.stdout).toContain("src/barrel.ts:3 remove re-export");
+    expect(result.stdout).toContain("consequence plan only");
+  });
+
+  it("emits the standalone schema-1.2 deletion plan JSON", () => {
+    const result = runCli([
+      "why",
+      "--delete",
+      "--json",
+      "src/lib/unusedThing.ts",
+      "--cwd",
+      REEXPORT_FIXTURE,
+    ]);
+    expect(result.status).toBe(0);
+    const plan = JSON.parse(result.stdout) as {
+      schemaVersion: string;
+      supported: boolean;
+      reExportEdits: unknown[];
+    };
+    expect(plan.schemaVersion).toBe("1.2.0");
+    expect(plan.supported).toBe(true);
+    expect(plan.reExportEdits).toHaveLength(1);
+  });
+
+  it("rejects an ambiguous deletion JSON query without contaminating stdout", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "unused-cli-why-ambiguous-"));
+    try {
+      await mkdir(join(dir, "src"));
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({ name: "ambiguous-why", private: true, main: "src/index.ts" }),
+      );
+      await writeFile(join(dir, "src/index.ts"), 'console.log("entry");\n');
+      await writeFile(join(dir, "src/a.ts"), "export const duplicate = 1;\n");
+      await writeFile(join(dir, "src/b.ts"), "export const duplicate = 2;\n");
+
+      const result = runCli(["why", "--delete", "--json", "duplicate", "--cwd", dir]);
+      expect(result.status).toBe(3);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("requires one unambiguous subject");
+      expect(result.stderr).toContain("unused why --delete --json src/a.ts:duplicate");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("produces deletion plans for Elixir subjects through auto-dispatch", () => {
+    const result = runCli([
+      "why",
+      "--delete",
+      "--json",
+      "BasicDead.Core.unused_helper/1",
+      "--cwd",
+      ELIXIR_FIXTURE,
+    ]);
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    const plan = JSON.parse(result.stdout) as {
+      selected: { kind: string; name?: string };
+      supported: boolean;
+    };
+    expect(plan.selected).toMatchObject({
+      kind: "export",
+      name: "BasicDead.Core.unused_helper/1",
+    });
+    expect(plan.supported).toBe(true);
+  });
+
   it("exits 3 with a fix hint on a nonexistent name (stdout clean)", () => {
     const result = runCli(["why", "noSuchSymbol", "--cwd", DEAD_FIXTURE]);
     expect(result.status).toBe(3);
-    expect(result.stderr).toMatch(/no symbol or file matching "noSuchSymbol" found/);
+    expect(result.stderr).toMatch(/no symbol, file, or dependency matching "noSuchSymbol" found/);
     expect(result.stdout).toBe("");
   });
 
   it("exits 3 when no subject is given", () => {
     const result = runCli(["why", "--cwd", DEAD_FIXTURE]);
     expect(result.status).toBe(3);
-    expect(result.stderr).toMatch(/why requires a symbol or file argument/);
+    expect(result.stderr).toMatch(/why requires a symbol, file, or dependency argument/);
+  });
+
+  it("rejects why --json without the deletion-plan contract", () => {
+    const result = runCli(["why", "--json", "subtract", "--cwd", DEAD_FIXTURE]);
+    expect(result.status).toBe(3);
+    expect(result.stderr).toContain("available with --delete only");
   });
 
   it("exits 2 on a nonexistent --cwd", () => {
@@ -1110,7 +1988,21 @@ describe("unused report (T9.3, docs/design/report-and-badge.md §1)", () => {
       const content = await readFile(join(dir, ".unused/report.md"), "utf8");
       expect(content).toContain("# unused deletion report");
       expect(content).toContain("subtract"); // the fixture's one dead export
+      expect(content).toContain("## Deletion consequences");
+      expect(content).toContain("no downstream cascade");
       expect(content).toContain("docs/generated/assumption-set.md");
+    });
+  });
+
+  it("includes modeled consequences for Elixir claims", async () => {
+    await withTempFixtureCopy(ELIXIR_FIXTURE, async (dir) => {
+      const result = runCli(["report", "--cwd", dir]);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      const content = await readFile(join(dir, ".unused/report.md"), "utf8");
+      expect(content).toContain("BasicDead.Core.unused_helper/1");
+      expect(content).toContain("## Deletion consequences");
+      expect(content).not.toContain("BasicDead.Core.unused_helper/1`: not modeled");
     });
   });
 

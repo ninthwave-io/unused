@@ -1,0 +1,6 @@
+{
+  "name": "fixture-service-worker-public-asset",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts"
+}

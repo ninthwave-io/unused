@@ -18,6 +18,15 @@ export {
   renderCheckReport,
 } from "./check.js";
 export {
+  type DeletionPlanConsequenceSubjectView,
+  type DeletionPlanStageView,
+  type DeletionPlanSubjectView,
+  type DeletionPlanView,
+  deletionSubjectLabel,
+  type ReExportEditView,
+  renderDeletionPlan,
+} from "./deletion-plan.js";
+export {
   applyClaimFilters,
   type ClaimFilterOptions,
   filterClaims,

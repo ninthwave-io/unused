@@ -1,0 +1,12 @@
+version: "3"
+
+includes:
+  cycle-control:
+    taskfile: ../Taskfile.yml
+
+tasks:
+  run:
+    cmds:
+      - echo "{{.INCLUDE_VALUE}}"
+      - node ./included.mjs
+      - node ./runtime/include-{{.TARGET}}.mjs

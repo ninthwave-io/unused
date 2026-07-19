@@ -6,16 +6,17 @@
  * `--json`, SARIF) and the MCP server render from. It never imports from
  * `frontends`, `cli`, `reporters`, or `mcp` (dependency-cruiser, ADR 0003).
  *
- * `schema/claim-run.schema.json` is the hand-authored JSON Schema mirror of
- * this file — keep the two in lockstep on any change.
+ * `schema/claim-run.schema.json` and `schema/deletion-plan.schema.json` are the
+ * hand-authored JSON Schema mirrors of this file — keep them in lockstep on any
+ * change to their respective contracts.
  */
 
 /**
  * ADR 0006 semver policy: bump on a MAJOR/MINOR/PATCH change to this
- * contract. 1.1.0 (T5.3, docs/phasing.md M5): additive optional
- * `summary.zombieTests` field — MINOR per ADR 0006.
+ * contract. 1.2.0 (ADR 0012): additive suppression provenance and deletion
+ * consequence planning fields — MINOR per ADR 0006.
  */
-export const SCHEMA_VERSION = "1.1.0";
+export const SCHEMA_VERSION = "1.2.0";
 
 // ---------------------------------------------------------------------------
 // Enums (PRD §4, ADR 0006 open/closed policy)
@@ -110,7 +111,75 @@ export interface Provenance {
 export interface Suppression {
   /** `/* unused:ignore <reason> *\/` — mandatory, travels into `--json`/SARIF. */
   reason: string;
+  /** Policy origin. Present for structured config suppressions; optional for older inline data. */
+  source?: string;
+  /** The exact configured file pattern that matched this claim. */
+  pattern?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Counterfactual deletion plans (ADR 0012 — separate from ClaimRun)
+// ---------------------------------------------------------------------------
+
+/** A resolved subject accepted by the deletion planner. */
+export type DeletionPlanSubject =
+  | { kind: "export"; file: string; name: string; line?: number }
+  | { kind: "file"; file: string }
+  | { kind: "dependency"; file: string; name: string };
+
+/** Subjects that can appear as graph-derived deletion consequences. */
+export type DeletionPlanConsequenceSubject = Exclude<DeletionPlanSubject, { kind: "dependency" }>;
+
+/** Exact stored graph provenance for a required source edit. */
+export interface DeletionPlanSite {
+  file: string;
+  span: {
+    start: number;
+    end: number;
+    startLine: number;
+    endLine: number;
+  };
+}
+
+export interface ReExportEdit {
+  kind: "remove-re-export";
+  file: string;
+  line: number;
+  exportedName?: string;
+  targetFile: string;
+  targetName?: string;
+  site: DeletionPlanSite;
+}
+
+export interface DeletionPlanStage {
+  stage: number;
+  newlyDead: readonly DeletionPlanConsequenceSubject[];
+}
+
+/**
+ * Standalone `why --delete --json` contract. It is intentionally not nested in
+ * {@link ClaimRun}: plans are counterfactual consequences, never claim truth,
+ * and therefore cannot participate in summaries, baselines, or gates.
+ */
+interface DeletionPlanBase {
+  schemaVersion: typeof SCHEMA_VERSION;
+}
+
+export type DeletionPlan =
+  | (DeletionPlanBase & {
+      selected: DeletionPlanConsequenceSubject;
+      supported: true;
+      unsupportedReason?: never;
+      reExportEdits: readonly ReExportEdit[];
+      stages: readonly DeletionPlanStage[];
+    })
+  | (DeletionPlanBase & {
+      selected: DeletionPlanSubject;
+      supported: false;
+      unsupportedReason: string;
+      reExportEdits: readonly [];
+      stages: readonly [];
+    });
 
 // ---------------------------------------------------------------------------
 // Subjects (one discriminated variant per kind)

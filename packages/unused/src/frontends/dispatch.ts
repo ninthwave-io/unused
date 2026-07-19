@@ -19,9 +19,22 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import {
+  computePartitionedReachability,
+  type PartitionedReachability,
+} from "../core/analysis/index.js";
 import { computeSummary } from "../core/claims/index.js";
-import { analyzeElixirProject } from "./elixir/index.js";
-import { type AnalyzeOptions, type AnalyzeResult, analyzeProject } from "./ts/analyze.js";
+import { IRGraph } from "../core/ir/index.js";
+import { analyzeElixirProjectWithGraph } from "./elixir/index.js";
+import { type AnalyzeOptions, type AnalyzeResult, analyzeProjectWithGraph } from "./ts/analyze.js";
+import { applyConfigSuppressions, loadConfig, warnOnEmptyConfigMatches } from "./ts/config.js";
+import { filterGitignoredRelativePaths } from "./ts/discover.js";
+
+export interface AnalyzeAutoWithGraph {
+  readonly result: AnalyzeResult;
+  readonly graph: IRGraph;
+  readonly reachability: PartitionedReachability;
+}
 
 /**
  * Analyze `rootDir`, auto-selecting the language frontend(s). Elixir refusals
@@ -33,29 +46,67 @@ export async function analyzeProjectAuto(
   rootDir: string,
   options: AnalyzeOptions = {},
 ): Promise<AnalyzeResult> {
+  return (await analyzeProjectAutoWithGraph(rootDir, options)).result;
+}
+
+/** Analyze the auto-detected language set and retain the merged graph for why/planning. */
+export async function analyzeProjectAutoWithGraph(
+  rootDir: string,
+  options: AnalyzeOptions = {},
+): Promise<AnalyzeAutoWithGraph> {
   const hasPackageJson = existsSync(join(rootDir, "package.json"));
   const hasMixExs = existsSync(join(rootDir, "mix.exs"));
 
   if (hasMixExs && !hasPackageJson) {
-    return analyzeElixirProject(rootDir, options);
+    return analyzeElixirProjectWithGraph(rootDir, options);
   }
   if (!hasMixExs) {
-    return analyzeProject(rootDir, options);
+    return analyzeProjectWithGraph(rootDir, options);
   }
 
   // Both manifests present: run both, merge.
+  const internal = { emitConfigMatchWarnings: false } as const;
   const [ts, elixir] = await Promise.all([
-    analyzeProject(rootDir, options),
-    analyzeElixirProject(rootDir, options),
+    analyzeProjectWithGraph(rootDir, options, internal),
+    analyzeElixirProjectWithGraph(rootDir, options, internal),
   ]);
-  const claims = [...ts.claims, ...elixir.claims].sort((a, b) =>
-    a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
-  );
-  return {
-    ...ts,
+  const config = await loadConfig(rootDir, options.configPath);
+  const graph = mergeGraphs(ts.graph, elixir.graph);
+  const graphFiles = [...graph.nodes()]
+    .filter((node) => node.kind === "file")
+    .map((node) => node.path)
+    .sort();
+  const analyzedFiles =
+    options.gitignore === false
+      ? graphFiles
+      : await filterGitignoredRelativePaths(rootDir, graphFiles);
+
+  // A mixed run has one config contract, so diagnostics evaluate the complete
+  // language union once rather than warning over two partial inventories.
+  warnOnEmptyConfigMatches(config, analyzedFiles, analyzedFiles, ts.result.units);
+  const claims = applyConfigSuppressions(
+    [...ts.result.claims, ...elixir.result.claims],
+    config,
+    ts.result.units,
+    analyzedFiles,
+  ).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const result: AnalyzeResult = {
+    ...ts.result,
     claims,
-    summary: computeSummary(claims, {}),
-    productionEntrypointCount: ts.productionEntrypointCount + elixir.productionEntrypointCount,
-    fileCount: ts.fileCount + elixir.fileCount,
+    summary: computeSummary(claims, { ciSecondsPerTestFile: config.ciSecondsPerTestFile }),
+    productionEntrypointCount:
+      ts.result.productionEntrypointCount + elixir.result.productionEntrypointCount,
+    fileCount: ts.result.fileCount + elixir.result.fileCount,
   };
+  return { result, graph, reachability: computePartitionedReachability(graph) };
+}
+
+function mergeGraphs(...graphs: readonly IRGraph[]): IRGraph {
+  const merged = new IRGraph();
+  for (const graph of graphs) {
+    for (const node of graph.nodes()) merged.addNode(node);
+    for (const edge of graph.edges()) merged.addEdge(edge);
+    for (const hazard of graph.hazards()) merged.addHazard(hazard);
+  }
+  return merged;
 }

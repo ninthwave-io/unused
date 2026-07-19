@@ -1,5 +1,5 @@
-// A genuine orphan, in scope (matches "project": ["src/**/*.ts"], not
-// matched by "ignore") — must still be flagged.
+// A genuine orphan in project scope and outside suppression policy — must be
+// flagged normally.
 export function orphan(): string {
   return "orphan";
 }

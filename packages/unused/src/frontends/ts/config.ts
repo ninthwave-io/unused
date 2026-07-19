@@ -11,12 +11,11 @@
  * ## Fields (PRD §6)
  * `entry` (globs, ADDITIVE to zero-config auto-detection — T2.3's frozen
  * no-config contract is untouched; this layers new production entrypoints on
- * top), `project` (globs narrowing what can be CLAIMED — see the sharper
- * "project vs ignore" semantics below), `ignore` (globs excluded from
- * analysis entirely — an ignored file is undiscovered: never parsed, never an
- * importer, never an import target, never claimed, never a root),
+ * top), `project` (globs narrowing what can be CLAIMED without removing graph
+ * nodes or edges), `suppressions` (structured file-glob + claim-kind policy,
+ * applied to emitted claims with a mandatory reason),
  * `ignoreDependencies` (names/glob patterns excluded from dependency-unused
- * claims), `workspaces` (per-package `{ entry?, project?, ignore? }`
+ * claims), `workspaces` (per-package `{ entry?, project?, suppressions? }`
  * overrides, ADDITIVE to the root-level globs for that package's own files),
  * `gate: { threshold }` (parsed and validated now; consumed by `unused check`
  * at M7 — this module does not read it), `presets` (an array naming T4.4
@@ -27,37 +26,16 @@
  * `core/claims/summary.ts`'s `DEFAULT_CI_SECONDS_PER_TEST_FILE`; consumed by
  * `analyze.ts`'s `computeSummary` call, this module only parses/validates it).
  *
- * ## `project` vs `ignore` — two different kinds of "out of scope" (reviewer
- * fix, false-positive finding)
- * These are NOT the same operation at two granularities — they answer
- * different questions, and conflating them was a false-positive bug:
- *
- *  - **`ignore` = invisibility.** An ignored file is undiscovered. It is
- *    never read, never parsed, and therefore never contributes an import edge
- *    to the graph in either direction — it cannot reference anything and
- *    cannot be referenced. This is deliberate: the user explicitly said
- *    "this file does not exist for analysis purposes" (PRD §6 item 5), and
- *    the hazard-scope interaction above depends on exactly this invisibility.
- *  - **`project` = claimability scope, not visibility.** A file outside
- *    `project` is still discovered, still parsed, and still contributes its
- *    import edges to the graph — it is a real file in the real codebase, and
- *    hiding it from the reference graph would fabricate false positives on
- *    files it imports. `project` only narrows which files are ALLOWED TO
- *    RECEIVE a claim: an out-of-project file is never itself flagged
- *    `unused`, but it keeps acting as an importer for everything it
- *    references.
- *
- * Concretely: `project: ["src/**"]` with `scripts/build.ts` (out of project)
- * importing `src/helper.ts` (in project) — `scripts/build.ts` is still
- * parsed, so the import edge exists and `src/helper.ts` is correctly seen as
- * referenced (not a false "unused"); `scripts/build.ts` itself is simply
- * never claimable (whether or not anything imports it). Before this fix,
- * `project` behaved like a second `ignore` — narrowing DISCOVERY, not just
- * claimability — which silently dropped `scripts/build.ts` from the graph
- * entirely and made `src/helper.ts` look unreferenced: a confident false
- * "unused" on live code. {@link filterFilesByConfig} now applies only
- * `ignore`; {@link isClaimable} applies `project` at claim time (see
- * `analyze.ts`, which filters `emitClaims`'s output through it).
+ * ## Graph visibility vs reporting policy
+ * **`project` = claimability scope, not visibility.** A file outside
+ * `project` is still discovered, parsed, and represented in the reference
+ * graph. Its edges remain available for truthful reachability and
+ * counterfactual analysis, but the file does not become a production root
+ * merely because it is outside claim scope. A dead out-of-project importer
+ * therefore does not keep its target live; a reachable one does. `project`
+ * only decides which files may receive a claim. Suppressions are later still:
+ * they mark matching claims but never affect reachability, hazards, or
+ * dependency evidence.
  *
  * ## Precedence (PRD §6)
  * flags > config > defaults. The only flag today is `--config <path>`, which
@@ -66,18 +44,6 @@
  * M6 flag surface). No config file present ⇒ {@link EMPTY_CONFIG}, under
  * which every function in this module is a documented no-op — this is the
  * T4.3 no-config regression contract (see `analyze.ts`).
- *
- * ## Hazard-scope interaction (documented, PRD §6 "Document interaction with
- * hazard scopes")
- * An `ignore`d file is undiscovered before the frontend ever parses it, so it
- * can never be the *site* of a hazard annotation either — a computed dynamic
- * import that would otherwise cap a directory subtree (`hazard-registry.ts`,
- * `computed-dynamic-import`) simply never enters the graph if its own file is
- * ignored. This can only relax a cap that a non-ignored sibling would
- * otherwise have inherited from that file's hazard (never introduce a false
- * positive: an ignored file's own exports/liveness are never claimed either,
- * since the file itself is never a node in the graph). Documented, accepted
- * behaviour — "the user asked for it" (phasing.md T4.3).
  *
  * ## Validation errors (cli-ux §6)
  * `validateConfig` fails on the FIRST problem found (one-line error + the
@@ -90,6 +56,7 @@
 import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { join, resolve as resolvePath } from "node:path";
+import type { Claim, SubjectKind } from "../../core/claims/index.js";
 import { globToRegExp } from "./glob.js";
 import { stripJsonComments } from "./jsonc.js";
 
@@ -110,7 +77,16 @@ export type PresetName = "vite" | "next" | "storybook" | "cdk";
 export interface WorkspaceConfigOverride {
   readonly entry: readonly string[];
   readonly project: readonly string[];
-  readonly ignore: readonly string[];
+  readonly suppressions: readonly SuppressionRule[];
+}
+
+export interface SuppressionRule {
+  /** Globs matched root-relative, or package-relative inside a workspace override. */
+  readonly files: readonly string[];
+  /** Explicit claim kinds this policy suppresses. */
+  readonly kinds: readonly SubjectKind[];
+  /** Mandatory human explanation carried into JSON and SARIF. */
+  readonly reason: string;
 }
 
 export interface GateConfig {
@@ -120,7 +96,7 @@ export interface GateConfig {
 export interface UnusedConfig {
   readonly entry: readonly string[];
   readonly project: readonly string[];
-  readonly ignore: readonly string[];
+  readonly suppressions: readonly SuppressionRule[];
   readonly ignoreDependencies: readonly string[];
   readonly workspaces: Readonly<Record<string, WorkspaceConfigOverride>>;
   /** Parsed + validated; consumed by `unused check` at M7, not read here. */
@@ -139,7 +115,7 @@ export interface UnusedConfig {
 export const EMPTY_CONFIG: UnusedConfig = {
   entry: [],
   project: [],
-  ignore: [],
+  suppressions: [],
   ignoreDependencies: [],
   workspaces: {},
   gate: undefined,
@@ -151,12 +127,12 @@ export const EMPTY_CONFIG: UnusedConfig = {
  * A deterministic hash of the resolved effective config (PRD §4
  * `run.configHash`; docs/phasing.md M7 T7.2 "configHash under-hashing" debt,
  * closed here) — covers every field {@link UnusedConfig} carries: `entry`,
- * `project`, `ignore`, `ignoreDependencies`, `workspaces` overrides,
+ * `project`, `suppressions`, `ignoreDependencies`, `workspaces` overrides,
  * `presets`, `gate`, `ciSecondsPerTestFile`.
  *
  * An earlier version hashed the resolved production-entrypoint set derived
  * from the IR graph instead of the config itself: it both **under-counted**
- * (a config that only changes `ignore`/`project`/`gate`/`ciSecondsPerTestFile`
+ * (a config that only changes `suppressions`/`project`/`gate`/`ciSecondsPerTestFile`
  * never touches the entrypoint set, so the hash silently failed to reflect a
  * real config change) and **over-counted** (the entrypoint set also shifts on
  * incidental preset-detection/wildcard-export changes unrelated to config,
@@ -183,7 +159,7 @@ function canonicalConfigForHash(config: UnusedConfig): unknown {
   return {
     entry: [...config.entry],
     project: [...config.project],
-    ignore: [...config.ignore],
+    suppressions: config.suppressions.map(canonicalSuppression),
     ignoreDependencies: [...config.ignoreDependencies],
     workspaces: workspaceKeys.map((key) => {
       const override = config.workspaces[key] as WorkspaceConfigOverride;
@@ -191,13 +167,17 @@ function canonicalConfigForHash(config: UnusedConfig): unknown {
         key,
         entry: [...override.entry],
         project: [...override.project],
-        ignore: [...override.ignore],
+        suppressions: override.suppressions.map(canonicalSuppression),
       };
     }),
     gate: config.gate === undefined ? null : { threshold: config.gate.threshold },
     presets: config.presets === undefined ? null : [...config.presets],
     ciSecondsPerTestFile: config.ciSecondsPerTestFile ?? null,
   };
+}
+
+function canonicalSuppression(rule: SuppressionRule): unknown {
+  return { files: [...rule.files], kinds: [...rule.kinds], reason: rule.reason };
 }
 
 /**
@@ -284,17 +264,18 @@ export async function loadConfig(root: string, explicitPath?: string): Promise<U
 const ALLOWED_TOP_LEVEL = new Set([
   "entry",
   "project",
-  "ignore",
+  "suppressions",
   "ignoreDependencies",
   "workspaces",
   "gate",
   "presets",
   "ciSecondsPerTestFile",
 ]);
-const ALLOWED_WORKSPACE_OVERRIDE_KEYS = new Set(["entry", "project", "ignore"]);
+const ALLOWED_WORKSPACE_OVERRIDE_KEYS = new Set(["entry", "project", "suppressions"]);
 const ALLOWED_GATE_KEYS = new Set(["threshold"]);
 const GATE_THRESHOLDS: readonly GateThreshold[] = ["high", "medium", "low"];
 const PRESET_NAMES: readonly PresetName[] = ["vite", "next", "storybook", "cdk"];
+const CLAIM_KINDS: readonly SubjectKind[] = ["export", "file", "dependency", "endpoint", "test"];
 
 /**
  * Validate a parsed JSON value against the config contract, throwing
@@ -322,7 +303,7 @@ export function validateConfig(parsed: unknown, displayPath: string): UnusedConf
 
   const entry = readGlobArray(obj, "entry", fail);
   const project = readGlobArray(obj, "project", fail);
-  const ignore = readGlobArray(obj, "ignore", fail);
+  const suppressions = readSuppressions(obj, "suppressions", fail);
   const ignoreDependencies = readGlobArray(obj, "ignoreDependencies", fail);
   const workspaces = readWorkspaces(obj, fail);
   const gate = readGate(obj, fail);
@@ -332,7 +313,7 @@ export function validateConfig(parsed: unknown, displayPath: string): UnusedConf
   return {
     entry,
     project,
-    ignore,
+    suppressions,
     ignoreDependencies,
     workspaces,
     gate,
@@ -394,10 +375,87 @@ function readWorkspaces(
       project: readGlobArray(pkgObj, "project", (f, p, x) =>
         fail(`workspaces.${pkgKey}.${f}`, p, x),
       ),
-      ignore: readGlobArray(pkgObj, "ignore", (f, p, x) => fail(`workspaces.${pkgKey}.${f}`, p, x)),
+      suppressions: readSuppressions(pkgObj, "suppressions", (f, p, x) =>
+        fail(`workspaces.${pkgKey}.${f}`, p, x),
+      ),
     };
   }
   return out;
+}
+
+function readSuppressions(
+  obj: Record<string, unknown>,
+  key: string,
+  fail: Fail,
+): readonly SuppressionRule[] {
+  const value = obj[key];
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    return fail(
+      key,
+      "must be an array of suppression rules",
+      `use e.g. "${key}": [{ "files": ["src/generated/**"], "kinds": ["file"], "reason": "generated" }]`,
+    );
+  }
+  return value.map((item, index) => {
+    const field = `${key}[${index}]`;
+    if (item === null || typeof item !== "object" || Array.isArray(item)) {
+      return fail(field, "must be an object", "provide files, kinds, and reason fields");
+    }
+    const rule = item as Record<string, unknown>;
+    const allowed = new Set(["files", "kinds", "reason"]);
+    for (const nestedKey of Object.keys(rule)) {
+      if (!allowed.has(nestedKey)) {
+        fail(`${field}.${nestedKey}`, "is not recognised", "valid fields are files, kinds, reason");
+      }
+    }
+    const files = rule["files"];
+    if (!Array.isArray(files) || files.length === 0) {
+      fail(
+        `${field}.files`,
+        "must be a non-empty array of glob strings",
+        'use e.g. ["src/generated/**"]',
+      );
+    }
+    files.forEach((file, fileIndex) => {
+      if (typeof file !== "string" || file === "") {
+        fail(
+          `${field}.files[${fileIndex}]`,
+          "must be a non-empty glob string",
+          'use e.g. "src/generated/**"',
+        );
+      }
+    });
+    const kinds = rule["kinds"];
+    if (!Array.isArray(kinds) || kinds.length === 0) {
+      fail(
+        `${field}.kinds`,
+        "must be a non-empty array of claim kinds",
+        `valid kinds are ${CLAIM_KINDS.join(", ")}`,
+      );
+    }
+    kinds.forEach((kind, kindIndex) => {
+      if (typeof kind !== "string" || !CLAIM_KINDS.includes(kind as SubjectKind)) {
+        fail(
+          `${field}.kinds[${kindIndex}]`,
+          `must be one of ${CLAIM_KINDS.join(", ")}`,
+          'use e.g. ["file", "export"]',
+        );
+      }
+    });
+    if (typeof rule["reason"] !== "string" || rule["reason"].trim() === "") {
+      fail(
+        `${field}.reason`,
+        "must be a non-empty explanation",
+        "say why this policy is necessary",
+      );
+    }
+    return {
+      files: files as string[],
+      kinds: kinds as SubjectKind[],
+      reason: rule["reason"] as string,
+    };
+  });
 }
 
 function readGate(obj: Record<string, unknown>, fail: Fail): GateConfig | undefined {
@@ -462,7 +520,7 @@ function readCiSecondsPerTestFile(obj: Record<string, unknown>, fail: Fail): num
 }
 
 // ---------------------------------------------------------------------------
-// Workspace-unit scoping (shared by `entry`/`project`/`ignore` application)
+// Workspace-unit scoping (shared by entry/project/suppression application)
 // ---------------------------------------------------------------------------
 
 /** The minimal per-package-unit shape config scoping needs (a subset of `analyze.ts`'s `AnalyzeUnit`). */
@@ -518,56 +576,20 @@ function toPackageRelative(fileRel: string, rootRelDir: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// `ignore` application (T4.3 item 5: undiscovery — see the module docstring's
-// "project vs ignore" section for why `project` is deliberately NOT applied
-// here anymore, reviewer false-positive fix)
+// Compatibility stage: config policy never removes graph-visible files
 // ---------------------------------------------------------------------------
 
 /**
- * Filter an already-discovered file list (root-relative POSIX paths, as
- * produced by `discover.ts` + `toPosixRel`) down to the set that is
- * DISCOVERED for analysis: drop anything matched by an `ignore` glob
- * (root-level, or a matching workspace override's own `ignore`, matched
- * package-relative). `project` is deliberately NOT applied here — an
- * out-of-project file must still be parsed and contribute its import edges
- * (see {@link isClaimable}, which is where `project` actually applies).
- * Absent `ignore` at a given scope is a no-op there (matches today's "every
- * discovered file is in scope" behaviour) — so with {@link EMPTY_CONFIG} this
- * function returns `files` unchanged, in the same order (the T4.3 no-config
- * regression contract).
+ * Retained as the analyzer pipeline's configuration boundary, but deliberately
+ * returns every discovered file. `project` and `suppressions` are reporting
+ * controls and must never erase reference edges.
  */
 export function filterFilesByConfig(
   files: readonly string[],
-  config: UnusedConfig,
-  units: readonly ConfigUnit[],
+  _config: UnusedConfig,
+  _units: readonly ConfigUnit[],
 ): string[] {
-  const anyOverrideIgnore = Object.values(config.workspaces).some((o) => o.ignore.length > 0);
-  if (config.ignore.length === 0 && !anyOverrideIgnore) {
-    return [...files];
-  }
-
-  const rootIgnore = config.ignore.map(globToRegExp);
-  const overrideIgnoreByUnit = units.map((unit) => {
-    const override = findWorkspaceOverride(config, unit);
-    return (override?.ignore ?? []).map(globToRegExp);
-  });
-
-  const out: string[] = [];
-  for (const fileRel of files) {
-    if (rootIgnore.some((re) => re.test(fileRel))) continue;
-
-    const idx = ownerIndex(units, fileRel);
-    if (idx >= 0) {
-      const unit = units[idx] as ConfigUnit;
-      const ignore = overrideIgnoreByUnit[idx] ?? [];
-      if (ignore.length > 0) {
-        const pkgRel = toPackageRelative(fileRel, unit.rootRelDir);
-        if (ignore.some((re) => re.test(pkgRel))) continue;
-      }
-    }
-    out.push(fileRel);
-  }
-  return out;
+  return [...files];
 }
 
 // ---------------------------------------------------------------------------
@@ -575,26 +597,24 @@ export function filterFilesByConfig(
 // ---------------------------------------------------------------------------
 
 /**
- * Is `fileRel` (root-relative POSIX, a file that survived {@link
- * filterFilesByConfig}'s `ignore` filtering) inside the config `project`
- * scope — i.e. is it ALLOWED to be claimed? Checked at claim time (the
+ * Is `fileRel` (root-relative POSIX) inside the config `project` scope — i.e.
+ * is it ALLOWED to be claimed? Checked at claim time (the
  * caller filters `emitClaims`'s output through this), never at discovery
  * time: `project` narrows claimability, not visibility (see the module
  * docstring). Root-level `project` is checked root-relative; a matching
  * workspace override's own `project` is checked package-relative and is
- * additionally restrictive (both must pass). Absent `project` at a given
- * scope is a no-op there (everything discovered is claimable, today's
- * behaviour) — so with {@link EMPTY_CONFIG} this always returns `true`.
+ * additionally restrictive (both must pass). Patterns are evaluated in order:
+ * a leading `!` excludes a prior match and a later positive pattern can include
+ * it again. A list containing only negations starts included; any positive
+ * pattern makes the initial state excluded. Absent `project` at a given scope
+ * is a no-op there — so with {@link EMPTY_CONFIG} this always returns `true`.
  */
 export function isClaimable(
   fileRel: string,
   config: UnusedConfig,
   units: readonly ConfigUnit[],
 ): boolean {
-  if (config.project.length > 0) {
-    const rootProject = config.project.map(globToRegExp);
-    if (!rootProject.some((re) => re.test(fileRel))) return false;
-  }
+  if (!matchesOrderedProject(fileRel, config.project)) return false;
 
   const idx = ownerIndex(units, fileRel);
   if (idx >= 0) {
@@ -603,10 +623,135 @@ export function isClaimable(
     const overrideProject = override?.project ?? [];
     if (overrideProject.length > 0) {
       const pkgRel = toPackageRelative(fileRel, unit.rootRelDir);
-      if (!overrideProject.map(globToRegExp).some((re) => re.test(pkgRel))) return false;
+      if (!matchesOrderedProject(pkgRel, overrideProject)) return false;
     }
   }
   return true;
+}
+
+/** Knip-style ordered include/exclude matching for `project` patterns. */
+function matchesOrderedProject(fileRel: string, patterns: readonly string[]): boolean {
+  if (patterns.length === 0) return true;
+  let included = !patterns.some((pattern) => !pattern.startsWith("!"));
+  for (const pattern of patterns) {
+    const negated = pattern.startsWith("!");
+    const body = negated ? pattern.slice(1) : pattern;
+    if (globToRegExp(body).test(fileRel)) included = !negated;
+  }
+  return included;
+}
+
+interface CompiledSuppression {
+  readonly label: string;
+  readonly rule: SuppressionRule;
+  readonly patterns: readonly { readonly value: string; readonly matcher: RegExp }[];
+  readonly unitIndex: number | undefined;
+  matchedFile: boolean;
+  matchedClaim: boolean;
+}
+
+/**
+ * Apply structured config suppressions after graph analysis. Suppression never
+ * removes a file, node, or edge: it only marks matching emitted claims. Inline
+ * declaration suppressions already attached by the frontend take precedence.
+ * Mixed-language dispatch disables per-frontend warnings, then invokes this
+ * once over the merged claims/files so a rule matching either language is not
+ * falsely reported as stale by the other frontend.
+ */
+export function applyConfigSuppressions(
+  claims: readonly Claim[],
+  config: UnusedConfig,
+  units: readonly ConfigUnit[],
+  analyzedFiles: readonly string[],
+  options: { readonly emitWarnings?: boolean } = {},
+): Claim[] {
+  const compiled: CompiledSuppression[] = config.suppressions.map((rule, index) => ({
+    label: `suppressions[${index}]`,
+    rule,
+    patterns: rule.files.map((value) => ({ value, matcher: globToRegExp(value) })),
+    unitIndex: undefined,
+    matchedFile: false,
+    matchedClaim: false,
+  }));
+
+  for (const [key, override] of Object.entries(config.workspaces)) {
+    const unitIndex = units.findIndex((unit) => unit.rootRelDir === key || unit.name === key);
+    if (unitIndex < 0) continue;
+    override.suppressions.forEach((rule, index) => {
+      compiled.push({
+        label: `workspaces.${key}.suppressions[${index}]`,
+        rule,
+        patterns: rule.files.map((value) => ({ value, matcher: globToRegExp(value) })),
+        unitIndex,
+        matchedFile: false,
+        matchedClaim: false,
+      });
+    });
+  }
+
+  if (compiled.length === 0) return [...claims];
+
+  const candidateFiles = new Set(analyzedFiles);
+  for (const claim of claims) candidateFiles.add(claim.subject.loc.file);
+  for (const file of candidateFiles) {
+    for (const item of compiled) {
+      if (matchedSuppressionPattern(item, file, units) !== undefined) item.matchedFile = true;
+    }
+  }
+
+  const output = claims.map((claim) => {
+    const matches = compiled.flatMap((item) => {
+      if (!item.rule.kinds.includes(claim.subject.kind)) return [];
+      const pattern = matchedSuppressionPattern(item, claim.subject.loc.file, units);
+      return pattern === undefined ? [] : [{ item, pattern }];
+    });
+    for (const match of matches) match.item.matchedClaim = true;
+    if (claim.suppression !== undefined || matches.length === 0) return claim;
+
+    // Workspace-local policy is more specific than root policy.
+    const selected = matches.find((match) => match.item.unitIndex !== undefined) ?? matches[0];
+    return selected === undefined
+      ? claim
+      : {
+          ...claim,
+          suppression: {
+            reason: selected.item.rule.reason,
+            source: "config",
+            pattern: selected.pattern,
+          },
+        };
+  });
+
+  if (options.emitWarnings !== false) {
+    for (const item of compiled) {
+      if (!item.matchedFile) {
+        console.warn(
+          `[unused] config "${item.label}" files globs matched no files — check for a typo.`,
+        );
+      } else if (!item.matchedClaim) {
+        console.warn(
+          `[unused] config "${item.label}" matched no current ${item.rule.kinds.join("/")} claims — suppression may be stale.`,
+        );
+      }
+    }
+  }
+
+  return output;
+}
+
+function matchedSuppressionPattern(
+  item: CompiledSuppression,
+  fileRel: string,
+  units: readonly ConfigUnit[],
+): string | undefined {
+  if (item.unitIndex === undefined) {
+    return item.patterns.find((pattern) => pattern.matcher.test(fileRel))?.value;
+  }
+  if (ownerIndex(units, fileRel) !== item.unitIndex) return undefined;
+  const unit = units[item.unitIndex];
+  if (unit === undefined) return undefined;
+  const pkgRel = toPackageRelative(fileRel, unit.rootRelDir);
+  return item.patterns.find((pattern) => pattern.matcher.test(pkgRel))?.value;
 }
 
 // ---------------------------------------------------------------------------
@@ -620,10 +765,7 @@ export interface ConfigEntrypointHit {
 }
 
 /**
- * Every DISCOVERED file (i.e. `analyzedFiles`, the post-`filterFilesByConfig`
- * — `ignore`-filtered only — set: an `ignore`d file can never be seeded as an
- * entry, matching "ignore wins over entry"; an out-of-`project` file CAN be,
- * consistent with `project` governing claimability, not visibility) matched
+ * Every graph-visible discovered file matched
  * by a config `entry` glob: root-level globs matched root-relative, plus each
  * unit's workspace-override `entry` globs matched package-relative. These are
  * ADDITIVE production entrypoints (PRD §6) — the caller seeds them into the
@@ -680,7 +822,7 @@ function displayUnitKey(config: UnusedConfig, unit: ConfigUnit): string {
 
 /**
  * Does `packageName` match any `ignoreDependencies` entry? Each entry is
- * compiled through the same glob engine as `entry`/`project`/`ignore` (so a
+ * compiled through the same glob engine as `entry`/`project`/`suppressions` (so a
  * plain name like `"@types/node"` matches literally, and a pattern like
  * `"@internal/*"` also works) — "names/patterns", per the spec.
  */
@@ -697,7 +839,7 @@ export function isIgnoredDependency(packageName: string, config: UnusedConfig): 
 /**
  * Warn to stderr (`console.warn`, the same "loud, never silent" convention
  * `core/analysis/claims.ts` uses for an unregistered hazard class) when an
- * `entry`/`project`/`ignore` glob — root-level or inside a `workspaces`
+ * `entry`/`project` glob — root-level or inside a `workspaces`
  * override — matches zero files, or a `workspaces` key matches no known
  * package by directory or name. A config field that silently matches nothing
  * is almost always a typo (a stale path after a rename, a glob that doesn't
@@ -705,15 +847,13 @@ export function isIgnoredDependency(packageName: string, config: UnusedConfig): 
  * purely diagnostic, never a claim-affecting signal, so it degrades toward
  * "say nothing" only when there is truly nothing to say (`EMPTY_CONFIG`).
  *
- * `discoveredFiles` is the PRE-`ignore` discovered set (root-relative POSIX)
- * — an `ignore` glob's own zero-match check must run against what it COULD
- * have matched, not the set its own filtering already emptied.
- * `scopedFiles` is the POST-`ignore` set (`filterFilesByConfig`'s output) —
- * what `entry`/`project` actually match against.
+ * `scopedFiles` is the graph-visible discovered set that `entry`/`project`
+ * match against. Suppression rules report their own unmatched/stale warnings
+ * in {@link applyConfigSuppressions} because they also need emitted claims.
  */
 export function warnOnEmptyConfigMatches(
   config: UnusedConfig,
-  discoveredFiles: readonly string[],
+  _discoveredFiles: readonly string[],
   scopedFiles: readonly string[],
   units: readonly ConfigUnit[],
 ): void {
@@ -724,19 +864,13 @@ export function warnOnEmptyConfigMatches(
       warn(`config "entry" pattern "${pattern}" matched no files`);
   }
   for (const pattern of config.project) {
-    if (!matchesAny(pattern, scopedFiles)) {
+    if (!matchesAny(projectPatternBody(pattern), scopedFiles)) {
       warn(`config "project" pattern "${pattern}" matched no files`);
-    }
-  }
-  for (const pattern of config.ignore) {
-    if (!matchesAny(pattern, discoveredFiles)) {
-      warn(`config "ignore" pattern "${pattern}" matched no files`);
     }
   }
   if (Object.keys(config.workspaces).length === 0) return;
 
   const scopedByUnit = groupByUnit(scopedFiles, units);
-  const discoveredByUnit = groupByUnit(discoveredFiles, units);
   for (const [key, override] of Object.entries(config.workspaces)) {
     const idx = units.findIndex((u) => u.rootRelDir === key || u.name === key);
     if (idx < 0) {
@@ -744,23 +878,21 @@ export function warnOnEmptyConfigMatches(
       continue;
     }
     const unitScoped = scopedByUnit[idx] ?? [];
-    const unitDiscovered = discoveredByUnit[idx] ?? [];
     for (const pattern of override.entry) {
       if (!matchesAny(pattern, unitScoped)) {
         warn(`config "workspaces.${key}.entry" pattern "${pattern}" matched no files`);
       }
     }
     for (const pattern of override.project) {
-      if (!matchesAny(pattern, unitScoped)) {
+      if (!matchesAny(projectPatternBody(pattern), unitScoped)) {
         warn(`config "workspaces.${key}.project" pattern "${pattern}" matched no files`);
       }
     }
-    for (const pattern of override.ignore) {
-      if (!matchesAny(pattern, unitDiscovered)) {
-        warn(`config "workspaces.${key}.ignore" pattern "${pattern}" matched no files`);
-      }
-    }
   }
+}
+
+function projectPatternBody(pattern: string): string {
+  return pattern.startsWith("!") ? pattern.slice(1) : pattern;
 }
 
 function matchesAny(pattern: string, files: readonly string[]): boolean {

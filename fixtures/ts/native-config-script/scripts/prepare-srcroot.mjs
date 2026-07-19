@@ -1,0 +1,1 @@
+export const prepareFromSourceRoot = true;

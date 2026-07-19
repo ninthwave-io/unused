@@ -317,6 +317,44 @@ describe("re-export forms", () => {
       out.some((e) => e.referenceKind === "re-export" && e.to === symbolId("src/x.ts", "default")),
     ).toBe(true);
   });
+
+  it("retains Oxc local-name kinds for default assignments and named aliases", () => {
+    const root = testfx("entrypoints");
+    const file = join(root, "src/local-name-kind.ts");
+    const namedFile = join(root, "src/named-default-kind.ts");
+    const record = parseSource(
+      file,
+      "const value = 1; export default value; export { value as alias };",
+    );
+    const namedRecord = parseSource(
+      namedFile,
+      "export default function Named() {} export { Named as alias };",
+    );
+    const resolver = new Resolver({
+      projectRoot: root,
+      discoveredFiles: new Set([file, namedFile]),
+    });
+    const graph = emitIR({
+      projectRoot: root,
+      records: [record, namedRecord],
+      resolver,
+      packageJson: null,
+    });
+
+    expect(graph.nodeOfKind("symbol", symbolId("src/local-name-kind.ts", "default"))).toMatchObject(
+      { localName: "value", localNameKind: "Default" },
+    );
+    expect(graph.nodeOfKind("symbol", symbolId("src/local-name-kind.ts", "alias"))).toMatchObject({
+      localName: "value",
+      localNameKind: "Name",
+    });
+    expect(
+      graph.nodeOfKind("symbol", symbolId("src/named-default-kind.ts", "default")),
+    ).toMatchObject({ localName: "Named", localNameKind: "Name" });
+    expect(
+      graph.nodeOfKind("symbol", symbolId("src/named-default-kind.ts", "alias")),
+    ).toMatchObject({ localName: "Named", localNameKind: "Name" });
+  });
 });
 
 // ---------------------------------------------------------------------------

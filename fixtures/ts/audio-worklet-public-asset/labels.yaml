@@ -1,0 +1,22 @@
+case: audio-worklet-public-asset
+description: >-
+  Reachable browser code loads a root-relative module through
+  AudioWorklet.addModule. The URL resolves against the package's public
+  directory and keeps that asset alive. An unreferenced public worklet remains
+  a dead/high control.
+subjects:
+  - kind: file
+    name: public/capture-processor.js
+    file: public/capture-processor.js
+    expected: alive
+    because: >-
+      the production entrypoint loads this public asset through a root-relative
+      AudioWorklet.addModule URL, which is a runtime module reference.
+  - kind: file
+    name: public/orphan-processor.js
+    file: public/orphan-processor.js
+    expected: dead
+    minConfidence: high
+    because: >-
+      no reachable source loads this sibling public asset and no other root or
+      reference reaches it; it guards recall outside the exact browser API use.

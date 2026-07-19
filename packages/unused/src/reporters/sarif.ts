@@ -39,7 +39,14 @@
  *
  * Imports only `core/claims` (dependency-cruiser reporters boundary).
  */
-import type { Claim, ClaimRun, Confidence, Evidence, SubjectKind } from "../core/claims/index.js";
+import type {
+  Claim,
+  ClaimRun,
+  Confidence,
+  Evidence,
+  SubjectKind,
+  Suppression,
+} from "../core/claims/index.js";
 
 /** PRD §4's exact rule-id list, keyed by subject kind (a `test` subject's only verdict is `test-only`). */
 const RULE_ID: Readonly<Record<SubjectKind, string>> = {
@@ -105,7 +112,7 @@ export interface SarifResult {
     readonly confidence: Confidence;
     readonly evidence: readonly Evidence[];
     readonly why: string;
-    readonly suppression?: { readonly reason: string };
+    readonly suppression?: Suppression;
   };
 }
 

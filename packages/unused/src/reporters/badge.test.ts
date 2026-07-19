@@ -92,11 +92,11 @@ describe("computeBadge", () => {
     expect(badge.message).toBe("1 claim");
   });
 
-  it("counts a suppressed high-confidence claim too — not silently dropped (PRD §4/§6, badge.ts docstring)", () => {
+  it("excludes a suppressed high-confidence claim from the default badge total", () => {
     const claims = [exportClaim("a", "high", { suppression: { reason: "accepted debt" } })];
     const badge = computeBadge(makeRun(claims));
-    expect(badge.message).toBe("1 claim");
-    expect(badge.color).toBe("blue");
+    expect(badge.message).toBe("clean");
+    expect(badge.color).toBe("green");
   });
 
   it("counts every subject kind and verdict at high confidence, not just unused exports", () => {

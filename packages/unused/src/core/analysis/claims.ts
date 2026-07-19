@@ -24,16 +24,20 @@
  *
  * ## Hazard scoping (T3.1 — replaces M2's blanket whole-project suppression)
  * Each hazard annotation is looked up in the registry (`hazard-registry.ts`),
- * which fixes its **scope** and **confidence cap**. The whole-project suppression
- * M2 applied to any computed `import()`/`require()` is gone: those are now
- * `directory-subtree`-scoped, so only the plausibly-reachable subtree is capped
- * (at `medium`) and everything outside it stays claimable at `high`.
+ * which fixes its **activation**, **scope**, and **confidence cap**. The
+ * whole-project suppression M2 applied to any computed `import()`/`require()`
+ * is gone: those annotations activate only when their carrier is reachable,
+ * then cap only the plausibly-reachable subtree (at `medium`); everything
+ * outside it stays claimable at `high`.
  *
  *  - **`computed-dynamic-import` / `computed-require`** (`directory-subtree`,
- *    cap `medium`) — every file whose path starts with the annotation's
- *    `subtreePrefix` (the template's static prefix; the importer's whole package
- *    when there is none) is capped; the file claim AND any dead-export claim of
- *    an in-scope file.
+ *    cap `medium`, carrier-reachable) — while the importer is reachable from a
+ *    production/config/test root or an already-active dynamic scope, every file
+ *    whose path starts with the annotation's `subtreePrefix` (the template's
+ *    static prefix; the importer's whole package when there is none) is capped;
+ *    the file claim AND any dead-export claim of an in-scope file. Activation
+ *    closes to a fixed point; an unreachable importer outside that closure
+ *    cannot run, so its outgoing hazard caps nothing.
  *  - **`config-referenced-file`** (`file`, cap `medium`) — the referenced file
  *    (and its exports) is capped, not suppressed: a config-loaded file is
  *    probably-dead, not proven-dead.
@@ -200,13 +204,11 @@ export interface EmitClaimsInput {
  *                  exports are still individually claimable in the symbol pass.
  *  - `test-only` — test-reachable but NOT production/config-reachable ⇒ one
  *                  whole-file `test-only` claim, subsuming its exports.
- *  - `unused`    — reachable from nothing AND no inbound reference edge (a bare
- *                  orphan) ⇒ a whole-file `unused` claim, subsuming its exports.
- *  - `none`      — reachable from nothing but referenced by (dead) code, so not a
- *                  bare orphan ⇒ no file claim; its symbols are not claimed
- *                  either (the pre-M5 "subsumed by the file claim" behaviour).
+ *  - `unused`    — reachable from nothing, including a file referenced only by
+ *                  other unreachable code ⇒ a whole-file `unused` claim,
+ *                  subsuming its exports (ADR 0012 complete reachability).
  */
-type FileClass = "alive" | "test-only" | "unused" | "none";
+type FileClass = "alive" | "test-only" | "unused";
 
 /**
  * Emit the claim set for one project: deterministic, sorted by claim id. Returns
@@ -236,7 +238,7 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
   // `fileCap[F]`   caps F's file claim AND F's export claims (directory-subtree,
   //                file scopes). `exportCap[F]` caps only F's export claims
   //                (symbol-set scope). An unregistered class ⇒ project no-claim.
-  const caps = buildHazardCaps(graph, input.units ?? DEFAULT_UNITS);
+  const caps = buildHazardCaps(graph, reachability, input.units ?? DEFAULT_UNITS);
   if (caps.projectNoClaim) return [];
   const { fileCap, exportCap, unitCap, ownerRootRelDir } = caps;
 
@@ -244,30 +246,6 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
   // file or export; a test root can only surface as a zombie `test` claim.
   const entrypointFiles = new Set<string>();
   for (const entry of graph.entrypoints()) entrypointFiles.add(fileId(entry.file));
-
-  // Files reached by any reference edge (to the file node or any symbol it
-  // exposes) — the "has an inbound edge" test that distinguishes a bare orphan
-  // (`unused`) from a file referenced only by other dead code (`none`).
-  // **Intra-file (self-file) edges do not count**: the flattened intra-file
-  // sibling edges (emitIR 2g) run symbol→symbol within one file, so a genuinely
-  // dead file whose exports merely reference each other must still read as a
-  // bare orphan (`unused`), not `none` — otherwise the fix would silently
-  // suppress its file claim.
-  const referencedFiles = new Set<string>();
-  for (const edge of graph.edges()) {
-    if (edge.kind !== "references") continue;
-    const target = graph.getNode(edge.to);
-    if (target === undefined) continue;
-    const targetFile =
-      target.kind === "file"
-        ? target.id
-        : target.kind === "symbol"
-          ? fileId(target.file)
-          : undefined;
-    if (targetFile === undefined) continue;
-    if (fileOfEdgeSource(graph, edge.from) === targetFile) continue; // intra-file — not an inbound reference
-    referencedFiles.add(targetFile);
-  }
 
   const aliveFile = (id: string): boolean =>
     production.reachableFiles.has(id) || config.reachableFiles.has(id);
@@ -283,7 +261,6 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
     if (entrypointFiles.has(node.id)) continue; // a root — never a file/export claim
     if (aliveFile(node.id)) fileClass.set(node.id, "alive");
     else if (test.reachableFiles.has(node.id)) fileClass.set(node.id, "test-only");
-    else if (referencedFiles.has(node.id)) fileClass.set(node.id, "none");
     else fileClass.set(node.id, "unused");
   }
 
@@ -292,7 +269,7 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
   for (const node of graph.nodes()) {
     if (node.kind === "file") {
       const cls = fileClass.get(node.id);
-      if (cls === undefined || cls === "alive" || cls === "none") continue;
+      if (cls === undefined || cls === "alive") continue;
       // A symbol-set (export-only) cap never applies to a file claim (file
       // liveness is unaffected by a computed-CJS-export hazard).
       const applied = fileCap.get(node.id);
@@ -322,7 +299,7 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
       const fileNodeId = fileId(node.file);
       // Only a symbol in an alive file is individually claimable: a test-only /
       // unused file already emitted one whole-file claim that subsumes it; a
-      // `none` / entrypoint / declaration file yields no export claim (pre-M5).
+      // entrypoint / declaration files yield no export claim.
       if (fileClass.get(fileNodeId) !== "alive") continue;
       if (aliveSymbol(node.id)) continue; // used from production or config
       // An export claim is capped by the stronger of the file-scoped and the
@@ -331,7 +308,7 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
       if (applied?.cap === "no-claim") continue;
       const confidence = confidenceForCap(applied);
       const span: Span = [node.span.startLine, node.span.endLine];
-      const suppression = suppressionOf(node.suppression);
+      const suppression = suppressionOf(node.suppression, node.file, node.span.startLine);
       // A dead export in an alive file: `test-only` when a test still reaches it,
       // otherwise plainly `unused`.
       if (test.reachableSymbols.has(node.id)) {
@@ -424,6 +401,8 @@ const DEFAULT_UNITS: readonly { readonly rootRelDir: string }[] = [{ rootRelDir:
  * Resolve every hazard annotation through the registry into per-subject caps.
  * An unregistered class degrades the whole project to no-claim (never silent —
  * a loud internal warning fires, once per distinct unknown class).
+ * Registered carrier-activated annotations are ignored unless their carrier
+ * file is reachable in at least one root partition.
  *
  * WHOLE-PACKAGE caps (a `project`-scope hazard, or a `directory-subtree` hazard
  * with no static prefix) scope to the OWNING WORKSPACE UNIT of the hazard site —
@@ -434,6 +413,7 @@ const DEFAULT_UNITS: readonly { readonly rootRelDir: string }[] = [{ rootRelDir:
  */
 function buildHazardCaps(
   graph: IRGraph,
+  reachability: PartitionedReachability,
   units: readonly { readonly rootRelDir: string }[],
 ): HazardCaps {
   const fileCap = new Map<string, AppliedCap>();
@@ -472,6 +452,10 @@ function buildHazardCaps(
     if (node.kind === "file") fileNodes.push({ id: node.id, path: node.path });
   }
 
+  const registeredHazards: Array<{
+    readonly hazard: HazardAnnotation;
+    readonly entry: NonNullable<ReturnType<typeof lookupHazard>>;
+  }> = [];
   for (const hazard of graph.hazards()) {
     const entry = lookupHazard(hazard.hazardClass);
     if (entry === undefined) {
@@ -487,6 +471,48 @@ function buildHazardCaps(
       }
       continue;
     }
+    registeredHazards.push({ hazard, entry });
+  }
+
+  // Outgoing dynamic hazards activate to a fixed point. A statically reachable
+  // carrier can load every file in its conservative scope; any such possible
+  // target may itself carry another outgoing dynamic hazard. Treating only the
+  // first carrier as active would incorrectly restore high confidence one hop
+  // later in a dynamic-loader chain.
+  const potentiallyReachableFiles = new Set<string>([
+    ...reachability.production.reachableFiles,
+    ...reachability.config.reachableFiles,
+    ...reachability.test.reachableFiles,
+  ]);
+  const activeHazards = new Set<HazardAnnotation>();
+  let activationChanged = true;
+  while (activationChanged) {
+    activationChanged = false;
+    for (const { hazard, entry } of registeredHazards) {
+      if (activeHazards.has(hazard)) continue;
+      if (entry.activation === "carrier-reachable" && !potentiallyReachableFiles.has(hazard.file)) {
+        continue;
+      }
+      activeHazards.add(hazard);
+      activationChanged = true;
+      if (entry.activation !== "carrier-reachable") continue;
+      for (const file of filesCoveredByScope(
+        hazard,
+        entry.scope,
+        fileNodes,
+        ownerRootRelDir,
+        graph,
+      )) {
+        if (!potentiallyReachableFiles.has(file.id)) {
+          potentiallyReachableFiles.add(file.id);
+          activationChanged = true;
+        }
+      }
+    }
+  }
+
+  for (const { hazard, entry } of registeredHazards) {
+    if (!activeHazards.has(hazard)) continue;
     const applied = appliedCap(hazard, entry.cap);
     switch (entry.scope) {
       case "none":
@@ -536,6 +562,35 @@ function buildHazardCaps(
   }
 
   return { projectNoClaim, fileCap, exportCap, unitCap, ownerRootRelDir };
+}
+
+/** Files a carrier-activated hazard may load, used only for activation closure. */
+function filesCoveredByScope(
+  hazard: HazardAnnotation,
+  scope: NonNullable<ReturnType<typeof lookupHazard>>["scope"],
+  fileNodes: readonly { readonly id: string; readonly path: string }[],
+  ownerRootRelDir: (path: string) => string,
+  graph: IRGraph,
+): readonly { readonly id: string; readonly path: string }[] {
+  const carrier = graph.getNode(hazard.file);
+  const carrierPath = carrier?.kind === "file" ? carrier.path : hazard.site.file;
+  switch (scope) {
+    case "project": {
+      const owner = ownerRootRelDir(carrierPath);
+      return fileNodes.filter((file) => ownerRootRelDir(file.path) === owner);
+    }
+    case "directory-subtree": {
+      const prefix = hazard.subtreePrefix ?? "";
+      if (prefix !== "") return fileNodes.filter((file) => file.path.startsWith(prefix));
+      const owner = ownerRootRelDir(carrierPath);
+      return fileNodes.filter((file) => ownerRootRelDir(file.path) === owner);
+    }
+    case "file":
+    case "symbol-set":
+      return fileNodes.filter((file) => file.id === hazard.file);
+    case "none":
+      return [];
+  }
 }
 
 function appliedCap(hazard: HazardAnnotation, cap: ConfidenceCap): AppliedCap {
@@ -802,9 +857,17 @@ function langOpt(input: EmitClaimsInput): { language?: string } {
 /** A suppressed symbol still yields a claim; the reason travels in the object (PRD §6). */
 function suppressionOf(
   suppression: { reason: string | null; valid: boolean } | undefined,
+  file: string,
+  line: number,
 ): Suppression | undefined {
   if (suppression === undefined) return undefined;
-  return { reason: suppression.reason ?? "" };
+  if (!suppression.valid || suppression.reason === null || suppression.reason.trim() === "") {
+    console.warn(
+      `[unused] ${file}:${line}: unused:ignore requires a non-empty reason; claim remains unsuppressed.`,
+    );
+    return undefined;
+  }
+  return { reason: suppression.reason };
 }
 
 function spanForFile(
@@ -813,15 +876,6 @@ function spanForFile(
 ): Span {
   const lines = lineCounts?.get(fileNodeId);
   return [1, lines !== undefined && lines >= 1 ? lines : 1];
-}
-
-/** The file id owning an edge's source node (a file node → itself; a symbol node → its file); `undefined` otherwise. */
-function fileOfEdgeSource(graph: IRGraph, from: string): string | undefined {
-  const node = graph.getNode(from);
-  if (node === undefined) return undefined;
-  if (node.kind === "file") return node.id;
-  if (node.kind === "symbol") return fileId(node.file);
-  return undefined;
 }
 
 /** A TypeScript declaration file (`.d.ts` / `.d.mts` / `.d.cts`) — never claimed. */

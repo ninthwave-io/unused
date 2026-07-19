@@ -24,7 +24,7 @@
  * clock plumbing is needed here, matching `reporters/tty.ts`'s test pattern
  * (a hand-built `ClaimRun` with a fixed `startedAt`).
  */
-import type { Claim, ClaimRun } from "../core/claims/index.js";
+import type { Claim, ClaimRun, DeletionPlan } from "../core/claims/index.js";
 import { formatCount, locLabel, spanLines, whyText } from "./tty.js";
 
 export type ReportFormat = "md" | "html";
@@ -35,6 +35,8 @@ export interface ReportContext {
   readonly repoName: string;
   readonly fileCount: number;
   readonly workspaceCount: number;
+  /** Read-only counterfactuals keyed by claim id (ADR 0012). */
+  readonly deletionPlans?: Readonly<Record<string, DeletionPlan>>;
 }
 
 function plural(n: number): string {
@@ -49,6 +51,43 @@ function countMatching(claims: readonly Claim[], predicate: (c: Claim) => boolea
   let n = 0;
   for (const c of claims) if (predicate(c)) n += 1;
   return n;
+}
+
+function actionableRun(run: ClaimRun): ClaimRun {
+  const suppressed = run.claims.filter((claim) => claim.suppression !== undefined);
+  const claims = run.claims.filter((claim) => claim.suppression === undefined);
+  const byKind = { ...run.summary.byKind };
+  const byConfidence = { ...run.summary.byConfidence };
+  for (const claim of suppressed) {
+    byKind[claim.subject.kind] = Math.max(0, byKind[claim.subject.kind] - 1);
+    byConfidence[claim.confidence] = Math.max(0, byConfidence[claim.confidence] - 1);
+  }
+
+  const suppressedZombieTests = suppressed.filter((claim) => claim.subject.kind === "test").length;
+  const zombieTests = run.summary.zombieTests;
+  const remainingZombieTests =
+    zombieTests === undefined ? 0 : Math.max(0, zombieTests.count - suppressedZombieTests);
+
+  return {
+    ...run,
+    claims,
+    summary: {
+      byKind,
+      byConfidence,
+      // `estDeletableLoc` already excludes suppressions and may have been
+      // calculated from richer source spans than a report fixture retains.
+      estDeletableLoc: run.summary.estDeletableLoc,
+      ...(zombieTests !== undefined && remainingZombieTests > 0
+        ? {
+            zombieTests: {
+              ...zombieTests,
+              count: remainingZombieTests,
+              estCiSecondsPerRun: remainingZombieTests * zombieTests.avgSecondsPerTestFile,
+            },
+          }
+        : {}),
+    },
+  };
 }
 
 interface Headline {
@@ -126,8 +165,32 @@ function headerLine(ctx: ReportContext): string {
   );
 }
 
+function consequenceSummary(plan: DeletionPlan): string {
+  if (!plan.supported) return plan.unsupportedReason ?? "not modeled";
+  const newlyDead = plan.stages.reduce((sum, stage) => sum + stage.newlyDead.length, 0);
+  const parts: string[] = [];
+  if (plan.reExportEdits.length > 0) {
+    parts.push(
+      `${plan.reExportEdits.length} required re-export edit${plural(plan.reExportEdits.length)}`,
+    );
+  }
+  if (newlyDead > 0) {
+    parts.push(
+      `${newlyDead} newly dead subject${plural(newlyDead)} across ${plan.stages.length} stage${plural(plan.stages.length)}`,
+    );
+  }
+  return parts.length > 0 ? parts.join("; ") : "no downstream cascade";
+}
+
+function plannedTopDeletions(ctx: ReportContext, top: readonly Claim[]) {
+  if (ctx.deletionPlans === undefined) return undefined;
+  return top.map((claim) => ({ claim, plan: ctx.deletionPlans?.[claim.id] }));
+}
+
 export function renderReportMarkdown(ctx: ReportContext): string {
-  const { run, repoName } = ctx;
+  const { repoName } = ctx;
+  const run = actionableRun(ctx.run);
+  const suppressedCount = ctx.run.claims.length - run.claims.length;
   const h = computeHeadline(run);
   const top = topDeletions(run);
   const z = run.summary.zombieTests;
@@ -152,6 +215,9 @@ export function renderReportMarkdown(ctx: ReportContext): string {
       `- ${formatCount(z.count)} zombie test${plural(z.count)} — ~${formatCount(z.estCiSecondsPerRun)}s CI per run (estimated)`,
     );
   }
+  if (suppressedCount > 0) {
+    lines.push(`- ${formatCount(suppressedCount)} suppressed (excluded from totals above)`);
+  }
 
   lines.push("", "## Top deletions by LOC", "");
   if (top.length === 0) {
@@ -166,6 +232,22 @@ export function renderReportMarkdown(ctx: ReportContext): string {
           `\`${locLabel(c)}\` | ${spanLines(c)} | ${escapeMdCell(whyText(c, false))} |`,
       ),
     );
+  }
+
+  const planned = plannedTopDeletions(ctx, top);
+  if (planned !== undefined) {
+    lines.push("", "## Deletion consequences", "");
+    if (planned.length === 0) {
+      lines.push("_No deletion candidates were available to model._");
+    } else {
+      lines.push(
+        ...planned.map(({ claim, plan }) =>
+          plan === undefined
+            ? `- \`${escapeMdCell(claim.subject.name)}\`: not modeled`
+            : `- \`${escapeMdCell(claim.subject.name)}\`: ${escapeMdCell(consequenceSummary(plan))}`,
+        ),
+      );
+    }
   }
 
   lines.push(
@@ -236,7 +318,9 @@ function confidenceBadge(confidence: Claim["confidence"]): string {
 }
 
 export function renderReportHtml(ctx: ReportContext): string {
-  const { run, repoName } = ctx;
+  const { repoName } = ctx;
+  const run = actionableRun(ctx.run);
+  const suppressedCount = ctx.run.claims.length - run.claims.length;
   const h = computeHeadline(run);
   const top = topDeletions(run);
   const z = run.summary.zombieTests;
@@ -255,6 +339,9 @@ export function renderReportHtml(ctx: ReportContext): string {
             l: `zombie test${plural(z.count)} (~${formatCount(z.estCiSecondsPerRun)}s CI/run, est.)`,
           },
         ]
+      : []),
+    ...(suppressedCount > 0
+      ? [{ n: formatCount(suppressedCount), l: "suppressed (excluded from actionable totals)" }]
       : []),
   ]
     .map(
@@ -276,6 +363,22 @@ export function renderReportHtml(ctx: ReportContext): string {
               `<td>${escapeHtml(whyText(c, false))}</td></tr>`,
           )
           .join("\n          ");
+  const planned = plannedTopDeletions(ctx, top);
+  const consequencesHtml =
+    planned === undefined
+      ? ""
+      : `\n\n  <h2>Deletion consequences</h2>\n  ${
+          planned.length === 0
+            ? "<p><em>No deletion candidates were available to model.</em></p>"
+            : `<ul>${planned
+                .map(
+                  ({ claim, plan }) =>
+                    `<li><code>${escapeHtml(claim.subject.name)}</code>: ${escapeHtml(
+                      plan === undefined ? "not modeled" : consequenceSummary(plan),
+                    )}</li>`,
+                )
+                .join("")}</ul>`
+        }`;
 
   return `<!doctype html>
 <html lang="en">
@@ -301,7 +404,7 @@ export function renderReportHtml(ctx: ReportContext): string {
     <tbody>
           ${tableRows}
     </tbody>
-  </table>
+  </table>${consequencesHtml}
 
   <h2>Confidence breakdown</h2>
   <p class="breakdown">
@@ -328,12 +431,15 @@ export function renderReportHtml(ctx: ReportContext): string {
 export function renderReportConfirmation(run: ClaimRun, path: string, ascii: boolean): string {
   const dash = ascii ? "--" : "—";
   const bar = ascii ? " | " : " · ";
-  const z = run.summary.zombieTests;
+  const visible = actionableRun(run);
+  const suppressedCount = run.claims.length - visible.claims.length;
+  const z = visible.summary.zombieTests;
   const parts = [
-    `${formatCount(run.claims.length)} claim${plural(run.claims.length)}`,
-    `~${formatCount(run.summary.estDeletableLoc)} deletable LOC`,
+    `${formatCount(visible.claims.length)} claim${plural(visible.claims.length)}`,
+    `~${formatCount(visible.summary.estDeletableLoc)} deletable LOC`,
   ];
   if (z !== undefined) parts.push(`${formatCount(z.count)} zombie test${plural(z.count)}`);
+  if (suppressedCount > 0) parts.push(`${formatCount(suppressedCount)} suppressed`);
   return (
     `unused report: wrote ${path} (${parts.join(", ")}).\n` +
     `Contains file paths and symbol names from this repo ${dash} review before sharing outside your team.\n` +

@@ -1,0 +1,21 @@
+case: msw-handler-registration
+description: >-
+  MSW handler registration uses ordinary static module imports, so graph
+  reachability already keeps the registered handler module alive. No implicit
+  handler filename convention is assumed; an unimported sibling stays dead.
+subjects:
+  - kind: file
+    name: src/handlers.ts
+    file: src/handlers.ts
+    expected: alive
+    because: >-
+      the production entrypoint statically imports and registers this handler
+      collection.
+  - kind: file
+    name: src/orphan-handlers.ts
+    file: src/orphan-handlers.ts
+    expected: dead
+    minConfidence: high
+    because: >-
+      no static import or supported external carrier references this sibling,
+      and its handler-like filename alone must not confer liveness.

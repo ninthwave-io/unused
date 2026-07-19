@@ -209,4 +209,68 @@ describe("whyAlive — resolution outcomes", () => {
   it("returns not-found for a real file naming a nonexistent export", () => {
     expect(ask(dupGraph(), "src/a.ts:ghost").outcome).toBe("not-found");
   });
+
+  it("returns captured evidence for an unused dependency claim", () => {
+    const g = new IRGraph();
+    const claim: Claim = {
+      id: "dep_test",
+      subject: {
+        kind: "dependency",
+        name: "unused-package",
+        loc: { file: "package.json", span: [8, 8] },
+      },
+      verdict: "unused",
+      confidence: "high",
+      evidence: [
+        {
+          type: "static-reachability",
+          detail: "Declared in dependencies but not referenced from this workspace.",
+          source: "package-manifest",
+        },
+      ],
+      provenance: { analyzer: "ts-reference-graph", version: "0.1.0", generatedAt: "T" },
+    };
+
+    const result = ask(g, "unused-package", [claim]);
+    expect(result.outcome).toBe("dead");
+    if (result.outcome !== "dead") return;
+    expect(result.subject).toEqual({
+      kind: "dependency",
+      file: "package.json",
+      name: "unused-package",
+    });
+    expect(result.claimId).toBe("dep_test");
+    expect(result.evidence[0]?.source).toBe("package-manifest");
+  });
+
+  it("disambiguates the same unused dependency across workspaces", () => {
+    const dependencyClaim = (workspace: string): Claim => ({
+      id: `dep_${workspace}`,
+      subject: {
+        kind: "dependency",
+        name: "shared-package",
+        loc: { file: `${workspace}/package.json`, span: [3, 3], package: workspace },
+      },
+      verdict: "unused",
+      confidence: "high",
+      evidence: [
+        { type: "static-reachability", detail: "No references.", source: "package-manifest" },
+      ],
+      provenance: { analyzer: "ts-reference-graph", version: "0.1.0", generatedAt: "T" },
+    });
+    const claims = [dependencyClaim("packages/a"), dependencyClaim("packages/b")];
+
+    const ambiguous = ask(new IRGraph(), "shared-package", claims);
+    expect(ambiguous.outcome).toBe("ambiguous");
+    if (ambiguous.outcome !== "ambiguous") return;
+    expect(ambiguous.candidates.map((candidate) => candidate.label)).toEqual([
+      "packages/a:shared-package",
+      "packages/b:shared-package",
+    ]);
+
+    const qualified = ask(new IRGraph(), "packages/a:shared-package", claims);
+    expect(qualified.outcome).toBe("dead");
+    if (qualified.outcome !== "dead") return;
+    expect(qualified.subject.file).toBe("packages/a/package.json");
+  });
 });

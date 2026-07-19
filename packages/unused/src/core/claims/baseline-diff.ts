@@ -22,22 +22,17 @@
  * `/* unused:ignore *\/` (no reason) a silent, gate-proof way to ship dead
  * weight, exactly the loophole PRD §6 closes by making the reason mandatory.
  *
- * `claims.ts`'s `suppressionOf` collapses `SuppressionRecord.reason: string |
- * null` to `Suppression.reason: string` (`null` -> `""`) before a claim ever
- * reaches this module — the schema type has no separate `valid` bit (adding
- * one is a schemaVersion-affecting change, PRD §4/ADR 0006, out of scope
- * here). `reason !== ""` is therefore the one signal this module has for
- * validity, and it is not a heuristic: it is the exact same convention
- * `reporters/tty.ts`'s `whyText` already uses to render the "missing
- * reason" callout for the identical case. A reasonless new claim gates like
- * any other unsuppressed claim; only a claim with an actual reason is
- * surfaced separately and left out of the gate.
+ * `claims.ts`'s `suppressionOf` rejects a missing/blank reason, warns on stderr,
+ * and leaves the emitted claim unsuppressed. Analyzer-produced claims therefore
+ * reach this module with either a valid non-empty suppression or none at all.
+ * The non-empty check below is retained as a defensive boundary for malformed
+ * programmatic input; the ClaimRun schema also requires a non-empty reason.
  */
 import type { Claim, Confidence } from "./types.js";
 
-/** A suppression only counts as the gate's escape hatch when its reason is non-empty (see the module docstring). */
+/** A suppression only counts as the gate's escape hatch when its reason is non-blank. */
 function isValidlySuppressed(claim: Claim): boolean {
-  return claim.suppression !== undefined && claim.suppression.reason !== "";
+  return claim.suppression !== undefined && claim.suppression.reason.trim() !== "";
 }
 
 /** `high` > `medium` > `low`, matching the schema's `Confidence` enum. */

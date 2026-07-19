@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { Claim, Confidence } from "../../core/claims/types.js";
 import { loadLabelCase } from "../../testing/corpus/labels.js";
-import { analyzeProject } from "./analyze.js";
+import { analyzeProject, analyzeProjectWithGraph } from "./analyze.js";
 
 const repoRoot = fileURLToPath(new URL("../../../../../", import.meta.url));
 const corpus = (c: string): string => join(repoRoot, "fixtures/ts", c);
@@ -96,9 +96,10 @@ const EXPECTED: Record<string, Shape[]> = {
     M("file", "src/mods/beta.ts", "src/mods/beta.ts"),
     H("file", "src/unrelated.ts", "src/unrelated.ts"),
   ],
-  // recall-debt cases unrelated to this class group: still no claim.
+  // import-equals remains recall debt. Complete root reachability now exposes
+  // the unconsumed re-export origin as a whole-file claim (ADR 0012).
   "import-equals": [],
-  "re-export-chain": [],
+  "re-export-chain": [H("file", "src/lib/unusedThing.ts", "src/lib/unusedThing.ts")],
 };
 
 describe("analyzeProject — exact claims over the corpus", () => {
@@ -126,6 +127,26 @@ describe("analyzeProject — exact claims over the corpus", () => {
       }
     });
   }
+});
+
+describe("config-reference hazard provenance", () => {
+  it("attributes the cap and evidence to the config source, not the referenced target", async () => {
+    const run = await analyzeProjectWithGraph(corpus("config-referenced-file"), {
+      now: FIXED_CLOCK,
+    });
+    const hazard = run.graph
+      .hazards()
+      .find((candidate) => candidate.hazardClass === "config-referenced-file");
+    expect(hazard?.file).toBe("file:src/test-setup.ts");
+    expect(hazard?.site.file).toBe("jest.config.json");
+    expect(hazard?.site.span).toMatchObject({ startLine: 2, endLine: 2 });
+
+    const claim = run.result.claims.find(
+      (candidate) => candidate.subject.name === "src/test-setup.ts",
+    );
+    expect(claim?.evidence[0]?.detail).toContain("jest.config.json:2");
+    expect(claim?.evidence[0]?.detail).not.toContain("src/test-setup.ts:1");
+  });
 });
 
 describe("analyzeProject — every claim joins a dead label, never an alive one", () => {

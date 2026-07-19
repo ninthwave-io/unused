@@ -1,0 +1,116 @@
+# system("node", "../scripts/pod-line-comment-control.mjs")
+quoted_description = 'system("node", "../scripts/pod-quoted-string-control.mjs")'
+system("node", "../scripts/prepare-pods.mjs")
+system("node ../scripts/prepare-pods-command-line.mjs")
+Kernel.system("node ../scripts/prepare-pods-kernel.mjs")
+::Kernel.system("node", "../scripts/prepare-pods-root-kernel.mjs")
+Kernel::system("node", "../scripts/prepare-pods-kernel-colon.mjs")
+pod_hooks.system("node ../scripts/pod-receiver-control.mjs")
+system "node", "../scripts/prepare-pods-command-comment.mjs" # trailing comment
+Kernel.system "node", "../scripts/prepare-pods-command-modifier.mjs" if true
+::Kernel.system "node", "../scripts/prepare-pods-command-semicolon.mjs"; command_suffix = true
+system "node",
+  "../scripts/prepare-pods-command-multiline.mjs"
+Kernel.system "node",
+  "../scripts/prepare-pods-kernel-multiline.mjs"
+system "node", # argv continues after this comment
+  "../scripts/prepare-pods-command-comment-continuation.mjs"
+Kernel.system "node", # Kernel argv also continues
+  "../scripts/prepare-pods-kernel-comment-continuation.mjs"
+system "node", "../scripts/prepare-pods-command-and.mjs" and true
+Kernel.system "node", "../scripts/prepare-pods-kernel-or.mjs" or true
+system "node", "../scripts/prepare-pods-command-symbol-and.mjs" && true
+::Kernel.system "node", "../scripts/prepare-pods-kernel-symbol-or.mjs" || true
+
+unicode_padding = "😀😀😀😀😀😀😀😀"
+raw_description = %q{system("node", "../scripts/pod-percent-raw-control.mjs")}
+system("node", "../scripts/prepare-pods-after-unicode.mjs")
+interpolated_description = %Q{system("node", "../scripts/pod-percent-interpolated-control.mjs")}
+path_pattern = %r{system("node", "../scripts/pod-regex-control.mjs")}
+heredoc_description = <<~DESCRIPTION
+system("node", "../scripts/pod-heredoc-control.mjs")
+DESCRIPTION
+shell_description = <<`SHELL_DESCRIPTION`
+system("node", "../scripts/pod-backtick-heredoc-control.mjs")
+SHELL_DESCRIPTION
+quoted_punctuation = <<'END!'
+system("node", "../scripts/pod-punctuation-heredoc-control.mjs")
+END!
+backtick_punctuation = <<`CMD!`
+system("node", "../scripts/pod-punctuation-heredoc-control.mjs")
+CMD!
+=begin
+system("node", "../scripts/pod-block-comment-control.mjs")
+=end
+
+ITEM = "marker"
+items = []
+items <<ITEM
+system("node", "../scripts/prepare-pods-after-shift.mjs")
+
+def heredoc_return_value
+  return <<RETURN_DESCRIPTION
+system("node", "../scripts/pod-expression-heredoc-control.mjs")
+RETURN_DESCRIPTION
+end
+puts <<PUTS_DESCRIPTION
+system("node", "../scripts/pod-expression-heredoc-control.mjs")
+PUTS_DESCRIPTION
+fallback_description = nil || <<OR_DESCRIPTION
+system("node", "../scripts/pod-expression-heredoc-control.mjs")
+OR_DESCRIPTION
+ternary_description = true ? <<TRUE_DESCRIPTION : <<FALSE_DESCRIPTION
+system("node", "../scripts/pod-expression-heredoc-control.mjs")
+TRUE_DESCRIPTION
+system("node", "../scripts/pod-expression-heredoc-control.mjs")
+FALSE_DESCRIPTION
+
+Kernel.puts <<MEMBER_DESCRIPTION
+system("node", "../scripts/pod-member-heredoc-control.mjs")
+MEMBER_DESCRIPTION
+def LOUD(message)
+  message
+end
+LOUD <<UPPERCASE_DESCRIPTION
+system("node", "../scripts/pod-uppercase-heredoc-control.mjs")
+UPPERCASE_DESCRIPTION
+def unrelated_binding_scope
+  puts = []
+end
+puts <<SCOPED_DESCRIPTION
+system("node", "../scripts/pod-scope-heredoc-control.mjs")
+SCOPED_DESCRIPTION
+
+ITEM_NUMBER = 1
+__LINE__ <<ITEM_NUMBER
+system("node", "../scripts/prepare-pods-after-literal-shift.mjs")
+def append_then_prepare items
+  items <<ITEM
+  system("node", "../scripts/prepare-pods-after-parameter-shift.mjs")
+end
+append_then_prepare([])
+wrapper = chained_items = []
+chained_items <<ITEM
+system("node", "../scripts/prepare-pods-after-chained-assignment.mjs")
+interpolated_heredoc = <<~INTERPOLATED_DESCRIPTION
+#{system("node", "../scripts/prepare-pods-interpolated-heredoc.mjs")}
+INTERPOLATED_DESCRIPTION
+interpolated_string = "#{system("node", "../scripts/prepare-pods-interpolated-string.mjs")}"
+
+percent_quote_poison = %q{"}
+system("node", "../scripts/prepare-pods-after-percent-quote.mjs")
+heredoc_quote_poison = <<~QUOTE_POISON
+"
+QUOTE_POISON
+system("node", "../scripts/prepare-pods-after-heredoc-quote.mjs")
+=begin
+"
+=end
+system("node", "../scripts/prepare-pods-after-block-quote.mjs")
+slash_quote_pattern = /"/
+system("node", "../scripts/prepare-pods-after-regex-quote.mjs")
+slash_hash_pattern = /#/; system("node", "../scripts/prepare-pods-after-regex-hash.mjs")
+
+description_control = <<~DESCRIPTION_CONTROL
+system("node", "../scripts/pod-malformed-heredoc-control.mjs")
+DESCRIPTION_CONTROL

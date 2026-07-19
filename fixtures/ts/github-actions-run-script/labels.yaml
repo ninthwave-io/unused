@@ -1,0 +1,30 @@
+case: github-actions-run-script
+description: >-
+  A GitHub Actions workflow executes a repository script from a run block. The
+  workflow is an external config carrier, so the invoked script is config-live
+  despite having no JavaScript importers. An uninvoked sibling script remains a
+  dead/high control.
+subjects:
+  - kind: file
+    name: scripts/verify-bundle.mjs
+    file: scripts/verify-bundle.mjs
+    expected: alive
+    because: >-
+      a GitHub Actions run step executes this repository path directly, making
+      it a config root even though no source module imports it.
+  - kind: file
+    name: scripts/orphan.mjs
+    file: scripts/orphan.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      no workflow run step, package entrypoint, import, test, or config references
+      this sibling script; it preserves recall for ordinary dead scripts.
+  - kind: file
+    name: scripts/read-only-argument.mjs
+    file: scripts/read-only-argument.mjs
+    expected: dead
+    minConfidence: high
+    because: >-
+      workflow commands pass this JavaScript path to grep and cp as data, but
+      no run step executes it through a JavaScript runtime or directly.

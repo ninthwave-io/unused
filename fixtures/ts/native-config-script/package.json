@@ -1,0 +1,6 @@
+{
+  "name": "fixture-native-config-script",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts"
+}

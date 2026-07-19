@@ -1,0 +1,9 @@
+{
+  "name": "fixture-msw-worker-directory",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "msw": {
+    "workerDirectory": ["public"]
+  }
+}

@@ -106,6 +106,7 @@ exports[`IR snapshots (corpus) > basic-dead-export 1`] = `
       "isDefault": false,
       "kind": "symbol",
       "local": true,
+      "localNameKind": "Name",
       "span": {
         "end": 69,
         "endLine": 3,
@@ -121,6 +122,7 @@ exports[`IR snapshots (corpus) > basic-dead-export 1`] = `
       "isDefault": false,
       "kind": "symbol",
       "local": true,
+      "localNameKind": "Name",
       "span": {
         "end": 233,
         "endLine": 8,
@@ -297,6 +299,7 @@ exports[`IR snapshots (corpus) > entrypoint-exports-map 1`] = `
       "isDefault": false,
       "kind": "symbol",
       "local": true,
+      "localNameKind": "Name",
       "span": {
         "end": 51,
         "endLine": 3,
@@ -312,6 +315,7 @@ exports[`IR snapshots (corpus) > entrypoint-exports-map 1`] = `
       "isDefault": false,
       "kind": "symbol",
       "local": true,
+      "localNameKind": "Name",
       "span": {
         "end": 104,
         "endLine": 7,
@@ -327,6 +331,7 @@ exports[`IR snapshots (corpus) > entrypoint-exports-map 1`] = `
       "isDefault": false,
       "kind": "symbol",
       "local": true,
+      "localNameKind": "Name",
       "span": {
         "end": 212,
         "endLine": 12,
@@ -487,6 +492,7 @@ exports[`IR snapshots (corpus) > export-star-chain 1`] = `
       "isDefault": false,
       "kind": "symbol",
       "local": true,
+      "localNameKind": "Name",
       "span": {
         "end": 58,
         "endLine": 3,
@@ -502,6 +508,7 @@ exports[`IR snapshots (corpus) > export-star-chain 1`] = `
       "isDefault": false,
       "kind": "symbol",
       "local": true,
+      "localNameKind": "Name",
       "span": {
         "end": 198,
         "endLine": 8,
@@ -722,6 +729,7 @@ exports[`IR snapshots (corpus) > re-export-chain 1`] = `
       "isDefault": false,
       "kind": "symbol",
       "local": true,
+      "localNameKind": "Name",
       "span": {
         "end": 60,
         "endLine": 3,
@@ -737,6 +745,7 @@ exports[`IR snapshots (corpus) > re-export-chain 1`] = `
       "isDefault": false,
       "kind": "symbol",
       "local": true,
+      "localNameKind": "Name",
       "span": {
         "end": 56,
         "endLine": 3,
@@ -824,6 +833,7 @@ exports[`IR snapshots (corpus) > side-effect-import 1`] = `
       "isDefault": false,
       "kind": "symbol",
       "local": true,
+      "localNameKind": "Name",
       "span": {
         "end": 324,
         "endLine": 8,
@@ -982,6 +992,7 @@ exports[`IR snapshots (corpus) > string-computed-import 1`] = `
       "isDefault": false,
       "kind": "symbol",
       "local": true,
+      "localNameKind": "Name",
       "span": {
         "end": 51,
         "endLine": 3,
@@ -997,6 +1008,7 @@ exports[`IR snapshots (corpus) > string-computed-import 1`] = `
       "isDefault": false,
       "kind": "symbol",
       "local": true,
+      "localNameKind": "Name",
       "span": {
         "end": 50,
         "endLine": 3,
@@ -1012,6 +1024,7 @@ exports[`IR snapshots (corpus) > string-computed-import 1`] = `
       "isDefault": false,
       "kind": "symbol",
       "local": true,
+      "localNameKind": "Name",
       "span": {
         "end": 192,
         "endLine": 5,
@@ -1165,6 +1178,7 @@ exports[`IR snapshots (corpus) > tsconfig-paths-alias 1`] = `
       "isDefault": false,
       "kind": "symbol",
       "local": true,
+      "localNameKind": "Name",
       "span": {
         "end": 187,
         "endLine": 5,
@@ -1180,6 +1194,7 @@ exports[`IR snapshots (corpus) > tsconfig-paths-alias 1`] = `
       "isDefault": false,
       "kind": "symbol",
       "local": true,
+      "localNameKind": "Name",
       "span": {
         "end": 274,
         "endLine": 6,
@@ -1195,6 +1210,7 @@ exports[`IR snapshots (corpus) > tsconfig-paths-alias 1`] = `
       "isDefault": false,
       "kind": "symbol",
       "local": true,
+      "localNameKind": "Name",
       "span": {
         "end": 493,
         "endLine": 12,

@@ -1,0 +1,6 @@
+{
+  "name": "fixture-audio-worklet-public-asset",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts"
+}

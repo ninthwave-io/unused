@@ -1,10 +1,118 @@
 import { describe, expect, it } from "vitest";
-import type { SubjectKind, Verdict } from "./types.js";
+import type {
+  DeletionPlan,
+  DeletionPlanConsequenceSubject,
+  DeletionPlanStage,
+  DeletionPlanSubject,
+  SubjectKind,
+  Verdict,
+} from "./types.js";
 import { isValidKindVerdict, KIND_VERDICTS, SCHEMA_VERSION } from "./types.js";
 
 describe("SCHEMA_VERSION", () => {
-  it("is 1.1.0 — T5.3's additive summary.zombieTests field is a MINOR bump (ADR 0006)", () => {
-    expect(SCHEMA_VERSION).toBe("1.1.0");
+  it("is 1.2.0 — ADR 0012's additive planning and suppression fields are a MINOR bump", () => {
+    expect(SCHEMA_VERSION).toBe("1.2.0");
+  });
+});
+
+describe("DeletionPlan type contract", () => {
+  it("keeps subject and supported-state variants discriminated", () => {
+    const subject: DeletionPlanSubject = {
+      kind: "export",
+      file: "src/origin.ts",
+      name: "thing",
+    };
+    const plan: DeletionPlan = {
+      schemaVersion: "1.2.0",
+      selected: subject,
+      supported: false,
+      unsupportedReason: "not modeled",
+      reExportEdits: [],
+      stages: [],
+    };
+    const consequence: DeletionPlanConsequenceSubject = {
+      kind: "file",
+      file: "src/orphan.ts",
+    };
+    expect(plan.supported).toBe(false);
+    expect(consequence.kind).toBe("file");
+
+    // @ts-expect-error Export subjects require a name, matching the JSON Schema.
+    const missingExportName: DeletionPlanSubject = { kind: "export", file: "src/origin.ts" };
+    // @ts-expect-error Unsupported plans require a non-empty reason structurally.
+    const missingUnsupportedReason: DeletionPlan = {
+      schemaVersion: "1.2.0",
+      selected: subject,
+      supported: false,
+      reExportEdits: [],
+      stages: [],
+    };
+    const dependencyConsequence: DeletionPlanConsequenceSubject = {
+      // @ts-expect-error Dependencies are selections, never newly-dead graph consequences.
+      kind: "dependency",
+      file: "package.json",
+      name: "some-package",
+    };
+    const stageWithDependency: DeletionPlanStage = {
+      stage: 1,
+      newlyDead: [
+        {
+          // @ts-expect-error Stage consequences are restricted to graph export/file subjects.
+          kind: "dependency",
+          file: "package.json",
+          name: "some-package",
+        },
+      ],
+    };
+    // @ts-expect-error Dependency deletion cannot be represented as a supported graph plan.
+    const supportedDependency: DeletionPlan = {
+      schemaVersion: "1.2.0",
+      selected: { kind: "dependency", file: "package.json", name: "some-package" },
+      supported: true,
+      reExportEdits: [],
+      stages: [],
+    };
+    // @ts-expect-error Unsupported plans cannot claim required source edits.
+    const unsupportedWithEdit: DeletionPlan = {
+      schemaVersion: "1.2.0",
+      selected: subject,
+      supported: false,
+      unsupportedReason: "not modeled",
+      reExportEdits: [
+        {
+          kind: "remove-re-export" as const,
+          file: "src/api.ts",
+          line: 1,
+          targetFile: "src/origin.ts",
+          site: {
+            file: "src/api.ts",
+            span: { start: 0, end: 1, startLine: 1, endLine: 1 },
+          },
+        },
+      ],
+      stages: [],
+    };
+    // @ts-expect-error Unsupported plans cannot claim graph-derived stages.
+    const unsupportedWithStage: DeletionPlan = {
+      schemaVersion: "1.2.0",
+      selected: subject,
+      supported: false,
+      unsupportedReason: "not modeled",
+      reExportEdits: [],
+      stages: [
+        {
+          stage: 1,
+          newlyDead: [{ kind: "file" as const, file: "src/orphan.ts" }],
+        },
+      ],
+    };
+    expect(missingExportName.kind).toBe("export");
+    expect(missingUnsupportedReason.supported).toBe(false);
+    expect(dependencyConsequence.kind).toBe("dependency");
+    expect(stageWithDependency.newlyDead).toHaveLength(1);
+    expect(supportedDependency.supported).toBe(true);
+    expect(unsupportedWithEdit.reExportEdits).toHaveLength(1);
+    expect(unsupportedWithStage.stages).toHaveLength(1);
   });
 });
 

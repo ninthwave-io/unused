@@ -67,20 +67,27 @@ import { realpathSync } from "node:fs";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
-import { whyAlive } from "../core/analysis/index.js";
 import {
+  computeDeletionPlan,
+  surfaceNameHasUniqueOrigin,
+  whyAlive,
+} from "../core/analysis/index.js";
+import {
+  type Claim,
   type Confidence,
+  type DeletionPlan,
   diffAgainstBaseline,
   ID_VERSION,
   type SubjectKind,
 } from "../core/claims/index.js";
-import { analyzeProjectAuto } from "../frontends/dispatch.js";
-import { ElixirFrontendError } from "../frontends/elixir/index.js";
+import { fileId, type IRGraph, symbolId } from "../core/ir/index.js";
 import {
-  type AnalyzeResult,
-  type AnalyzeWithGraph,
-  analyzeProjectWithGraph,
-} from "../frontends/ts/analyze.js";
+  type AnalyzeAutoWithGraph,
+  analyzeProjectAuto,
+  analyzeProjectAutoWithGraph,
+} from "../frontends/dispatch.js";
+import { ElixirFrontendError } from "../frontends/elixir/index.js";
+import type { AnalyzeResult } from "../frontends/ts/analyze.js";
 import {
   BaselineError,
   type BaselineHeader,
@@ -104,6 +111,7 @@ import {
   renderBadgeJson,
   renderBlessSummary,
   renderCheckReport,
+  renderDeletionPlan,
   renderHelp,
   renderReportConfirmation,
   renderReportHtml,
@@ -113,6 +121,7 @@ import {
   renderWhy,
   type TtyLayout,
 } from "../reporters/index.js";
+import { applyFixes, type BlockedFix, type FixType, type RequiredReExportFix } from "./fix.js";
 
 const EXIT_OK = 0;
 const EXIT_GATE_FAILURE = 1;
@@ -147,6 +156,7 @@ const NO_ENTRYPOINTS_WARNING =
 
 const VALID_KINDS: readonly SubjectKind[] = ["export", "file", "dependency", "endpoint", "test"];
 const VALID_CONFIDENCE: readonly Confidence[] = ["high", "medium", "low"];
+const VALID_FIX_TYPES: readonly FixType[] = ["exports", "dependencies", "files"];
 
 interface ParsedArgs {
   readonly help: boolean;
@@ -158,6 +168,10 @@ interface ParsedArgs {
   readonly minConfidence?: Confidence;
   readonly all: boolean;
   readonly showSuppressed: boolean;
+  readonly fix: boolean;
+  readonly fixTypes: readonly FixType[];
+  readonly allowRemoveFiles: boolean;
+  readonly noGitignore: boolean;
   readonly noColor: boolean;
 }
 
@@ -171,6 +185,10 @@ const HELP_ARGS: ParsedArgs = {
   filterKinds: [],
   all: false,
   showSuppressed: false,
+  fix: false,
+  fixTypes: [],
+  allowRemoveFiles: false,
+  noGitignore: false,
   noColor: false,
 };
 
@@ -190,9 +208,13 @@ function parseArgs(argv: readonly string[]): ParseResult {
   let sarif: string | undefined;
   let all = false;
   let showSuppressed = false;
+  let fix = false;
+  let allowRemoveFiles = false;
+  let noGitignore = false;
   let noColor = false;
   let minConfidence: Confidence | undefined;
   const filterKinds: SubjectKind[] = [];
+  const fixTypes: FixType[] = [];
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i] as string;
@@ -204,6 +226,40 @@ function parseArgs(argv: readonly string[]): ParseResult {
       all = true;
     } else if (arg === "--show-suppressed") {
       showSuppressed = true;
+    } else if (arg === "--fix") {
+      fix = true;
+    } else if (arg === "--fix-type") {
+      const value = argv[i + 1];
+      if (value === undefined) {
+        return {
+          ok: false,
+          message: `--fix-type requires a type argument (valid: ${VALID_FIX_TYPES.join(", ")})`,
+        };
+      }
+      const tokens = value
+        .split(",")
+        .map((item) => item.trim())
+        .filter((token) => token !== "");
+      if (tokens.length === 0) {
+        return {
+          ok: false,
+          message: `--fix-type requires at least one type (valid: ${VALID_FIX_TYPES.join(", ")})`,
+        };
+      }
+      for (const token of tokens) {
+        if (!(VALID_FIX_TYPES as readonly string[]).includes(token)) {
+          return {
+            ok: false,
+            message: `invalid --fix-type value: "${token}" (valid: ${VALID_FIX_TYPES.join(", ")})`,
+          };
+        }
+        fixTypes.push(token as FixType);
+      }
+      i += 1;
+    } else if (arg === "--allow-remove-files") {
+      allowRemoveFiles = true;
+    } else if (arg === "--no-gitignore") {
+      noGitignore = true;
     } else if (arg === "--no-color") {
       noColor = true;
     } else if (arg === "--cwd") {
@@ -269,6 +325,10 @@ function parseArgs(argv: readonly string[]): ParseResult {
       json,
       all,
       showSuppressed,
+      fix,
+      fixTypes,
+      allowRemoveFiles,
+      noGitignore,
       noColor,
       filterKinds,
       ...(cwd === undefined ? {} : { cwd }),
@@ -311,6 +371,7 @@ type AnalysisOutcome =
 async function runAnalysis(
   cwdArg: string | undefined,
   configArg: string | undefined,
+  noGitignore = false,
 ): Promise<AnalysisOutcome> {
   const root = resolvePath(process.cwd(), cwdArg ?? ".");
 
@@ -326,10 +387,10 @@ async function runAnalysis(
   }
 
   try {
-    const result = await analyzeProjectAuto(
-      root,
-      configArg === undefined ? {} : { configPath: configArg },
-    );
+    const result = await analyzeProjectAuto(root, {
+      ...(configArg === undefined ? {} : { configPath: configArg }),
+      ...(noGitignore ? { gitignore: false } : {}),
+    });
     return { ok: true, root, result };
   } catch (err) {
     // A config/usage problem (T4.3: missing --config target, malformed
@@ -362,6 +423,7 @@ interface SubcommandArgs {
   readonly help: boolean;
   readonly cwd?: string;
   readonly config?: string;
+  readonly noGitignore: boolean;
 }
 
 type SubcommandParseResult =
@@ -373,11 +435,12 @@ function parseSubcommandArgs(
   commandName: "check" | "baseline" | "badge",
 ): SubcommandParseResult {
   if (argv.includes("--help") || argv.includes("-h")) {
-    return { ok: true, args: { help: true } };
+    return { ok: true, args: { help: true, noGitignore: false } };
   }
 
   let cwd: string | undefined;
   let config: string | undefined;
+  let noGitignore = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i] as string;
     if (arg === "--cwd") {
@@ -390,6 +453,8 @@ function parseSubcommandArgs(
       if (value === undefined) return { ok: false, message: "--config requires a path argument" };
       config = value;
       i += 1;
+    } else if (arg === "--no-gitignore") {
+      noGitignore = true;
     } else if (commandName === "check" && arg === "--min-confidence") {
       return {
         ok: false,
@@ -407,6 +472,7 @@ function parseSubcommandArgs(
     ok: true,
     args: {
       help: false,
+      noGitignore,
       ...(cwd === undefined ? {} : { cwd }),
       ...(config === undefined ? {} : { config }),
     },
@@ -428,7 +494,7 @@ async function runBaselineCommand(argv: readonly string[]): Promise<number> {
     return EXIT_OK;
   }
 
-  const outcome = await runAnalysis(parsed.args.cwd, parsed.args.config);
+  const outcome = await runAnalysis(parsed.args.cwd, parsed.args.config, parsed.args.noGitignore);
   if (!outcome.ok) return outcome.exitCode;
   const { root, result } = outcome;
 
@@ -473,7 +539,7 @@ async function runCheckCommand(argv: readonly string[]): Promise<number> {
     return EXIT_OK;
   }
 
-  const outcome = await runAnalysis(parsed.args.cwd, parsed.args.config);
+  const outcome = await runAnalysis(parsed.args.cwd, parsed.args.config, parsed.args.noGitignore);
   if (!outcome.ok) return outcome.exitCode;
   const { root, result } = outcome;
 
@@ -580,12 +646,13 @@ function semverMajor(version: string): number {
 // ---------------------------------------------------------------------------
 
 type GraphAnalysisOutcome =
-  | { readonly ok: true; readonly root: string; readonly analysis: AnalyzeWithGraph }
+  | { readonly ok: true; readonly root: string; readonly analysis: AnalyzeAutoWithGraph }
   | { readonly ok: false; readonly exitCode: number };
 
 async function runAnalysisWithGraph(
   cwdArg: string | undefined,
   configArg: string | undefined,
+  noGitignore = false,
 ): Promise<GraphAnalysisOutcome> {
   const root = resolvePath(process.cwd(), cwdArg ?? ".");
   try {
@@ -599,10 +666,10 @@ async function runAnalysisWithGraph(
     return { ok: false, exitCode: EXIT_ANALYSIS_ERROR };
   }
   try {
-    const analysis = await analyzeProjectWithGraph(
-      root,
-      configArg === undefined ? {} : { configPath: configArg },
-    );
+    const analysis = await analyzeProjectAutoWithGraph(root, {
+      ...(configArg === undefined ? {} : { configPath: configArg }),
+      ...(noGitignore ? { gitignore: false } : {}),
+    });
     return { ok: true, root, analysis };
   } catch (err) {
     if (err instanceof ConfigError) {
@@ -610,7 +677,9 @@ async function runAnalysisWithGraph(
       return { ok: false, exitCode: EXIT_USAGE_ERROR };
     }
     const message = err instanceof Error ? err.message : String(err);
-    const prefix = err instanceof UnsupportedProjectError ? "unused:" : "unused: analysis failed:";
+    const plainRefusal =
+      err instanceof UnsupportedProjectError || err instanceof ElixirFrontendError;
+    const prefix = plainRefusal ? "unused:" : "unused: analysis failed:";
     process.stderr.write(`${prefix} ${message}\n`);
     return { ok: false, exitCode: EXIT_ANALYSIS_ERROR };
   }
@@ -625,6 +694,9 @@ interface WhyArgs {
   readonly subject?: string;
   readonly cwd?: string;
   readonly config?: string;
+  readonly delete: boolean;
+  readonly json: boolean;
+  readonly noGitignore: boolean;
 }
 
 type WhyParseResult =
@@ -633,11 +705,16 @@ type WhyParseResult =
 
 /** Parse `unused why` argv: one positional `<symbol|file>` plus `--cwd`/`--config`/`--help`. */
 function parseWhyArgs(argv: readonly string[]): WhyParseResult {
-  if (argv.includes("--help") || argv.includes("-h")) return { ok: true, args: { help: true } };
+  if (argv.includes("--help") || argv.includes("-h")) {
+    return { ok: true, args: { help: true, delete: false, json: false, noGitignore: false } };
+  }
 
   let subject: string | undefined;
   let cwd: string | undefined;
   let config: string | undefined;
+  let deletePlan = false;
+  let json = false;
+  let noGitignore = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i] as string;
     if (arg === "--cwd") {
@@ -650,6 +727,12 @@ function parseWhyArgs(argv: readonly string[]): WhyParseResult {
       if (value === undefined) return { ok: false, message: "--config requires a path argument" };
       config = value;
       i += 1;
+    } else if (arg === "--no-gitignore") {
+      noGitignore = true;
+    } else if (arg === "--delete") {
+      deletePlan = true;
+    } else if (arg === "--json") {
+      json = true;
     } else if (arg.startsWith("-")) {
       return { ok: false, message: `unknown argument: ${arg}` };
     } else if (subject === undefined) {
@@ -666,6 +749,9 @@ function parseWhyArgs(argv: readonly string[]): WhyParseResult {
     ok: true,
     args: {
       help: false,
+      delete: deletePlan,
+      json,
+      noGitignore,
       ...(subject === undefined ? {} : { subject }),
       ...(cwd === undefined ? {} : { cwd }),
       ...(config === undefined ? {} : { config }),
@@ -693,12 +779,20 @@ async function runWhyCommand(argv: readonly string[]): Promise<number> {
   }
   if (parsed.args.subject === undefined) {
     process.stderr.write(
-      "unused: why requires a symbol or file argument. Usage: unused why <symbol|file>\n",
+      "unused: why requires a symbol, file, or dependency argument. Usage: unused why <subject>\n",
     );
     return EXIT_USAGE_ERROR;
   }
+  if (parsed.args.json && !parsed.args.delete) {
+    process.stderr.write("unused: why --json is available with --delete only\n");
+    return EXIT_USAGE_ERROR;
+  }
 
-  const outcome = await runAnalysisWithGraph(parsed.args.cwd, parsed.args.config);
+  const outcome = await runAnalysisWithGraph(
+    parsed.args.cwd,
+    parsed.args.config,
+    parsed.args.noGitignore,
+  );
   if (!outcome.ok) return outcome.exitCode;
   const { analysis } = outcome;
 
@@ -715,6 +809,27 @@ async function runWhyCommand(argv: readonly string[]): Promise<number> {
     // not a successful answer. The message still teaches the fix (cli-ux §6).
     process.stderr.write(renderWhy(result, ascii));
     return EXIT_USAGE_ERROR;
+  }
+  if (parsed.args.delete && parsed.args.json && result.outcome === "ambiguous") {
+    const firstCandidate = result.candidates[0];
+    process.stderr.write(
+      `unused: why --delete --json requires one unambiguous subject; "${result.query}" matched ${result.candidates.length}.` +
+        (firstCandidate === undefined
+          ? "\n"
+          : ` Re-run with: unused why --delete --json ${firstCandidate.label}\n`),
+    );
+    return EXIT_USAGE_ERROR;
+  }
+  if (parsed.args.delete && (result.outcome === "alive" || result.outcome === "dead")) {
+    const plan = computeDeletionPlan({
+      graph: analysis.graph,
+      reachability: analysis.reachability,
+      subject: result.subject,
+    });
+    process.stdout.write(
+      parsed.args.json ? `${JSON.stringify(plan)}\n` : renderDeletionPlan(plan, ascii),
+    );
+    return EXIT_OK;
   }
   process.stdout.write(renderWhy(result, ascii));
   return EXIT_OK;
@@ -737,6 +852,7 @@ async function runMcpCommand(argv: readonly string[]): Promise<number> {
   return runMcpServer({
     ...(parsed.args.cwd === undefined ? {} : { cwd: parsed.args.cwd }),
     ...(parsed.args.config === undefined ? {} : { config: parsed.args.config }),
+    ...(parsed.args.noGitignore ? { gitignore: false } : {}),
   });
 }
 
@@ -749,6 +865,7 @@ interface ReportArgs {
   readonly format?: ReportFormat;
   readonly cwd?: string;
   readonly config?: string;
+  readonly noGitignore: boolean;
 }
 
 type ReportParseResult =
@@ -757,11 +874,14 @@ type ReportParseResult =
 
 /** Parse `unused report` argv: `--md`/`--html` (mutually exclusive, default `md`) plus `--cwd`/`--config`/`--help`. */
 function parseReportArgs(argv: readonly string[]): ReportParseResult {
-  if (argv.includes("--help") || argv.includes("-h")) return { ok: true, args: { help: true } };
+  if (argv.includes("--help") || argv.includes("-h")) {
+    return { ok: true, args: { help: true, noGitignore: false } };
+  }
 
   let format: ReportFormat | undefined;
   let cwd: string | undefined;
   let config: string | undefined;
+  let noGitignore = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i] as string;
     if (arg === "--md" || arg === "--html") {
@@ -780,6 +900,8 @@ function parseReportArgs(argv: readonly string[]): ReportParseResult {
       if (value === undefined) return { ok: false, message: "--config requires a path argument" };
       config = value;
       i += 1;
+    } else if (arg === "--no-gitignore") {
+      noGitignore = true;
     } else {
       return { ok: false, message: `unknown argument: ${arg}` };
     }
@@ -789,6 +911,7 @@ function parseReportArgs(argv: readonly string[]): ReportParseResult {
     ok: true,
     args: {
       help: false,
+      noGitignore,
       ...(format === undefined ? {} : { format }),
       ...(cwd === undefined ? {} : { cwd }),
       ...(config === undefined ? {} : { config }),
@@ -816,9 +939,14 @@ async function runReportCommand(argv: readonly string[]): Promise<number> {
     return EXIT_OK;
   }
 
-  const outcome = await runAnalysis(parsed.args.cwd, parsed.args.config);
+  const outcome = await runAnalysisWithGraph(
+    parsed.args.cwd,
+    parsed.args.config,
+    parsed.args.noGitignore,
+  );
   if (!outcome.ok) return outcome.exitCode;
-  const { root, result } = outcome;
+  const { root, analysis } = outcome;
+  const { result } = analysis;
 
   const format: ReportFormat = parsed.args.format ?? "md";
   // Same six-field strip the default report/`--json` path uses (T2.5/T6.1) —
@@ -835,10 +963,59 @@ async function runReportCommand(argv: readonly string[]): Promise<number> {
     ...claimRun
   } = result;
 
+  const deletionPlans: Record<string, DeletionPlan> = {};
+  for (const claim of result.claims) {
+    if (
+      claim.verdict !== "unused" ||
+      claim.suppression !== undefined ||
+      claim.confidence === "low"
+    ) {
+      continue;
+    }
+    if (
+      claim.subject.kind !== "export" &&
+      claim.subject.kind !== "file" &&
+      claim.subject.kind !== "dependency"
+    ) {
+      continue;
+    }
+    deletionPlans[claim.id] = computeDeletionPlan({
+      graph: analysis.graph,
+      reachability: analysis.reachability,
+      subject:
+        claim.subject.kind === "export"
+          ? {
+              kind: "export",
+              file: claim.subject.loc.file,
+              name: claim.subject.name,
+              line: claim.subject.loc.span[0],
+            }
+          : claim.subject.kind === "dependency"
+            ? {
+                kind: "dependency",
+                file: claim.subject.loc.file,
+                name: claim.subject.name,
+              }
+            : { kind: "file", file: claim.subject.loc.file },
+    });
+  }
+
   const content =
     format === "html"
-      ? renderReportHtml({ run: claimRun, repoName, fileCount, workspaceCount })
-      : renderReportMarkdown({ run: claimRun, repoName, fileCount, workspaceCount });
+      ? renderReportHtml({
+          run: claimRun,
+          repoName,
+          fileCount,
+          workspaceCount,
+          deletionPlans,
+        })
+      : renderReportMarkdown({
+          run: claimRun,
+          repoName,
+          fileCount,
+          workspaceCount,
+          deletionPlans,
+        });
   const unusedDir = resolvePath(root, ".unused");
   const outPath = join(unusedDir, `report.${format}`);
 
@@ -871,7 +1048,7 @@ async function runBadgeCommand(argv: readonly string[]): Promise<number> {
     return EXIT_OK;
   }
 
-  const outcome = await runAnalysis(parsed.args.cwd, parsed.args.config);
+  const outcome = await runAnalysis(parsed.args.cwd, parsed.args.config, parsed.args.noGitignore);
   if (!outcome.ok) return outcome.exitCode;
   const { root, result } = outcome;
 
@@ -894,6 +1071,176 @@ async function runBadgeCommand(argv: readonly string[]): Promise<number> {
 // ---------------------------------------------------------------------------
 // Default report
 // ---------------------------------------------------------------------------
+
+/**
+ * Only re-export sites have a proven automatic rewrite in v0.1.0. Any
+ * ordinary inbound reference from another file blocks mutation rather than
+ * leaving a now-invalid import behind.
+ */
+function nonReExportInboundReason(graph: IRGraph, claim: Claim): string | undefined {
+  if (claim.subject.kind !== "export" && claim.subject.kind !== "file") return undefined;
+  const targetIds = new Set<string>();
+  const selectedTargetIds = new Set<string>();
+  const forwardedSurfaceNames = new Map<string, Set<string>>();
+  if (claim.subject.kind === "export") {
+    const selected = symbolId(claim.subject.loc.file, claim.subject.name);
+    targetIds.add(selected);
+    selectedTargetIds.add(selected);
+    const selectedFile = fileId(claim.subject.loc.file);
+    if (!surfaceNameHasUniqueOrigin(graph, selectedFile, claim.subject.name, targetIds)) {
+      addForwardedSurfaceName(forwardedSurfaceNames, selectedFile, claim.subject.name);
+    }
+  } else {
+    const selectedFile = fileId(claim.subject.loc.file);
+    targetIds.add(selectedFile);
+    selectedTargetIds.add(selectedFile);
+    for (const node of graph.nodes()) {
+      if (node.kind === "symbol" && node.file === claim.subject.loc.file) {
+        targetIds.add(node.id);
+        selectedTargetIds.add(node.id);
+      }
+    }
+  }
+
+  // A named or star re-export introduces a forwarding node. Removing the
+  // selected origin also removes that forwarding surface, so an ordinary
+  // consumer of any node in the reverse re-export closure must block the
+  // whole mutation just as a direct consumer would. This includes consumers
+  // in unreachable, excluded, and suppressed files: --fix must not leave
+  // invalid imports behind merely because those consumers have no live root.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const edge of graph.edges()) {
+      if (edge.kind !== "references" || edge.referenceKind !== "re-export") continue;
+      const source = graph.getNode(edge.from);
+      const surfaceNames = forwardedSurfaceNames.get(edge.to);
+      const forwardedNames =
+        surfaceNames === undefined
+          ? []
+          : edge.name === "*"
+            ? source?.kind === "file"
+              ? [...surfaceNames].filter((name) => name !== "default")
+              : [...surfaceNames]
+            : edge.name !== undefined && surfaceNames.has(edge.name)
+              ? [edge.name]
+              : [];
+      const exactTarget = graph.getNode(edge.to);
+      const exactMatch =
+        targetIds.has(edge.to) &&
+        !(
+          exactTarget?.kind === "symbol" &&
+          surfaceNameHasUniqueOrigin(
+            graph,
+            fileId(exactTarget.file),
+            exactTarget.exportedName,
+            targetIds,
+          )
+        );
+      if (!exactMatch && forwardedNames.length === 0) continue;
+
+      if (source?.kind === "symbol" && !targetIds.has(edge.from)) {
+        targetIds.add(edge.from);
+        changed = true;
+      }
+      if (source?.kind === "symbol") {
+        const sourceFile = fileId(source.file);
+        if (!surfaceNameHasUniqueOrigin(graph, sourceFile, source.exportedName, targetIds)) {
+          changed =
+            addForwardedSurfaceName(forwardedSurfaceNames, sourceFile, source.exportedName) ||
+            changed;
+        }
+      } else if (source?.kind === "file") {
+        if (exactMatch && !targetIds.has(source.id)) {
+          targetIds.add(source.id);
+          changed = true;
+        }
+        for (const name of forwardedNames) {
+          if (!surfaceNameHasUniqueOrigin(graph, source.id, name, targetIds)) {
+            changed = addForwardedSurfaceName(forwardedSurfaceNames, source.id, name) || changed;
+          }
+        }
+      }
+    }
+  }
+  const inbound = graph.edges().find((edge) => {
+    if (edge.kind !== "references" || edge.referenceKind === "re-export") return false;
+    if (targetIds.has(edge.to)) {
+      const target = graph.getNode(edge.to);
+      if (
+        target?.kind === "symbol" &&
+        surfaceNameHasUniqueOrigin(graph, fileId(target.file), target.exportedName, targetIds)
+      ) {
+        return false;
+      }
+      return !(selectedTargetIds.has(edge.to) && edge.site.file === graphNodeFile(graph, edge.to));
+    }
+    const names = forwardedSurfaceNames.get(edge.to);
+    if (names === undefined || edge.referenceKind === "side-effect") return false;
+    return edge.name === undefined || edge.name === "*" || names.has(edge.name);
+  });
+  return inbound === undefined
+    ? undefined
+    : `non-re-export inbound reference remains at ${inbound.site.file}:${inbound.site.span.startLine}`;
+}
+
+function addForwardedSurfaceName(
+  namesByFile: Map<string, Set<string>>,
+  fileNodeId: string,
+  name: string,
+): boolean {
+  const names = namesByFile.get(fileNodeId);
+  if (names === undefined) {
+    namesByFile.set(fileNodeId, new Set([name]));
+    return true;
+  }
+  const previousSize = names.size;
+  names.add(name);
+  return names.size !== previousSize;
+}
+
+function graphNodeFile(graph: IRGraph, nodeId: string): string | undefined {
+  const node = graph.getNode(nodeId);
+  if (node?.kind === "file") return node.path;
+  if (node?.kind === "symbol") return node.file;
+  if (node?.kind === "entrypoint") return node.file;
+  return undefined;
+}
+
+function claimFixType(claim: Claim): FixType | undefined {
+  if (claim.subject.kind === "export") return "exports";
+  if (claim.subject.kind === "dependency") return "dependencies";
+  if (claim.subject.kind === "file") return "files";
+  return undefined;
+}
+
+function eligibleFixClaims(
+  claims: readonly Claim[],
+  fixTypes: ReadonlySet<FixType>,
+): readonly Claim[] {
+  return claims.filter((claim) => {
+    const type = claimFixType(claim);
+    return (
+      type !== undefined &&
+      fixTypes.has(type) &&
+      claim.verdict === "unused" &&
+      claim.confidence === "high" &&
+      claim.suppression === undefined
+    );
+  });
+}
+
+function renderFrozenFixSummary(claims: readonly Claim[], fixTypes: ReadonlySet<FixType>): string {
+  const counts = new Map<FixType, number>(VALID_FIX_TYPES.map((type) => [type, 0]));
+  for (const claim of claims) {
+    const type = claimFixType(claim);
+    if (type !== undefined) counts.set(type, (counts.get(type) ?? 0) + 1);
+  }
+  const selected = VALID_FIX_TYPES.filter((type) => fixTypes.has(type));
+  return `unused --fix: frozen eligible set: ${selected
+    .map((type) => `${type}=${counts.get(type) ?? 0}`)
+    .join(", ")}.\n`;
+}
 
 /**
  * Runs the CLI over `argv` and returns the process exit code. Split from
@@ -925,9 +1272,157 @@ export async function run(argv: readonly string[]): Promise<number> {
     return EXIT_OK;
   }
 
-  const outcome = await runAnalysis(parsed.args.cwd, parsed.args.config);
+  const fixTypes = new Set<FixType>(
+    parsed.args.fixTypes.length > 0 ? parsed.args.fixTypes : ["exports", "dependencies"],
+  );
+  if (!parsed.args.fix && (parsed.args.fixTypes.length > 0 || parsed.args.allowRemoveFiles)) {
+    process.stderr.write("unused: --fix-type and --allow-remove-files require --fix\n");
+    return EXIT_USAGE_ERROR;
+  }
+  if (parsed.args.fix && (parsed.args.json || parsed.args.sarif !== undefined)) {
+    process.stderr.write(
+      "unused: --fix cannot be combined with --json or --sarif; review mutations in the working tree\n",
+    );
+    return EXIT_USAGE_ERROR;
+  }
+  if (
+    parsed.args.fix &&
+    (parsed.args.filterKinds.length > 0 ||
+      parsed.args.minConfidence !== undefined ||
+      parsed.args.all ||
+      parsed.args.showSuppressed)
+  ) {
+    process.stderr.write(
+      "unused: --filter, --min-confidence, --all, and --show-suppressed are report-only; use --fix-type to restrict mutations\n",
+    );
+    return EXIT_USAGE_ERROR;
+  }
+  if (parsed.args.fix && parsed.args.allowRemoveFiles && !fixTypes.has("files")) {
+    process.stderr.write(
+      "unused: --allow-remove-files also requires --fix-type files (file deletion has two opt-ins)\n",
+    );
+    return EXIT_USAGE_ERROR;
+  }
+  if (parsed.args.fix && fixTypes.has("files") && !parsed.args.allowRemoveFiles) {
+    process.stderr.write(
+      "unused: --fix-type files requires --allow-remove-files (file deletion has two opt-ins)\n",
+    );
+    return EXIT_USAGE_ERROR;
+  }
+
+  const outcome = await runAnalysis(parsed.args.cwd, parsed.args.config, parsed.args.noGitignore);
   if (!outcome.ok) return outcome.exitCode;
-  const { result } = outcome;
+  let { result } = outcome;
+
+  if (parsed.args.fix) {
+    try {
+      // Re-run through the graph-bearing entry point so every source/file
+      // mutation is coordinated with the exact re-export edits captured by
+      // its deletion plan. This is still one frozen pre-mutation claim set.
+      const graphOutcome = await runAnalysisWithGraph(
+        parsed.args.cwd,
+        parsed.args.config,
+        parsed.args.noGitignore,
+      );
+      if (!graphOutcome.ok) return graphOutcome.exitCode;
+      result = graphOutcome.analysis.result;
+      const initialEligible = eligibleFixClaims(result.claims, fixTypes);
+      const initialEligibleIds = new Set(initialEligible.map((claim) => claim.id));
+      const requiredReExports: RequiredReExportFix[] = [];
+      const blockedClaims: BlockedFix[] = [];
+      for (const claim of result.claims) {
+        if (
+          claim.verdict !== "unused" ||
+          claim.confidence !== "high" ||
+          claim.suppression !== undefined ||
+          (claim.subject.kind !== "export" && claim.subject.kind !== "file")
+        ) {
+          continue;
+        }
+        const type: "exports" | "files" = claim.subject.kind === "export" ? "exports" : "files";
+        if (!fixTypes.has(type)) continue;
+        const inboundReason = nonReExportInboundReason(graphOutcome.analysis.graph, claim);
+        if (inboundReason !== undefined) {
+          blockedClaims.push({
+            claimId: claim.id,
+            type,
+            file: claim.subject.loc.file,
+            reason: inboundReason,
+          });
+          continue;
+        }
+        const plan = computeDeletionPlan({
+          graph: graphOutcome.analysis.graph,
+          reachability: graphOutcome.analysis.reachability,
+          subject:
+            claim.subject.kind === "export"
+              ? {
+                  kind: "export",
+                  file: claim.subject.loc.file,
+                  name: claim.subject.name,
+                  line: claim.subject.loc.span[0],
+                }
+              : { kind: "file", file: claim.subject.loc.file },
+        });
+        if (!plan.supported) {
+          blockedClaims.push({
+            claimId: claim.id,
+            type,
+            file: claim.subject.loc.file,
+            reason: `deletion plan unsupported: ${plan.unsupportedReason ?? "unknown reason"}`,
+          });
+          continue;
+        }
+        for (const edit of plan.reExportEdits) {
+          requiredReExports.push({
+            claimId: claim.id,
+            type,
+            file: edit.file,
+            line: edit.line,
+            ...(edit.exportedName === undefined ? {} : { exportedName: edit.exportedName }),
+          });
+        }
+      }
+      process.stdout.write(renderFrozenFixSummary(initialEligible, fixTypes));
+      const fixed = await applyFixes({
+        root: graphOutcome.root,
+        claims: result.claims,
+        types: fixTypes,
+        allowRemoveFiles: parsed.args.allowRemoveFiles,
+        requiredReExports,
+        blockedClaims,
+      });
+      for (const item of fixed.applied) {
+        process.stdout.write(`fixed ${item.type}: ${item.file} — ${item.detail}\n`);
+      }
+      for (const item of fixed.skipped) {
+        process.stdout.write(`skipped ${item.type}: ${item.file} — ${item.reason}\n`);
+      }
+
+      const after = await runAnalysis(parsed.args.cwd, parsed.args.config, parsed.args.noGitignore);
+      if (!after.ok) {
+        process.stderr.write(
+          "unused: fixes were written, but post-fix analysis failed; review the working-tree diff\n",
+        );
+        return after.exitCode;
+      }
+      result = after.result;
+      const remainingEligible = eligibleFixClaims(result.claims, fixTypes);
+      const newlyExposed = remainingEligible.filter(
+        (claim) => !initialEligibleIds.has(claim.id),
+      ).length;
+      process.stdout.write(
+        `unused --fix: ${fixed.applied.length} applied, ${fixed.skipped.length} skipped, ${remainingEligible.length} eligible claim${remainingEligible.length === 1 ? "" : "s"} remain, ${newlyExposed} newly exposed.\n`,
+      );
+      return EXIT_OK;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(
+        `unused: fix failed after possible working-tree changes: ${message}; review the diff\n`,
+      );
+      return EXIT_ANALYSIS_ERROR;
+    }
+  }
 
   // Strip the non-schema out-of-band fields before anything reaches
   // `--json`/SARIF — those two are the schema-valid claim-run contract,

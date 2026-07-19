@@ -4,7 +4,7 @@
  *
  * `__testfixtures__/config-regression/golden-*.json` were captured by running
  * `analyzeProject` on these exact corpus fixtures BEFORE any T4.3/T4.4 code
- * (config loading, `ignore`/`project`/`entry` scoping, preset auto-detection)
+ * (config loading, `project`/`entry` scoping, preset auto-detection)
  * existed — i.e. the actual pre-milestone output, not a re-derived
  * expectation. This test re-runs the POST-milestone `analyzeProject` (which
  * now always calls `loadConfig`/`filterFilesByConfig`/`activePresetsForUnit`

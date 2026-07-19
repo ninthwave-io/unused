@@ -1,6 +1,5 @@
-// Ignored via unused.config.jsonc's "ignore" — never discovered, never
-// parsed. Its computed dynamic import below must therefore never become a
-// hazard annotation, so it cannot cap src/mods/** at medium.
+// Suppressed via unused.config.jsonc, but still discovered and parsed. Its
+// computed dynamic import remains a hazard annotation in the reference graph.
 async function loadMod(name: string): Promise<{ run: () => string }> {
   return import(`./mods/${name}.js`);
 }

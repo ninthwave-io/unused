@@ -1,5 +1,5 @@
-// Dead code inside pkg-a: correctly capped to medium by pkg-a's own whole-package
-// computed-require hazard (it could be that require's runtime target).
+// Dead code inside pkg-a. The package's computed-require carrier is itself
+// unreachable, so this remains a high-confidence claim.
 export function deadA(): number {
   return 1;
 }

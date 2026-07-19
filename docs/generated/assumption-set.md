@@ -1,7 +1,7 @@
 <!-- GENERATED FILE — do not edit by hand. Regenerate with `pnpm run assumptions`.
      Source: packages/unused/src/core/analysis/assumption-set.ts + hazard-registry.ts. -->
 
-# Analysis assumption set (v1.6.0)
+# Analysis assumption set (v1.7.0)
 
 `unused`'s `high`-confidence verdicts hold under the assumptions enumerated
 here (PRD §4): `high` means "safe to act without re-deriving the reference
@@ -43,6 +43,10 @@ Resolution assumes a `node_modules` layout. Yarn PnP's `.pnp.cjs`/`.pnp.mjs` res
 
 Neither discovery nor resolution follows symlinks (`symlinks: false`): a symlinked directory is not descended and a symlinked file is not collected or `realpath()`-ed. This avoids cycles and escaping the project tree. Workspace members are resolved by package name (see above), so a symlinked monorepo layout is handled without following the symlink; a module reachable only through some other symlink still degrades toward alive (an outside-project keep-alive), never a confident dead claim.
 
+### Podfile token scanning prefers keep-alives over Ruby lexer guesses
+
+Native-config discovery recognizes exact literal Node commands in bare Ruby `system` calls and calls explicitly owned by `Kernel`. For Podfiles it inspects every receiver-eligible `system` token without carrying guessed quote, comment, percent-literal, regex, heredoc, interpolation, or `=begin`/`=end` state across the source; exact literal argv (or a single literal shell command) is still required. Ruby's lexical boundaries and malformed-file recovery are context-sensitive, so guessed state can hide an executable same-line or later call and produce a false dead claim. Consequently, an apparent literal call inside inert text or a comment may conservatively keep a dead script alive. This bounded recall loss is intentional: native configuration that cannot be disproved stays alive.
+
 ### Elixir analysis compiles the project (experimental frontend, ADR 0011)
 
 The Elixir frontend (experimental in v0.1.0) is the one place `unused` executes user code, and this is disclosed rather than hidden. Unlike the TypeScript frontend — which parses source and never runs it — obtaining a function-level reference graph for Elixir requires the real compiler: `mix xref` has been module/file-level only since Elixir 1.10 and structurally cannot answer whether a single function is unused, so the frontend injects a custom compiler tracer (`Code.put_compiler_option(:tracers, …)`) and runs `mix compile.elixir --force` in a child `mix` process rooted at the target project. That compiles (and therefore runs the compile-time code of) the project and its dependencies, and reflects over the resulting BEAM modules for the public-function surface. Consequences: Elixir and a fetched, compilable project are required — if `elixir`/`mix` is absent, the project's dependencies are not fetched, or `mix compile` fails, the frontend REFUSES with a clear message and a non-zero exit, never a silently-wrong answer. No network and no telemetry beyond what the project's own build performs; the tracer writes only to a temp file the analyzer reads back. A user who cannot or will not compile the project gets nothing from this frontend by design.
@@ -54,14 +58,17 @@ The Elixir reachability roots are the OTP application callback module (`mix.exs`
 ## Per-hazard downgrade clauses
 
 Each mechanism below is one where syntax cannot prove a reference absent
-(architecture.md §4). A subject inside a hazard's **scope** is capped at its
-**confidence cap** — or suppressed entirely when the cap is `no-claim` —
-never emitted as a confident `unused`. Scope kinds: `directory-subtree` (a
+(architecture.md §4). Its **activation** policy says whether it always applies
+or requires a carrier reachable from a root or an already-active dynamic scope.
+A subject inside an active hazard's **scope** is capped at its **confidence
+cap** — or suppressed entirely when the cap is `no-claim` — never emitted
+as a confident `unused`. Scope kinds: `directory-subtree` (a
 path-prefixed set of files), `file`, `symbol-set` (a file's exports only),
 `none` (provenance only, no claim effect).
 
 ### bin-only-dependency
 
+- **Activation:** always
 - **Scope:** none
 - **Confidence cap:** n/a (no claim effect)
 
@@ -69,6 +76,7 @@ A declared dependency whose installed package.json declares a `bin` field is a c
 
 ### capacitor-platform-dependency
 
+- **Activation:** always
 - **Scope:** none
 - **Confidence cap:** n/a (no claim effect)
 
@@ -76,6 +84,7 @@ In a Capacitor app (a `capacitor.config.{ts,js,mjs,cjs,json}` present at the wor
 
 ### checker-only-type-relationship
 
+- **Activation:** always
 - **Scope:** symbol-set
 - **Confidence cap:** no-claim
 
@@ -83,6 +92,7 @@ A file that participates in declaration merging — a `declare module '...'` aug
 
 ### computed-cjs-exports
 
+- **Activation:** always
 - **Scope:** symbol-set
 - **Confidence cap:** medium
 
@@ -90,20 +100,23 @@ A computed CommonJS export assignment (`module.exports[k] = …` / `exports[k] =
 
 ### computed-dynamic-import
 
+- **Activation:** carrier-reachable
 - **Scope:** directory-subtree
 - **Confidence cap:** medium
 
-A dynamic import() with a computed specifier may resolve, at runtime, to any module under the specifier's static prefix (or, when there is no static prefix, the importer's own workspace package — never the whole monorepo: a computed import in one package cannot reach a sibling package's private modules). Files in that scope cannot be proven unreferenced, so they are capped at medium confidence.
+When its carrier file is reachable from a production, config, test, or already-active dynamic-hazard scope, a dynamic import() with a computed specifier may resolve at runtime to any module under the specifier's static prefix (or, when there is no static prefix, the importer's own workspace package — never the whole monorepo: a computed import in one package cannot reach a sibling package's private modules). Files in that scope cannot be proven unreferenced, so they are capped at medium confidence. An unreachable carrier does not activate the hazard.
 
 ### computed-require
 
+- **Activation:** carrier-reachable
 - **Scope:** directory-subtree
 - **Confidence cap:** medium
 
-A require() with a computed (non-string-literal) argument may resolve, at runtime, to any module under the argument's static prefix (or, when there is no static prefix, the importer's own workspace package — never the whole monorepo: a computed require in one package cannot reach a sibling package's private modules). Files in that scope cannot be proven unreferenced, so they are capped at medium confidence.
+When its carrier file is reachable from a production, config, test, or already-active dynamic-hazard scope, a require() with a computed (non-string-literal) argument may resolve at runtime to any module under the argument's static prefix (or, when there is no static prefix, the importer's own workspace package — never the whole monorepo: a computed require in one package cannot reach a sibling package's private modules). Files in that scope cannot be proven unreferenced, so they are capped at medium confidence. An unreachable carrier does not activate the hazard.
 
 ### conditional-exports-divergence
 
+- **Activation:** always
 - **Scope:** file
 - **Confidence cap:** no-claim
 
@@ -111,6 +124,7 @@ A package.json `exports` entry that maps different targets under different condi
 
 ### config-named-dependency
 
+- **Activation:** always
 - **Scope:** none
 - **Confidence cap:** n/a (no claim effect)
 
@@ -118,6 +132,7 @@ A declared dependency whose name — or its conventional plugin/preset shorthand
 
 ### config-referenced-file
 
+- **Activation:** always
 - **Scope:** file
 - **Confidence cap:** medium
 
@@ -125,6 +140,7 @@ A source file named only as a string inside a project config file (e.g. a test r
 
 ### declaration-companion
 
+- **Activation:** always
 - **Scope:** none
 - **Confidence cap:** n/a (no claim effect)
 
@@ -132,6 +148,7 @@ The `.d.ts` companion of an imported source file: kept alive in the graph via a 
 
 ### elixir-behaviour-callback
 
+- **Activation:** always
 - **Scope:** symbol-set
 - **Confidence cap:** no-claim
 
@@ -139,13 +156,15 @@ An Elixir module that declares one or more behaviours (`@behaviour`, or `use Gen
 
 ### elixir-dynamic-dispatch
 
+- **Activation:** carrier-reachable
 - **Scope:** project
 - **Confidence cap:** medium
 
-A file that performs dynamic dispatch — `apply/2,3`, `Kernel.apply`, `:erlang.apply/3`, or a `Module.concat`/`String.to_atom`-computed module target — can invoke, at runtime, a module and function that no static reference names. The resolved target is structurally invisible to the compiler tracer and to `mix xref` alike (confirmed in the ADR 0011 research). Since the computed target could be any module in the application, the whole workspace unit that owns the dispatching file is capped at medium confidence rather than any claim being suppressed outright: code is still surfaced, but never at `high` (a confident 'delete this') while an `apply` that might reach it exists in the same unit. Precise per-target resolution is post-v1; until then the unit-wide medium cap is the honest, false-positive-proof downgrade.
+When its carrier file is reachable from a production, config, test, or already-active dynamic-hazard scope, a file that performs dynamic dispatch — `apply/2,3`, `Kernel.apply`, `:erlang.apply/3`, or a `Module.concat`/`String.to_atom`-computed module target — can invoke at runtime a module and function that no static reference names. The resolved target is structurally invisible to the compiler tracer and to `mix xref` alike (confirmed in the ADR 0011 research). Since the computed target could be any module in the application, the whole workspace unit that owns the dispatching file is capped at medium confidence rather than any claim being suppressed outright: code is still surfaced, but never at `high` (a confident 'delete this') while an active `apply` might reach it. An unreachable carrier does not activate the hazard. Precise per-target resolution is post-v1; until then the unit-wide medium cap is the honest, false-positive-proof downgrade.
 
 ### elixir-phoenix-runtime
 
+- **Activation:** always
 - **Scope:** symbol-set
 - **Confidence cap:** no-claim
 
@@ -153,6 +172,7 @@ A Phoenix/OTP runtime-dispatch module — a `Phoenix.LiveView`/`Phoenix.LiveComp
 
 ### emit-decorator-metadata
 
+- **Activation:** always
 - **Scope:** symbol-set
 - **Confidence cap:** medium
 
@@ -160,6 +180,7 @@ Under tsconfig `emitDecoratorMetadata`, a class carrying decorators has its cons
 
 ### export-assignment
 
+- **Activation:** always
 - **Scope:** none
 - **Confidence cap:** n/a (no claim effect)
 
@@ -167,6 +188,7 @@ TS `export = …` CJS interop: recorded for provenance (declaration merging etc.
 
 ### import-equals
 
+- **Activation:** always
 - **Scope:** none
 - **Confidence cap:** n/a (no claim effect)
 
@@ -174,6 +196,7 @@ TS `import x = require(...)` / `import x = A.B` CJS interop: the resolvable modu
 
 ### internal-declaration
 
+- **Activation:** always
 - **Scope:** none
 - **Confidence cap:** n/a (no claim effect)
 
@@ -181,6 +204,7 @@ A `.d.ts` declaration reached in place of a runtime module: kept alive in the gr
 
 ### jsx-runtime-dependency
 
+- **Activation:** always
 - **Scope:** none
 - **Confidence cap:** n/a (no claim effect)
 
@@ -188,6 +212,7 @@ JSX compiled with the automatic runtime (tsconfig `jsx: react-jsx`/`react-jsxdev
 
 ### outside-project
 
+- **Activation:** always
 - **Scope:** none
 - **Confidence cap:** n/a (no claim effect)
 
@@ -195,6 +220,7 @@ A specifier that resolves outside the analyzable project: the target is not a tr
 
 ### parse-error
 
+- **Activation:** always
 - **Scope:** file
 - **Confidence cap:** no-claim
 
@@ -202,6 +228,7 @@ A file the parser could not fully read: its references cannot be enumerated, so 
 
 ### project-references
 
+- **Activation:** always
 - **Scope:** directory-subtree
 - **Confidence cap:** medium
 
@@ -209,6 +236,7 @@ A tsconfig with `references` composes this project with sibling TypeScript proje
 
 ### unresolvable-entrypoint-target
 
+- **Activation:** always
 - **Scope:** project
 - **Confidence cap:** medium
 
@@ -216,6 +244,7 @@ One or more declared package.json entrypoint targets (`main`/`module`/`exports`/
 
 ### unresolvable-import
 
+- **Activation:** always
 - **Scope:** none
 - **Confidence cap:** n/a (no claim effect)
 

@@ -3,10 +3,16 @@
   // package.json "main" entrypoint below — it keeps its own import chain
   // (src/chained.ts) alive.
   "entry": ["src/extra-entry.ts"],
-  // Narrows analysis to src/**/*.ts — scripts/outside.ts is out of scope
-  // entirely (undiscovered), even though it too is a genuine orphan.
+  // Narrows claimability to src/**/*.ts. scripts/outside.ts remains in the
+  // graph but cannot itself receive a claim.
   "project": ["src/**/*.ts"],
-  // src/generated/skip.ts is undiscovered — never parsed, never claimed —
-  // even though it is also a genuine orphan. ignore wins over project/entry.
-  "ignore": ["src/generated/**"],
+  // Generated sources remain graph-visible, but their file/export claims are
+  // accepted policy debt and therefore marked as suppressed.
+  "suppressions": [
+    {
+      "files": ["src/generated/**"],
+      "kinds": ["file", "export"],
+      "reason": "generated source",
+    },
+  ],
 }

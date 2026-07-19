@@ -32,7 +32,7 @@
  * flagged; test-reachable-only is `test-only`; reachable-from-nothing is dead.
  */
 
-import type { Claim, Confidence, Evidence, Verdict } from "../claims/types.js";
+import type { Claim, Confidence, DeletionPlanSubject, Evidence, Verdict } from "../claims/types.js";
 import { type EntrypointKind, fileId, type IRGraph, symbolId } from "../ir/index.js";
 import { type PartitionedReachability, type Reachability, whyReachable } from "./reachability.js";
 
@@ -63,7 +63,7 @@ export interface WhyPath {
 
 /** One disambiguation candidate for a bare name that resolves to several subjects. */
 export interface WhyCandidate {
-  readonly kind: "export" | "file";
+  readonly kind: "export" | "file" | "dependency";
   /** How the caller can re-ask unambiguously: `src/foo.ts:bar` (export) or `src/foo.ts` (file). */
   readonly label: string;
   readonly file: string;
@@ -71,14 +71,7 @@ export interface WhyCandidate {
 }
 
 /** The resolved subject a why-answer is about. */
-export interface WhySubjectRef {
-  readonly kind: "export" | "file";
-  readonly file: string;
-  /** Export name — present iff `kind === "export"`. */
-  readonly name?: string;
-  /** 1-based declaration line — present iff `kind === "export"`. */
-  readonly line?: number;
-}
+export type WhySubjectRef = DeletionPlanSubject;
 
 /** A hazard class found near a dead subject — what the analyzer weighed before the verdict. */
 export interface WhyHazard {
@@ -153,7 +146,7 @@ const EVIDENCE_SOURCE = "reference-graph";
  */
 export function whyAlive(input: WhyAliveInput): WhyAliveResult {
   const { graph, reachability, claims, query } = input;
-  const resolution = resolveSubject(graph, query);
+  const resolution = resolveSubject(graph, claims, query);
 
   if (resolution.kind === "not-found") return { outcome: "not-found", query };
   if (resolution.kind === "ambiguous") {
@@ -161,6 +154,9 @@ export function whyAlive(input: WhyAliveInput): WhyAliveResult {
   }
 
   const { subject, nodeId } = resolution;
+  // Dependency claims come from manifest declarations and import evidence,
+  // rather than graph reachability. Return their captured evidence directly.
+  if (subject.kind === "dependency") return deadResult(query, subject, graph, claims);
   const isFile = subject.kind === "file";
 
   // Liveness by partition priority (production ▸ config ▸ test).
@@ -209,9 +205,49 @@ type Resolution =
  *     re-export entries of the same name; several declarations ⇒ ambiguous.
  *  4. a file path suffix (`currency.ts` → `src/utils/currency.ts`).
  */
-function resolveSubject(graph: IRGraph, query: string): Resolution {
+function resolveSubject(graph: IRGraph, claims: readonly Claim[], query: string): Resolution {
   const trimmed = query.trim();
   if (trimmed === "") return { kind: "not-found" };
+
+  // Resolve dependency claims before the `file:export` grammar. In a monorepo,
+  // candidate labels qualify the package with its workspace or manifest.
+  const dependencyCandidates = claims
+    .filter((claim) => claim.subject.kind === "dependency")
+    .map((claim) => {
+      const qualifier = claim.subject.loc.package ?? claim.subject.loc.file;
+      return {
+        kind: "dependency" as const,
+        label: `${qualifier}:${claim.subject.name}`,
+        file: claim.subject.loc.file,
+        name: claim.subject.name,
+      };
+    });
+  const qualifiedDependency = dependencyCandidates.find((candidate) => candidate.label === trimmed);
+  if (qualifiedDependency !== undefined) {
+    return {
+      kind: "resolved",
+      subject: {
+        kind: "dependency",
+        file: qualifiedDependency.file,
+        name: qualifiedDependency.name,
+      },
+      nodeId: `dependency:${qualifiedDependency.name}`,
+    };
+  }
+  const matchingDependencies = dependencyCandidates.filter(
+    (candidate) => candidate.name === trimmed,
+  );
+  if (matchingDependencies.length === 1) {
+    const only = matchingDependencies[0] as (typeof matchingDependencies)[number];
+    return {
+      kind: "resolved",
+      subject: { kind: "dependency", file: only.file, name: only.name },
+      nodeId: `dependency:${only.name}`,
+    };
+  }
+  if (matchingDependencies.length > 1) {
+    return { kind: "ambiguous", candidates: sortCandidates(matchingDependencies) };
+  }
 
   // (1) qualified `file:name`
   const colon = trimmed.lastIndexOf(":");
@@ -273,12 +309,13 @@ function resolveSubject(graph: IRGraph, query: string): Resolution {
   const nameIds = local.length > 0 ? localIds : forwardedIds;
   if (nameMatches.length === 1) {
     const only = nameMatches[0] as WhyCandidate;
+    if (only.name === undefined) return { kind: "not-found" };
     return {
       kind: "resolved",
       subject: {
         kind: "export",
         file: only.file,
-        ...(only.name !== undefined ? { name: only.name } : {}),
+        name: only.name,
         ...symbolLine(graph, nameIds.get(only.label)),
       },
       nodeId: nameIds.get(only.label) as string,
@@ -447,6 +484,13 @@ function findClaim(claims: readonly Claim[], subject: WhySubjectRef): Claim | un
   return claims.find((c) => {
     if (subject.kind === "file")
       return c.subject.kind === "file" && c.subject.loc.file === subject.file;
+    if (subject.kind === "dependency") {
+      return (
+        c.subject.kind === "dependency" &&
+        c.subject.name === subject.name &&
+        c.subject.loc.file === subject.file
+      );
+    }
     return (
       c.subject.kind === "export" &&
       c.subject.name === subject.name &&
@@ -457,7 +501,8 @@ function findClaim(claims: readonly Claim[], subject: WhySubjectRef): Claim | un
 
 /** A terse subject label for synthesised evidence text. */
 function subjectLabel(subject: WhySubjectRef): string {
-  return subject.kind === "file" ? `\`${subject.file}\`` : `\`${subject.name}\``;
+  if (subject.kind === "file") return `\`${subject.file}\``;
+  return `\`${subject.name}\``;
 }
 
 function normalizePath(p: string): string {

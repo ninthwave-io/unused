@@ -140,6 +140,8 @@ describe("renderReportMarkdown", () => {
     expect(text).not.toContain("oldHelper"); // low confidence
     expect(text).not.toContain("OrderMapper"); // test-only, not an immediate deletion
     expect(text).not.toContain("keepForNow"); // suppressed
+    expect(text).toContain("2 unused exports");
+    expect(text).toContain("1 suppressed (excluded from totals above)");
   });
 
   it("ranks top deletions by LOC descending", () => {
@@ -188,6 +190,28 @@ describe("renderReportMarkdown", () => {
 
   it("references the generated assumption-set doc", () => {
     expect(renderReportMarkdown(ctx)).toContain("docs/generated/assumption-set.md");
+  });
+
+  it("surfaces staged deletion consequences when plans are supplied", () => {
+    const text = renderReportMarkdown({
+      run: makeRun([formatCurrency]),
+      ...CTX_BASE,
+      deletionPlans: {
+        [formatCurrency.id]: {
+          schemaVersion: "1.2.0",
+          selected: {
+            kind: "export",
+            file: formatCurrency.subject.loc.file,
+            name: formatCurrency.subject.name,
+          },
+          supported: true,
+          reExportEdits: [],
+          stages: [{ stage: 1, newlyDead: [{ kind: "file", file: "src/legacy/currency.ts" }] }],
+        },
+      },
+    });
+    expect(text).toContain("## Deletion consequences");
+    expect(text).toContain("1 newly dead subject across 1 stage");
   });
 });
 

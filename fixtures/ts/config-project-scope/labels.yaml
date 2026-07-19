@@ -1,29 +1,23 @@
 case: config-project-scope
 description: >-
   unused.config.jsonc declares "project": ["src/**"], narrowing which files
-  may receive an "unused" claim without narrowing DISCOVERY (config.ts's
-  documented "project vs ignore" distinction — a reviewer-fixed
-  false-positive bug). scripts/build.ts sits outside the project scope and
-  imports src/helper.ts; src/orphan.ts is an in-scope, genuinely
-  unreferenced control. scripts/build.ts itself is deliberately NOT given a
-  label subject here: it is out of claimability scope (isClaimable() always
-  returns false for it, regardless of whether anything imports it), so
-  neither "alive" nor "dead" is the right ground truth for it — the harness
-  has no vocabulary for "unclaimable", and labelling it either way would
-  assert something the config contract does not promise.
+  may receive a claim without narrowing discovery. scripts/build.ts remains
+  parsed so its edge is present, but it is itself unreachable from every
+  root; under ADR 0012 an inbound edge from dead code does not make
+  src/helper.ts alive. scripts/build.ts is deliberately unlabelled because it
+  is outside claimability scope.
 subjects:
   - kind: file
     name: src/helper.ts
     file: src/helper.ts
-    expected: alive
+    expected: dead
+    minConfidence: high
     because: >-
       imported only by scripts/build.ts, a file outside the config
-      "project": ["src/**"] scope — but still discovered and parsed (project
-      narrows claimability, not visibility), so this import edge is a real
-      reference and src/helper.ts must not be flagged. The narrowing trap:
-      an analyzer that mistakenly treated "project" as narrowing discovery
-      (undiscovering scripts/build.ts entirely) would lose this edge and
-      wrongly claim src/helper.ts dead.
+      "project": ["src/**"] scope. The importer is still discovered and its
+      edge retained, but no production/config/test root reaches it. Complete
+      root reachability therefore classifies helper.ts as dead while keeping
+      graph evidence intact for counterfactual queries.
   - kind: file
     name: src/orphan.ts
     file: src/orphan.ts

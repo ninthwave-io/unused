@@ -1,6 +1,6 @@
 # unused — liveness oracle for software
 
-`unused` (unused.dev / unused.sh) tells engineering teams what code is truly unused — with graded confidence and provenance — so they, or their coding agents, can delete safely. **v1 is detection/analysis only: it never modifies code, never opens PRs.** Consumed via CLI report, `--json`, SARIF, CI gate mode, and an MCP server.
+`unused` (unused.dev / unused.sh) tells engineering teams what code is truly unused — with graded confidence and provenance — so they, or their coding agents, can delete safely. Analysis is read-only by default; ADR 0012 adds an explicit conservative `--fix` workflow which mutates the working tree but never stages, commits, or opens PRs for the user. Consumed via CLI report, `--json`, SARIF, CI gate mode, and an MCP server.
 
 ## The evidence ladder (claim tiers)
 1. **Static reachability** — unused exports/files/dependencies via reference-graph analysis. Deterministic, local, fast.

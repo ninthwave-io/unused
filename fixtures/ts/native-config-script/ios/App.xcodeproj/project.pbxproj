@@ -1,0 +1,8 @@
+{
+  /* shellScript = "node $(PROJECT_DIR)/../scripts/orphan.mjs"; */
+  name = "shellScript = node $(PROJECT_DIR)/../scripts/orphan.mjs";
+  shellScript = "node $(PROJECT_DIR)/../scripts/prepare-mobile.mjs # node $(PROJECT_DIR)/../scripts/orphan.mjs";
+  shellScript = "node ${SRCROOT}/../scripts/prepare-srcroot.mjs";
+  shellScript = "node $CUSTOM_SCRIPT_DIR/orphan.mjs";
+  shellScript = "$NODE_BINARY $(PROJECT_DIR)/../scripts/orphan.mjs";
+}

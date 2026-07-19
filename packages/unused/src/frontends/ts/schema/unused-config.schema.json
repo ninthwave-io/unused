@@ -12,11 +12,12 @@
     },
     "project": {
       "$ref": "#/$defs/globArray",
-      "description": "Glob patterns narrowing the analyzed file set. Absent = every discovered file is in scope."
+      "description": "Ordered glob patterns narrowing claimability while preserving graph visibility. A leading ! excludes a prior match; a later positive can re-include it. Absent = every discovered file is claimable."
     },
-    "ignore": {
-      "$ref": "#/$defs/globArray",
-      "description": "Glob patterns excluded from analysis entirely — an ignored file is never discovered, claimed, or a root."
+    "suppressions": {
+      "type": "array",
+      "description": "Auditable claim suppression policies. Files remain fully analyzed and continue contributing graph edges.",
+      "items": { "$ref": "#/$defs/suppressionRule" }
     },
     "ignoreDependencies": {
       "$ref": "#/$defs/globArray",
@@ -50,7 +51,31 @@
       "properties": {
         "entry": { "$ref": "#/$defs/globArray" },
         "project": { "$ref": "#/$defs/globArray" },
-        "ignore": { "$ref": "#/$defs/globArray" }
+        "suppressions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/suppressionRule" }
+        }
+      }
+    },
+    "suppressionRule": {
+      "type": "object",
+      "required": ["files", "kinds", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "kinds": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": ["export", "file", "dependency", "endpoint", "test"]
+          }
+        },
+        "reason": { "type": "string", "minLength": 1, "pattern": "\\S" }
       }
     },
     "gate": {
@@ -67,7 +92,7 @@
     },
     "preset": {
       "type": "string",
-      "enum": ["vite", "next"]
+      "enum": ["vite", "next", "storybook", "cdk"]
     }
   }
 }

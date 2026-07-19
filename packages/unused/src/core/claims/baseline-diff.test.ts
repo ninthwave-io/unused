@@ -104,7 +104,7 @@ describe("diffAgainstBaseline", () => {
     expect(diff.newSuppressedClaims.map((c) => c.id)).toEqual([suppressed.id]);
   });
 
-  it('a new REASONLESS suppression (/* unused:ignore */, reason: "") gates like an unsuppressed claim — not an escape hatch', () => {
+  it("defensively rejects a malformed programmatic Claim with a blank suppression reason", () => {
     const withoutReason = exportClaim("withoutReason", "src/legacy.ts", {
       suppression: { reason: "" },
     });

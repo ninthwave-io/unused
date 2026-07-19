@@ -26,9 +26,21 @@ const OPTIONS: ReadonlyArray<{ flag: string; lines: readonly string[] }> = [
   {
     flag: "--show-suppressed",
     lines: [
-      "List /* unused:ignore */ claims too (always counted either",
+      "List inline/config-suppressed claims too (always counted either",
       "way, never silently dropped).",
     ],
+  },
+  {
+    flag: "--fix",
+    lines: ["Apply reviewable high-confidence export/dependency fixes to the working tree."],
+  },
+  {
+    flag: "--fix-type <types>",
+    lines: ["Restrict fixes to exports, dependencies, or files (comma-separated)."],
+  },
+  {
+    flag: "--allow-remove-files",
+    lines: ["Second opt-in required with --fix-type files before deleting files."],
   },
   {
     flag: "--no-color",
@@ -36,6 +48,10 @@ const OPTIONS: ReadonlyArray<{ flag: string; lines: readonly string[] }> = [
       "Disable ANSI output. Also implied by a non-TTY stdout or",
       "the NO_COLOR environment variable.",
     ],
+  },
+  {
+    flag: "--no-gitignore",
+    lines: ["Analyse files matched by .gitignore rules too."],
   },
   {
     flag: "--config <path>",
@@ -63,19 +79,23 @@ function renderOptions(): string {
 export function renderHelp(): string {
   return `unused — liveness oracle for TS/JS. Finds unused exports, files, and
 dependencies, each with a confidence grade and a one-line reference-graph
-"why". Local-first, zero network calls, zero telemetry. Never modifies code.
+"why". Local-first, zero network calls, zero telemetry. Read-only unless
+--fix is explicitly supplied; never commits for you.
 
 USAGE
   unused [options]
   unused check [--cwd <dir>] [--config <path>]
   unused baseline [--cwd <dir>] [--config <path>]
-  unused why <symbol|file> [--cwd <dir>] [--config <path>]
+  unused why [--delete] <symbol|file|dependency> [--cwd <dir>] [--config <path>]
   unused mcp [--cwd <dir>] [--config <path>]
   unused report [--md|--html] [--cwd <dir>] [--config <path>]
   unused badge [--cwd <dir>] [--config <path>]
 
 COMMANDS
   unused              Analyse the repo, print the terminal report (default).
+                       With --fix, mutate only unsuppressed high-confidence
+                       unused exports/dependencies selected by the initial
+                       analysis, then re-analyse. Never commits or installs.
   unused check        CI gate: compare this run's claims against the
                        committed baseline, fail only on claims new since it
                        (PRD §3). Gated at config gate.threshold (default
@@ -83,10 +103,13 @@ COMMANDS
   unused baseline     Write/update .unused/baseline.jsonl (one per
                        workspace) and print what it blessed. Regenerate on
                        main only — never on a feature branch.
-  unused why          Explain why a symbol or file is alive (the shortest
+  unused why          Explain why a symbol, file, or dependency is alive/dead
+                       (the shortest
                        reference path, entrypoint kind labelled) or, if dead,
                        its verdict, confidence, and evidence. Answers for any
                        symbol — a bare name, file.ts:name, or a file path.
+                       --delete returns a read-only counterfactual consequence
+                       plan; add --json for its schema-1.2 machine form.
   unused mcp          Start the MCP server (stdio) over the same engine, for
                        coding agents: find_unused, why_alive, usage_evidence.
                        Read-only, zero network.
@@ -114,6 +137,17 @@ EXAMPLES
 
   unused --filter export --min-confidence high
       Only the high-confidence unused exports.
+
+  unused --fix --fix-type exports,dependencies
+      Remove eligible export surfaces and dependency declarations, then
+      re-analyse. Review the working-tree diff; no commit is created.
+
+  unused --fix --fix-type files --allow-remove-files
+      Delete eligible unused files. Both file-removal flags are required.
+
+  unused why --delete src/legacy.ts
+      Show required re-export edits and staged newly-dead consequences without
+      changing the working tree.
 
   unused --all --json
       Every claim, not just the top 10 per section, as JSON.

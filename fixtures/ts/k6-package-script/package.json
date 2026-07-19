@@ -1,0 +1,9 @@
+{
+  "name": "fixture-k6-package-script",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "load:smoke": "k6 run ./load/smoke.js"
+  }
+}

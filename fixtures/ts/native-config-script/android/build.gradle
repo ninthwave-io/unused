@@ -1,0 +1,8 @@
+// commandLine("node", "../scripts/orphan.mjs")
+description = 'commandLine("node", "../scripts/orphan.mjs")'
+tasks.register("prepareScripts", Exec) {
+  commandLine("node", "../scripts/prepare-gradle.mjs")
+}
+tasks.register("invalidSingleStringCommand", Exec) {
+  commandLine("node ../scripts/orphan.mjs")
+}

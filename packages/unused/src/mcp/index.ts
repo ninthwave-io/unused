@@ -28,8 +28,8 @@
  *
  * ## Staleness (one analysis per server start, re-run on config change)
  * The server analyses once at start and caches the graph/reachability/claims.
- * Each tool call re-stats the project's `package.json` / `tsconfig*.json` /
- * `unused.config.*` files; if any mtime changed it re-runs `analyzeProject`
+ * Each tool call re-stats the project's `.gitignore` / `package.json` /
+ * `tsconfig*.json` / `unused.config.*` files; if any mtime changed it re-runs `analyzeProject`
  * before answering. Every tool result carries a `staleness` note recording when
  * the answer's analysis was taken and whether this call triggered a re-run —
  * deliberately simple (mtime of config files only, not a full source watch).
@@ -49,6 +49,7 @@ import {
   analyzeProjectWithGraph,
 } from "../frontends/ts/analyze.js";
 import { ConfigError } from "../frontends/ts/config.js";
+import { ancestorGitignoreFiles } from "../frontends/ts/discover.js";
 import { UnsupportedProjectError } from "../frontends/ts/workspaces.js";
 import { filterClaims, renderWhyPath } from "../reporters/index.js";
 
@@ -57,8 +58,11 @@ export const MCP_MODULE = "mcp" as const;
 const VALID_KINDS: readonly SubjectKind[] = ["export", "file", "dependency", "endpoint", "test"];
 const VALID_CONFIDENCE: readonly Confidence[] = ["high", "medium", "low"];
 /** Config files whose mtime a change to invalidates the cached analysis. */
-const WATCHED_CONFIG_RE = /^(package\.json|tsconfig.*\.json|unused\.config\.(jsonc|json))$/i;
+const WATCHED_CONFIG_RE =
+  /^(?:\.gitignore|package\.json|tsconfig.*\.json|unused\.config\.(?:jsonc|json))$/i;
 const WATCH_SKIP_DIRS = new Set(["node_modules", "dist", ".git"]);
+/** Hidden directories whose contents participate in discovery/reachability. */
+const WATCH_HIDDEN_DIRS = new Set([".github", ".storybook"]);
 /** Bound the config-signature walk so a pathological tree can't stall a tool call. */
 const WATCH_FILE_CAP = 20_000;
 
@@ -115,8 +119,8 @@ class ServerState {
         analyzedAt: cache.analyzedAt,
         reanalyzedOnThisCall: reanalyzed,
         note: reanalyzed
-          ? "A watched config file (package.json / tsconfig / unused.config) changed since the last analysis — re-analysed for this call."
-          : "Answered from the cached analysis; no watched config file (package.json / tsconfig / unused.config) has changed since it was taken.",
+          ? "A watched discovery/config file (.gitignore / package.json / tsconfig / unused.config) changed since the last analysis — re-analysed for this call."
+          : "Answered from the cached analysis; no watched discovery/config file (.gitignore / package.json / tsconfig / unused.config) has changed since it was taken.",
       },
     };
   }
@@ -130,8 +134,8 @@ class ServerState {
  * watch mode), and re-analysing on config drift covers the cases that actually
  * change what "unused" means (entrypoints, paths, presets, ignores).
  */
-async function configSignature(root: string): Promise<string> {
-  const entries: string[] = [];
+export async function configSignature(root: string): Promise<string> {
+  const entries = new Set<string>();
   let budget = WATCH_FILE_CAP;
   const walk = async (dir: string): Promise<void> => {
     if (budget <= 0) return;
@@ -143,19 +147,20 @@ async function configSignature(root: string): Promise<string> {
     }
     for (const entry of dirents) {
       if (budget <= 0) return;
-      if (entry.name.startsWith(".") && entry.name !== ".git") {
-        // hidden files can be config (rare) but hidden dirs are skipped below;
-        // a hidden config file at the root is still stat'd via the file branch.
-      }
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
-        if (WATCH_SKIP_DIRS.has(entry.name) || entry.name.startsWith(".")) continue;
+        if (
+          WATCH_SKIP_DIRS.has(entry.name) ||
+          (entry.name.startsWith(".") && !WATCH_HIDDEN_DIRS.has(entry.name))
+        ) {
+          continue;
+        }
         await walk(full);
       } else if (entry.isFile() && WATCHED_CONFIG_RE.test(entry.name)) {
         budget -= 1;
         try {
           const st = await stat(full);
-          entries.push(`${toPosixRel(root, full)}@${st.mtimeMs}`);
+          entries.add(`${toPosixRel(root, full)}@${st.mtimeMs}`);
         } catch {
           // unreadable — skip; its disappearance still changes the signature
         }
@@ -163,8 +168,15 @@ async function configSignature(root: string): Promise<string> {
     }
   };
   await walk(root);
-  entries.sort();
-  return entries.join("\n");
+  for (const path of await ancestorGitignoreFiles(root)) {
+    try {
+      const st = await stat(path);
+      entries.add(`${toPosixRel(root, path)}@${st.mtimeMs}`);
+    } catch {
+      // A disappearance changes the signature by removing the old entry.
+    }
+  }
+  return [...entries].sort().join("\n");
 }
 
 function toPosixRel(root: string, abs: string): string {
@@ -429,7 +441,11 @@ export function buildServer(state: ServerState, version: string): Server {
  * PRD §3 exit contract the rest of the CLI honours, applied to the one-shot
  * analysis taken at server start.
  */
-export async function runMcpServer(options: { cwd?: string; config?: string }): Promise<number> {
+export async function runMcpServer(options: {
+  cwd?: string;
+  config?: string;
+  gitignore?: boolean;
+}): Promise<number> {
   const root = resolvePath(process.cwd(), options.cwd ?? ".");
   try {
     const stats = await stat(root);
@@ -442,10 +458,10 @@ export async function runMcpServer(options: { cwd?: string; config?: string }): 
     return 2;
   }
 
-  const state = new ServerState(
-    root,
-    options.config === undefined ? {} : { configPath: options.config },
-  );
+  const state = new ServerState(root, {
+    ...(options.config === undefined ? {} : { configPath: options.config }),
+    ...(options.gitignore === false ? { gitignore: false } : {}),
+  });
   let version = "0.1.0";
   try {
     const primed = await state.prime();

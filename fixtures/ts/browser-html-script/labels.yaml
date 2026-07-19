@@ -1,0 +1,20 @@
+case: browser-html-script
+description: >-
+  An HTML script src attribute names a browser module as a production entrypoint.
+  The exact target stays alive while an unrelated sibling remains a dead/high
+  control.
+subjects:
+  - kind: file
+    name: src/js/dashboard.js
+    file: src/js/dashboard.js
+    expected: alive
+    because: >-
+      index.html names this module in a script src attribute.
+  - kind: file
+    name: src/js/orphan.js
+    file: src/js/orphan.js
+    expected: dead
+    minConfidence: high
+    because: >-
+      no HTML script tag, entrypoint, import, or other config references this
+      sibling module.

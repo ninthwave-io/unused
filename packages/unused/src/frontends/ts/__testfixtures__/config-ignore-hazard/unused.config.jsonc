@@ -1,7 +1,11 @@
 {
-  // src/loader.ts hosts a computed dynamic import that would otherwise cap
-  // src/mods/** at medium (see fixtures/ts/string-computed-import). Ignored
-  // files can't host hazards (PRD §6, documented interaction) — an ignored
-  // file is never parsed, so its hazard never enters the graph.
-  "ignore": ["src/loader.ts"],
+  // Suppression is reporting policy only: src/loader.ts remains analyzed and
+  // its computed-import hazard remains in the reference graph.
+  "suppressions": [
+    {
+      "files": ["src/loader.ts"],
+      "kinds": ["file", "export"],
+      "reason": "runtime loader retained by policy",
+    },
+  ],
 }

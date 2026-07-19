@@ -1,0 +1,22 @@
+case: msw-worker-directory
+description: >-
+  The package manifest declares an MSW worker directory. MSW's conventional
+  mockServiceWorker.js file in that directory is tool-managed and live without
+  an import edge. A differently named worker in the same directory stays a
+  dead/high control.
+subjects:
+  - kind: file
+    name: public/mockServiceWorker.js
+    file: public/mockServiceWorker.js
+    expected: alive
+    because: >-
+      package.json configures public as msw.workerDirectory, making the fixed
+      MSW worker filename a config-rooted browser asset.
+  - kind: file
+    name: public/orphan-worker.js
+    file: public/orphan-worker.js
+    expected: dead
+    minConfidence: high
+    because: >-
+      workerDirectory reserves MSW's fixed worker filename, not every script in
+      the directory; this unrelated file has no inbound reference.

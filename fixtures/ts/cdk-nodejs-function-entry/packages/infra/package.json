@@ -1,0 +1,5 @@
+{
+  "name": "fixture-cdk-infra",
+  "private": true,
+  "type": "module"
+}

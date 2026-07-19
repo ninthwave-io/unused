@@ -1,6 +1,6 @@
 # Progress — unused
 
-Updated: 2026-07-19 (evening). **v1 BUILD COMPLETE + pre-release iteration round done — M1–M9 all done and tagged (m1..m9).** Gates M5–M9 self-approved under the founder's 2026-07-19 delegation ("review on my behalf, do not stop for approval, complete the implementation").
+Updated: 2026-07-19 (late evening). **v1 BUILD COMPLETE + pre-release precision round accepted for the next consuming-project review.** Gates M5–M9 and the pre-release corrections were self-approved under the founder's 2026-07-19 delegation ("review on my behalf, do not stop for approval, complete the implementation"). No semver release tag has been created.
 
 ## What shipped (v1, private-beta ready)
 `@ninthwave-io/unused` — a liveness oracle for TS/JS. Tiers 1–2 fully implemented:
@@ -38,3 +38,39 @@ Founder review of the reference-codebase deletion list (the real-use-case valida
 4. **Deletion-consequence cascades** (product feature): report "deleting X makes Y newly dead" chains + re-export removal consequences — likely a `why`-adjacent graph query + report section.
 5. **File-level suppression** (`unused:ignore-file` or config), and **`unused why` for dependency claims**.
 6. Then: fresh re-run against the reference codebase from its original commit; Elixir interactive review (unstarted); v0.1.0 decision with founder.
+
+## Current session checkpoint (founder interview completed, 2026-07-19)
+- The private review handoff and full review log were preserved outside this public repository under neutral filenames. No private product identifiers or artifacts were added here.
+- The founder product interview is complete and implementation has resumed autonomously under the standing authority. ADR 0012 records the approved discovery, suppression, full-reachability, deletion-plan, and mutating `--fix` contract.
+- Uncommitted draft work exists for the four confirmed HIGH false-positive mechanisms (sanitized fixtures plus recognizers). It has not been accepted, reviewed, committed, or pushed and must be treated as exploratory until the interview decisions are recorded.
+- Diagnosis confirmed the MEDIUM leakage mechanism: computed-import/require hazards currently affect claims even when the carrier module is unreachable; the root workspace unit is a residual ownership bucket, so this leaks across unrelated components. Proposed correction: activate outgoing dynamic hazards only when their carrier is reachable, while retaining conservative whole-unit scope for a reachable opaque loader.
+- Deletion-cascade assessment recommends modelling consequences as read-only counterfactual deletion plans, separate from current claims/gates, with staged exposed claims and required re-export edits. This would be an additive schema change and needs founder agreement before specification or implementation.
+- No commit or push had been made at the interview checkpoint. Implementation and the ranked review/gate loop have now resumed.
+- Founder interview decisions recorded after that pause:
+  - file claims should cover the complete set unreachable from production/config/test roots, not only zero-inbound files;
+  - deletion/fix planning belongs in the CLI and additive machine schema, but no new MCP tool is needed;
+  - project-level pattern configuration is preferred over a new per-file inline suppression directive. Research is in progress against Knip's current configuration/discovery approach before the exact contract is fixed.
+  - suppression will use hybrid support: retain exact inline declaration suppressions, add structured project/workspace pattern suppressions for file-level policy;
+  - remove the current graph-invisibility `ignore` behavior before release; project boundaries affect claimability without erasing reference edges;
+  - discovery should respect relevant `.gitignore` files by default;
+  - the CLI supports actual mutation via a conventional `--fix` workflow, never commits for the user, and makes changes suitable for VCS review;
+  - only unsuppressed HIGH `unused` claims are eligible; export/dependency fixes are the default, file deletion additionally requires `--allow-remove-files`, and each run mutates only its initial analysis set before re-analysis.
+  - Vulture is the named research comparator for the future Python frontend; it does not expand the current v0.1.0 work order.
+
+## Implementation checkpoint (2026-07-19, review rounds active)
+- ADR 0012 is implemented across discovery, claim policy, deletion planning, reporting, and conservative CLI mutation. The implementation is still uncommitted while independent fix/re-review rounds finish; do not treat this checkpoint as release acceptance.
+- Complete file reachability, dependency-aware `why`, `why --delete`, standalone schema-1.2 deletion plans, report consequence summaries, structured root/workspace suppressions, ordered `project` scope, default nested/ancestor `.gitignore` handling, and `--no-gitignore` are present.
+- `--fix` mutates only its frozen unsuppressed-HIGH-unused set, has two opt-ins for files, fails closed on semantic inbound references/unsupported plans, applies required re-export and primary edits transactionally with rollback, never commits, and re-analyses once to report remaining/newly exposed claims.
+- The cross-unit hazard leak is corrected with carrier-reachable fixed-point activation; config-reference evidence now points to the actual carrier site.
+- Missing-root work covers workflow commands, Task, Vite/Vitest, k6, browser HTML/extension/service-worker assets, MSW, native project commands, AudioWorklet assets, and CDK `NodejsFunction` entries. Review found and fixed multiple “fixture was easier than production syntax” cases; a final bounded Task/CDK/native review round remains active at this checkpoint.
+- Latest fully green shared run before the active final review fixes: 963 tests passed / 4 skipped; TS corpus 52 cases / 146 labelled subjects, precision 1.0, recall 0.9552; typecheck, lint, boundaries, diff check, and privacy scan green. Re-run every gate after the final edits.
+- A fresh private reference checkout is pinned outside this repository at the handoff commit and ready for the post-gate comparison. No private identifiers, paths, symbols, code, or review artifacts have been copied into the public tree.
+
+## Pre-release precision round accepted (2026-07-19)
+- ADR 0012 is implemented and independently re-reviewed after every confirmed finding. The accepted surface includes complete file reachability, carrier-scoped hazards, graph-preserving project scope, nested/ancestor `.gitignore`, structured suppressions, dependency-aware `why`, read-only deletion consequences, and conservative transactional `--fix` mutation.
+- Missing-root coverage now includes bounded GitHub Actions, Task (including includes, executable positions, working directories, and bounded runtime templates), Vite/Vitest, k6, browser assets, MSW, native project commands, AudioWorklet, and CDK `NodejsFunction` references. Task/GitHub command parsing roots executable source positions only; arbitrary path arguments remain claimable.
+- Native Podfile discovery deliberately scans every receiver-eligible exact-literal `system` token. This is precision-first: ambiguous comments/literals can keep a dead script alive, but Ruby lexical ambiguity cannot hide a real invocation and create a HIGH false positive. Assumption set 1.7 and labelled misses record the bounded recall cost.
+- Final public gates: 996 tests passed / 4 skipped; typecheck, lint (existing informational diagnostics only), dependency boundaries, generated-assumption sync, build, diff check, README parity, and both corpus gates pass. TS corpus: 52 cases / 237 labelled subjects, precision 1.0, recall 0.826530612244898. Elixir corpus: 8 cases, precision 1.0, recall 1.0. A packed tarball installs and runs from an empty npm project; the smoke caught and corrected the YAML parser's runtime-dependency classification before acceptance.
+- Fresh pinned reference-codebase comparison: 355 claims (352 HIGH / 3 MEDIUM; 189 exports / 157 files / 9 tests). All four reviewed HIGH false positives are absent. The detailed approved batch tables enumerate 131 stable claim IDs despite the private headline summary saying 118; all 131 survive. The 20 new HIGH claims not already in those tables are file claims 1–4 reference steps downstream of previously validated dead claims; no new HIGH export claim remains.
+- Release assessment: technical **GO for the next consuming-project interactive review**, with no semver tag yet. Final v0.1.0 tag/publish remains founder-only after that review. The principal accepted limitation is TS corpus recall 0.8265 from precision-first native-config handling; precision remains the blocking invariant at 1.0.
+- Future Python work should use Vulture as a named comparator for AST traversal, confidence, and suppression ergonomics; Python remains outside this release round.

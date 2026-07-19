@@ -41,20 +41,30 @@ next: `unused why formatCurrency` · `unused --json` · docs: unused.dev
   or `✓ no new dead weight since baseline — exit 0`.
 - Baseline metadata (date, analyzer version, claim count) always shown; analyzer-version mismatch prints the re-baseline warning (PRD §4).
 - Default gate threshold is `high` — the gate stakes trust only on claims we would stake trust on; `gate.threshold` overrides.
-- Failure output always teaches remediation: a legitimate new claim → delete the code or suppress with `/* unused:ignore <reason> */`; intentional debt → re-baseline on main. The gate never strands the user without a next step.
+- Failure output always teaches remediation: a legitimate new claim → inspect with `unused why --delete`, delete or use `unused --fix`; project policy → add a reasoned config suppression; intentional debt → re-baseline on main. The gate never strands the user without a next step.
 
 ## 4. `unused why <symbol|file>` output
 - Alive: render the shortest path(s), one hop per line, entrypoint kind labelled:
   `src/index.ts (production entrypoint) → src/app.ts → src/orders/mapper.ts:30 OrderMapper`
 - Alive-via-test-only: say so explicitly, suggest the tier-2 interpretation.
 - Dead: state the verdict, confidence, evidence list, and the hazard classes checked.
+- Dependency subjects resolve by package name, qualified by workspace when ambiguous.
+- `unused why --delete <subject>` is read-only. It prints the selected removal, required re-export edits, then deterministic stages labelled `newly dead after stage N`. `--json` emits the same structured deletion plan.
 
-## 5. Degradation
+## 5. `unused --fix` output
+
+- Before writing, print the eligible initial set grouped by exports, dependencies, and (only with `--allow-remove-files`) files.
+- Apply only unsuppressed, high-confidence `unused` claims. Unsupported source shapes are `skipped`, with a concrete reason; never guess.
+- Never commit, stage, install packages, update lockfiles, or contact the network.
+- Re-analyse once after writing and print `applied`, `skipped`, and `remaining` counts plus newly exposed consequences. Do not recursively apply them in the same run.
+- `--fix-type exports,dependencies,files` restricts the eligible set. `files` without `--allow-remove-files` is an exit-3 usage error.
+
+## 6. Degradation
 - Non-TTY stdout or `NO_COLOR` or `--no-color`: plain ASCII, same information, stable line grammar (grep-able: one claim per line).
 - Narrow terminals (<80 cols): drop the why column to an indented second line; never wrap mid-token.
 - CI logs: no spinners, no cursor control; progress as plain lines.
 
-## 6. Errors and empty states
+## 7. Errors and empty states
 - Clean repo: celebrate briefly, suggest the badge and `unused check` adoption. Never print an empty table.
 - Config/usage error (exit 3): one-line error + the exact fix (`unused check` without baseline → "run: unused baseline").
 - Analysis error (exit 2): what failed, first affected path, and where to file it.

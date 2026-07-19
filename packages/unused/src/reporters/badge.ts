@@ -5,19 +5,12 @@
  * CI on main. Renders from `core/claims` only (reporters boundary —
  * dependency-cruiser).
  *
- * ## Count scope: high-confidence claims, suppressed or not
+ * ## Count scope: unsuppressed high-confidence claims
  * report-and-badge.md §2 fixes the confidence filter ("counts high-confidence
  * claims only — the badge never counts medium/low candidates") but is silent
- * on suppression. This module counts suppressed high-confidence claims too,
- * rather than excluding them — matching the repeated, explicit PRD §4/§6
- * rule applied everywhere else in this codebase: "suppressed claims are
- * still counted and marked (not silently dropped) in every report, so a
- * team can see how much of their 'clean' report is actually suppressed debt
- * rather than genuinely resolved." The badge is one of those reports. (This
- * differs from `unused check`'s gate, which deliberately does NOT fail the
- * build on a suppressed claim — suppression there means "don't stake CI on
- * this", a narrower, build-specific carve-out that doesn't extend to a
- * public trust signal.)
+ * on suppression. ADR 0012 resolves that ambiguity: suppressed claims remain
+ * machine-visible and separately counted, but are excluded from gates and
+ * default human-facing actionable totals. The badge mirrors that trust signal.
  */
 import type { ClaimRun, Confidence } from "../core/claims/index.js";
 
@@ -32,10 +25,12 @@ function plural(n: number): string {
   return n === 1 ? "" : "s";
 }
 
-/** Every claim at this confidence, regardless of `verdict`/`subject.kind`/suppression — see the module docstring for the suppression decision. */
+/** Every unsuppressed claim at this confidence, regardless of verdict/kind. */
 function countAtConfidence(run: ClaimRun, confidence: Confidence): number {
   let n = 0;
-  for (const c of run.claims) if (c.confidence === confidence) n += 1;
+  for (const c of run.claims) {
+    if (c.confidence === confidence && c.suppression === undefined) n += 1;
+  }
   return n;
 }
 

@@ -132,6 +132,14 @@ export interface SymbolNode {
   readonly file: string;
   /** Public export name; `"default"` for the default export. */
   readonly exportedName: string;
+  /**
+   * Frontend-local spelling when known. It is a declaration identity only when
+   * `localNameKind` is `Name`; `Default` denotes the synthetic binding created
+   * by a default assignment expression.
+   */
+  readonly localName?: string;
+  /** Oxc local-name discriminator, retained for sound alias identity. */
+  readonly localNameKind?: "Name" | "Default" | "None";
   readonly isDefault: boolean;
   /** `export type`/`import type`-only — a real reference, never downgraded (architecture.md §4). */
   readonly typeOnly: boolean;
@@ -141,9 +149,10 @@ export interface SymbolNode {
   readonly span: Site["span"];
   /**
    * A `/* unused:ignore <reason> *\/` directive anchored to this export's
-   * declaration, carried through so M6 renders suppressed state / the
-   * "reason required" warning (PRD §6). Present only when a directive anchored
-   * here; `reason` is `null` for a malformed (reason-less) directive.
+   * declaration, carried through so claim emission can either attach a valid
+   * suppression or warn on stderr and leave a malformed directive unsuppressed
+   * (PRD §6). Present only when a directive anchored here; `reason` is `null`
+   * for a malformed (reason-less) directive.
    */
   readonly suppression?: {
     readonly reason: string | null;

@@ -27,8 +27,10 @@ discover (workspaces, tsconfig, package.json, presets) → parse + bind → extr
 - **Hazard registry**: every mechanism where syntax cannot prove a reference absent is a registry entry: detection rule + scope of effect + confidence cap. The M1 set (red-teamed): string/computed imports, `require(expr)`, computed CJS exports (`module.exports[k]`), config-referenced files, framework conventions, checker-only type relationships (declaration merging, inference-only usage), `emitDecoratorMetadata`, conditional package.json `exports`/`imports` and `browser`-field remapping, JSX runtime dependency liveness (`jsxImportSource`), ambient/global `.d.ts` files, tsconfig project `references`. Unmodelled hazard ⇒ symbol stays alive, never a confident "unused" (core invariant).
 - **The inverse rule matters equally**: references visible in AST type positions (annotations, `extends`/`implements`, `typeof`, `import type`) are real references, resolved statically — never blanket-downgraded, or recall collapses. Re-exports and side-effect imports are first-class IR edges (§3), not hazards.
 - The PRD's **published assumption set has two parts, both shipped in code**: global analysis assumptions (a versioned constant rendered into the docs — tsconfig-governed resolution, entrypoints-as-complete-public-API, bundler aliases out of scope unless configured) and per-hazard downgrade clauses generated from the registry. Both render into one doc, minimising drift between docs and behaviour.
-- `why_alive` answers come from stored graph paths — no re-analysis (PRD §8 explainability bar).
-- Suppression comments (`/* unused:ignore <reason> */`) parsed by frontends, carried as `suppression: { reason }`.
+- `why_alive` and deletion-plan answers come from stored graph paths — no re-analysis for presentation (PRD §8 explainability bar, ADR 0012).
+- Suppression comments and project/workspace rules annotate claims without removing graph nodes or edges. Config suppressions carry rule provenance in the machine contract (ADR 0012).
+- File liveness is complete root reachability: an inbound edge from another unreachable file never makes a file alive.
+- Mutation is a CLI orchestration layer over claims and deletion plans. Core analysis and MCP stay pure/read-only; the CLI applies an initial high-confidence set, then re-runs analysis once (ADR 0012).
 
 ## 5. Performance strategy
 - Per-file cache keyed by content hash + config hash + analyzer version: parse/extract results reused; graph rebuild is cheap relative to parse.

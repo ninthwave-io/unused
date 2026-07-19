@@ -4,7 +4,7 @@ Status: APPROVED at the Phase 1 gate (2026-07-18); amended same day to incorpora
 
 ## 1. Product summary
 
-`unused` is a local-first CLI for TS/JS repositories. The positioning is multi-language (ADR 0003): v1 implements TS/JS only, but the core — reference graph, claim engine, reporters — is designed language-agnostic, with each language landing as a frontend rather than a rewrite. It parses the repo, builds a reference graph across modules, partitions entrypoints into production and test roots, and emits graded, explainable claims about code that is provably or probably dead. It never phones home and, in v1, it never modifies code — it is a detector, not a fixer. That distinction matters commercially as much as technically: the free OSS core is a trust-building instrument, and trust is earned by being right, not by being aggressive.
+`unused` is a local-first CLI for TS/JS repositories. The positioning is multi-language (ADR 0003): v1 implements TS/JS only, but the core — reference graph, claim engine, reporters — is designed language-agnostic, with each language landing as a frontend rather than a rewrite. It parses the repo, builds a reference graph across modules, partitions entrypoints into production and test roots, and emits graded, explainable claims about code that is provably or probably dead. It never phones home. Analysis is read-only by default; ADR 0012 adds an explicit, conservative `--fix` workflow which changes the working tree but never commits for the user. Trust is earned by being right before being aggressive.
 
 The claims it emits sit on an evidence ladder (defined in `CLAUDE.md`, not restated here) running from static reachability through test-only liveness, single-repo cross-boundary matching, and — as reserved-but-unimplemented contracts in v1 — runtime and human-usage evidence. Each claim carries a subject, a verdict, a confidence grade, an evidence list, and provenance, so a human or an agent can inspect *why* something is flagged before acting on it.
 
@@ -32,9 +32,12 @@ Three consumption surfaces share one engine: a human-facing terminal report, mac
 | `unused check` | CI gate: compares findings against a committed baseline, fails only on new dead weight. | 0 on pass, 1 on gate failure. |
 | `unused baseline` | Write or update the baseline (proposal: per-workspace `.unused/baseline.jsonl`, id-sorted for minimal diff churn, committed). Prints a summary of every claim it blesses so PR review sees what was waved through. | 0 on success. |
 | `unused why <symbol\|file>` | Reference-path explanation for a single symbol or file — the same engine that backs the MCP `why_alive` tool. | 0 on success. |
+| `unused why --delete <symbol\|file\|dependency>` | Read-only counterfactual deletion plan: required re-export edits and claims made newly dead. | 0 on success. |
 | `unused mcp` | Start the MCP server (stdio) over the same engine. | Runs until the client disconnects; 0 on clean shutdown. |
 | `unused report [--md\|--html]` | Render the shareable deletion report from the last analysis (docs/design/report-and-badge.md). | 0 on success. |
 | `unused badge` | Write the README badge artifact (shields.io endpoint JSON or SVG). | 0 on success. |
+
+`unused --fix` applies reviewable working-tree edits for unsuppressed, high-confidence `unused` exports and dependencies. `--fix-type` narrows the mutation kinds. File removal requires both `--fix-type files` and `--allow-remove-files`. The tool never commits, stages, installs, updates lockfiles, or recursively fixes consequences discovered after the initial analysis; it re-analyses and reports them instead (ADR 0012).
 
 Flags apply across commands where relevant: `--json` (emit the claim-schema JSON instead of, or alongside, the TTY report), `--sarif <file>` (write a SARIF log to the given path), `--filter <kind>` (restrict to one or more subject kinds), `--min-confidence <level>` (drop claims below `high`/`medium`/`low`), `--config <path>` (override config discovery), `--cwd <dir>` (analyse a directory other than the current one), `--no-color` (disable ANSI output, also implied by a non-TTY stdout or `NO_COLOR`).
 
@@ -62,7 +65,7 @@ The `--json` output is the canonical machine representation; SARIF and the MCP t
 
 **Claim:**
 ```
-{ id, subject: { kind: export|file|dependency|endpoint|test, name, protocol?, loc: {file, span, package?} }, verdict: unused|test-only|unconsumed-endpoint, confidence: high|medium|low, evidence: [{ type, detail, source, window? }], provenance: { analyzer, version, generatedAt }, suppression?: { reason } }
+{ id, subject: { kind: export|file|dependency|endpoint|test, name, protocol?, loc: {file, span, package?} }, verdict: unused|test-only|unconsumed-endpoint, confidence: high|medium|low, evidence: [{ type, detail, source, window? }], provenance: { analyzer, version, generatedAt }, suppression?: { reason, source?, pattern? }, deletionPlan?: { stages, requiredEdits } }
 ```
 `id` is a stable hash of `(kind, name, file)` — it deliberately excludes line numbers so a claim survives the subject moving within its file, which is what makes baseline diffing in `unused check` meaningful across commits rather than noisy on every reformat. It is stable to in-file moves but **not** to cross-file moves: a moved symbol reads as one resolved claim plus one new claim — documented behaviour, not a bug. Baselines stamp the analyzer version; on a version mismatch `unused check` warns and recommends re-baselining rather than hard-failing, because an analyzer upgrade must never paint the whole repo as "new dead weight". The exact hash algorithm and its cross-version stability guarantee are fixed in the Phase 2 claim-schema-versioning ADR.
 
@@ -72,7 +75,9 @@ The `--json` output is the canonical machine representation; SARIF and the MCP t
 
 **Verdict vocabulary is bound to subject kind** (enforced rule, not convention): `export`, `file`, and `dependency` subjects take `unused` (no production or test references) or `test-only` (only test-entrypoint references); `endpoint` subjects always take `unconsumed-endpoint`; `test` subjects take `test-only` (a zombie test — one whose only purpose is exercising code that is itself test-only or dead). A claim pairing a kind with a verdict outside this mapping is invalid.
 
-**Suppression** is structured: a claim suppressed via `/* unused:ignore <reason> */` carries `suppression: { reason }` — presence of the object means suppressed, and the mandatory source-comment reason travels into `--json` and the SARIF properties bag rather than living only in source.
+**Suppression** is structured: a claim suppressed via `/* unused:ignore <reason> */` or a project/workspace suppression rule carries `suppression: { reason, source?, pattern? }` — presence of the object means suppressed. Suppression never removes reference-graph evidence. Suppressed claims remain in JSON/SARIF, are hidden from the default terminal report, and are excluded from gates; `--show-suppressed` displays them. Reasons are mandatory and stale config rules warn (ADR 0012).
+
+**Deletion plans** are optional, additive, counterfactual data. They contain deterministic consequence stages and required source edits, but are not claims and never alter summaries, baselines, gates, badges, or confidence. The detailed form is returned by `unused why --delete`; the report may include compact summaries for its highest-value findings.
 
 **Confidence semantics** are a contract, not a UX nicety, because agents threshold on them programmatically:
 - `high` — zero false positives under a **published, enumerated assumption set**: module resolution follows tsconfig/package.json (bundler-only aliases such as webpack `resolve.alias` are out of scope unless configured); declared entrypoints are the complete public API (a library's `exports` map counts as entrypoints, so public API surface is never flagged); and every modelled dynamic-reference hazard class (string/computed imports, `require` with expressions, config-referenced files, framework conventions covered by an active preset) forces a downgrade to `medium`. `high` means "safe to act without re-deriving the reference graph" — dynamic context the analyzer cannot see remains the caller's responsibility, and the assumption set ships verbatim in the docs.
@@ -82,7 +87,7 @@ The `--json` output is the canonical machine representation; SARIF and the MCP t
 **Worked example.** An export with no inbound reference from any production entrypoint, no dynamic-reference hazard nearby:
 ```json
 {
-  "schemaVersion": "1.0.0",
+  "schemaVersion": "1.2.0",
   "tool": { "name": "unused", "version": "0.1.0" },
   "run": {
     "root": "/Users/rob/code/acme-web",
@@ -184,19 +189,25 @@ Transport is stdio; the server is read-only and makes no network calls, matching
 
 The zero-config path is the default path: `unused` auto-detects `package.json` entrypoints, workspace layout (npm, pnpm, yarn, and bun workspaces), `tsconfig.json`, and common test-file patterns (`*.test.ts`, `*.spec.ts`, `__tests__/`) without a config file present. This matters because most first runs happen before anyone has decided the tool is worth configuring — the false-positive bar (Section 8) has to hold even on a naive, unconfigured run. One explicit exclusion: **Yarn Plug'n'Play is unsupported in v1** — PnP is detected and analysis stops with a clear unsupported message (exit 2) rather than mis-resolving; a silent wrong answer is worse than a refusal.
 
-Where auto-detection is insufficient, `unused.config.jsonc` overrides or extends it (the choice of `jsonc` vs `ts` as the config format default is an open ADR for Phase 2 — the field names below are fixed regardless of which wins). Fields: `entry` (glob patterns, optionally seeded by a framework preset), `project` (the set of files considered in scope for analysis), `ignore` (globs excluded from analysis entirely), `ignoreDependencies` (package names excluded from dependency-unused checks — e.g. type-only or build-time packages that have no static import), `workspaces` (per-workspace overrides in a monorepo), and `gate: { threshold }` (the confidence floor `unused check` gates on; **default `high`** — the example below overrides it to `medium`).
+Where auto-detection is insufficient, `unused.config.jsonc` overrides or extends it (ADR 0010). Fields: `entry` (additional roots, optionally seeded by a framework preset), `project` (files eligible for claims without erasing graph evidence), `suppressions` (structured file-pattern + claim-kind + reason rules), `ignoreDependencies` (package names excluded from dependency-unused checks), `workspaces` (per-workspace overrides), and `gate: { threshold }` (the confidence floor `unused check` gates on; **default `high`**). Discovery respects applicable `.gitignore` rules by default; `--no-gitignore` opts out. The pre-release `ignore` field's graph-invisibility behavior is removed by ADR 0012.
 
 Framework presets bundle two things per framework (v1 ships one or two — `next` and `vite` — with the rest arriving through the community-contribution interface; five hand-built presets do not fit the v1 budget): the entrypoint conventions (e.g. Next's `pages/`/`app/` file-based routing counts as implicit entrypoints even though nothing imports those files directly) and the implicit-reference rules that would otherwise show up as false positives. Presets are designed to be community-contributable — this is the mechanism by which the tool keeps pace with an ecosystem that invents new "magic" faster than one founder can track it.
 
-Suppression is inline: `/* unused:ignore <reason> */` immediately above the suppressed declaration. The reason is mandatory — an unexplained suppression is close to useless six months later — and suppressed claims are still counted and marked (not silently dropped) in every report, so a team can see how much of their "clean" report is actually suppressed debt rather than genuinely resolved.
+Suppression is hybrid. `/* unused:ignore <reason> */` immediately above a declaration remains the precise escape hatch; project/workspace rules handle file-pattern policy. Every rule names explicit claim kinds and a mandatory reason. Suppressed claims remain in machine output and suppressed totals, while default human output and gates omit them.
 
 ```jsonc
 // unused.config.jsonc
 {
   // Next.js preset seeds file-based route entrypoints; these add to it.
   "entry": ["src/index.ts", "src/pages/**/*.tsx"],
-  "project": ["src/**/*.{ts,tsx}"],
-  "ignore": ["**/*.generated.ts", "src/legacy/**"],
+  "project": ["src/**/*.{ts,tsx}", "!src/legacy/**"],
+  "suppressions": [
+    {
+      "files": ["src/generated/**"],
+      "kinds": ["file"],
+      "reason": "Generated source is replaced by the schema pipeline"
+    }
+  ],
   "ignoreDependencies": ["@types/node"],
   "workspaces": {
     "packages/api": {
@@ -208,11 +219,11 @@ Suppression is inline: `/* unused:ignore <reason> */` immediately above the supp
   }
 }
 ```
-This config is consistent with the worked claim above: `src/utils/currency.ts` falls under `project` (`src/**/*.{ts,tsx}`), is not matched by `ignore`, and is not itself an `entry` file — so it is analysed, and the `formatCurrency` export inside it is a legitimate candidate for the reference graph to flag.
+This config is consistent with the worked claim above: `src/utils/currency.ts` falls under `project` (`src/**/*.{ts,tsx}`), is not excluded by its negated project pattern, and is not itself an `entry` file — so it is claimable, and the `formatCurrency` export inside it is a legitimate candidate for the reference graph to flag.
 
 ## 7. Non-goals (v1)
 
-No code modification or PR opening — `unused` reports, it does not act; that boundary is the difference between a trustworthy oracle and a tool people are afraid to run. No hosted service, no multi-repo correlation, no managed telemetry/log/analytics connectors — those are the paid product under the credential boundary (ADR 0002: paid is managed connectors, team dashboard, and history/trends; locally-driven sources — log files, remote queries via the user's own credentials — are free-tier roadmap, not paid). No languages beyond TS/JS in v1 — TS/JS is the wedge because that's where Knip's false-positive pain lives, and broadening precision-critical scope before nailing one ecosystem would dilute the core bet; Python, then Elixir, are named on the public roadmap (ADR 0003), and the core must not couple to the TypeScript compiler API so those frontends can land without a rewrite. No IDE extension and no watch mode — v1 is a CLI artefact consumed by humans, CI, and agents, not a long-running editor integration. No telemetry, ever, in the OSS CLI, under any circumstance — this is listed as a non-goal deliberately, not just a privacy nicety, because "the OSS CLI never phones home" is a trust feature the whole adoption strategy leans on. No LLM calls in the local analysis path — the deterministic core stays deterministic; any future LLM-assisted triage (e.g. for dynamic-reference ambiguity) is capped, cheap-model, and explicitly out of the free tier's local path per `CLAUDE.md`.
+No automatic commits, staging, package-manager invocation, lockfile editing, PR opening, or MCP mutation — `--fix` changes only its explicitly eligible working-tree targets under ADR 0012. No hosted service, no multi-repo correlation, no managed telemetry/log/analytics connectors — those are the paid product under the credential boundary (ADR 0002: paid is managed connectors, team dashboard, and history/trends; locally-driven sources — log files, remote queries via the user's own credentials — are free-tier roadmap, not paid). No languages beyond TS/JS in v1 — TS/JS is the wedge because that's where Knip's false-positive pain lives, and broadening precision-critical scope before nailing one ecosystem would dilute the core bet; Python, then Elixir, are named on the public roadmap (ADR 0003), and the core must not couple to the TypeScript compiler API so those frontends can land without a rewrite. [Vulture](https://github.com/jendrikseipp/vulture) is a named research comparator when Python work begins. No IDE extension and no watch mode — v1 is a CLI artefact consumed by humans, CI, and agents, not a long-running editor integration. No telemetry, ever, in the OSS CLI, under any circumstance — this is listed as a non-goal deliberately, not just a privacy nicety, because "the OSS CLI never phones home" is a trust feature the whole adoption strategy leans on. No LLM calls in the local analysis path — the deterministic core stays deterministic; any future LLM-assisted triage (e.g. for dynamic-reference ambiguity) is capped, cheap-model, and explicitly out of the free tier's local path per `CLAUDE.md`.
 
 ## 8. Quality bar (measurable)
 
