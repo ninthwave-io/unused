@@ -29,3 +29,12 @@ Read CLAUDE.md, this file, docs/adr/ (0001–0010 all Accepted), docs/phasing.md
 
 ## Before v0.1.0 (remaining)
 Founder review of the reference-codebase deletion list (the real-use-case validation is the founder acting on it); decide Elixir experimental-flag wording for the README; then tag v0.1.0 (fires provenance publish; npm org + trusted publishing already registered).
+
+## Next development round (from the reference-codebase interactive review, 2026-07-19)
+118 claims validated in-product (19-claim batch deletions passing 11k+ tests). Upstream work order, ranked (details in a founder-provided local handoff file — private, never committed):
+1. **Four confirmed HIGH false positives** — reproduce sanitized, fix, corpus-lock (FP rate outranks everything).
+2. **Cross-workspace MEDIUM hazard leakage** — per-unit cap scoping still leaks in some shape; diagnose against the handoff.
+3. **Missing reachability sources**: Taskfile, GitHub Actions workflows, Vite/Vitest configs-as-roots gaps, MSW handlers, browser-asset references (HTML/manifest), native-config (mobile) — each as config-root/preset work with fixtures.
+4. **Deletion-consequence cascades** (product feature): report "deleting X makes Y newly dead" chains + re-export removal consequences — likely a `why`-adjacent graph query + report section.
+5. **File-level suppression** (`unused:ignore-file` or config), and **`unused why` for dependency claims**.
+6. Then: fresh re-run against the reference codebase from its original commit; Elixir interactive review (unstarted); v0.1.0 decision with founder.
