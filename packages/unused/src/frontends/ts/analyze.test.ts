@@ -187,6 +187,27 @@ describe("analyzeProject — entrypoint/keep-alive FP regressions (T2.4 review)"
   });
 });
 
+describe("analyzeProject — workspace-member tsconfig `paths` (T4.6, M4 smoke 'worst finding')", () => {
+  it("a member's own `@/*` alias keeps its aliased file alive; root files still use the root tsconfig; a real orphan still flags high", async () => {
+    // packages/app declares its own tsconfig `paths: {"@/*": ["./*"]}` (the
+    // near-universal Next.js convention). widget.ts is reachable ONLY through
+    // that member alias; before T4.6 the single root-bound resolver never saw
+    // the member's tsconfig and flagged it as a false positive. The repo root
+    // separately declares `@root/*` -> `./shared/*`; root-widget.ts is reachable
+    // ONLY through that root alias. Both must be alive, and only the genuine
+    // orphan claimed.
+    const run = await analyzeProject(testfx("workspace-member-paths"), { now: FIXED_CLOCK });
+    expect(shapes(run.claims)).toEqual([
+      H("file", "packages/app/components/orphan.ts", "packages/app/components/orphan.ts"),
+    ]);
+    const claimedFiles = run.claims.map((c) => c.subject.loc.file);
+    // widget.ts alive ⇒ member files use the member tsconfig.
+    expect(claimedFiles).not.toContain("packages/app/components/widget.ts");
+    // root-widget.ts alive ⇒ root files use the root tsconfig.
+    expect(claimedFiles).not.toContain("shared/root-widget.ts");
+  });
+});
+
 describe("analyzeProject — computed-import root resolution (reviewer, FP-critical)", () => {
   it("`import(`./${x}.js`)` in a ROOT file caps the whole package (medium), not zero files", async () => {
     // Without the root-resolution fix the prefix would be `./` (matches nothing)

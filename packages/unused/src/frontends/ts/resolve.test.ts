@@ -84,6 +84,46 @@ describe("tsconfig paths alias (with extends chain)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// workspace-member tsconfig `paths` per member (T4.6, M4 smoke "worst finding")
+// ---------------------------------------------------------------------------
+
+describe("workspace-member tsconfig `paths` honoured per member (T4.6)", () => {
+  const root = testfx("workspace-member-paths");
+  const appDir = join(root, "packages/app");
+  const workspacePackages = new Map<string, string>([["@fix/app", appDir]]);
+  const rootR = makeResolver(root, { workspacePackages });
+  const memberR = makeResolver(root, { tsconfigDir: appDir, workspacePackages });
+
+  it("the member resolver discovers the member's OWN tsconfig (not the root's)", () => {
+    expect(memberR.tsconfigPath).toBe(join(appDir, "tsconfig.json"));
+  });
+
+  it("the member's own `@/*` alias resolves internally (the fix for the smoke finding)", () => {
+    const out = memberR.resolve(
+      "@/components/widget",
+      join(appDir, "index.ts"),
+      SPAN,
+      "import",
+    ).outcome;
+    expect(out).toEqual({ kind: "internal", path: join(appDir, "components/widget.ts") });
+  });
+
+  it("root files still use the ROOT tsconfig: its `@root/*` alias resolves, the member's `@/*` does not", () => {
+    const rootFrom = join(root, "app.ts");
+    expect(rootR.tsconfigPath).toBe(join(root, "tsconfig.json"));
+    expect(rootR.resolve("@root/root-widget", rootFrom, SPAN, "import").outcome).toEqual({
+      kind: "internal",
+      path: join(root, "shared/root-widget.ts"),
+    });
+    // The member's own alias is invisible to the root resolver — root files are
+    // never resolved through a member's tsconfig.
+    expect(rootR.resolve("@/components/widget", rootFrom, SPAN, "import").outcome.kind).toBe(
+      "unresolvable",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // exports-map conditions (self-reference through package.json "exports")
 // ---------------------------------------------------------------------------
 

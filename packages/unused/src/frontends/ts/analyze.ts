@@ -220,21 +220,47 @@ export async function analyzeProject(
   });
 
   // resolve → emit IR (per-package production entrypoints from main/module/exports/bin).
-  const resolver = new Resolver({
+  const discoveredSet = new Set(files);
+  const rootResolver = new Resolver({
     projectRoot: root,
-    discoveredFiles: new Set(files),
+    discoveredFiles: discoveredSet,
     ...(workspacePackages !== undefined ? { workspacePackages } : {}),
   });
+  // T4.6 (M4 smoke "worst finding"): resolution must honour the OWNING workspace
+  // member's tsconfig (`paths`/`baseUrl`/`extends`) for files under that member,
+  // not just the monorepo root's. Build one resolver per member, each discovering
+  // its tsconfig from the member's own directory (`projectRoot` stays the analysis
+  // root, so internal/outside classification and the discovered-set authority are
+  // unchanged — only tsconfig discovery is per-member). A member with no tsconfig
+  // of its own walks up to the root's ⇒ root behaviour unchanged. Single-package:
+  // only the root entry, so emitIR resolves every file with `rootResolver` —
+  // byte-identical to the pre-T4.6 single-resolver path.
+  const resolversByUnitDir = new Map<string, Resolver>([[root, rootResolver]]);
+  if (isWorkspace) {
+    for (const unit of units) {
+      if (unit.rootRelDir === "") continue; // the root unit uses rootResolver
+      resolversByUnitDir.set(
+        unit.dir,
+        new Resolver({
+          projectRoot: root,
+          discoveredFiles: discoveredSet,
+          tsconfigDir: unit.dir,
+          ...(workspacePackages !== undefined ? { workspacePackages } : {}),
+        }),
+      );
+    }
+  }
   // emitDecoratorMetadata / project `references`: any package's tsconfig triggers
   // it (over-approximating the keep-alive only costs recall, never precision).
   const tsconfigOptions = readTsconfigOptionsForUnits(units);
   const graph = emitIR({
     projectRoot: root,
     records,
-    resolver,
+    resolver: rootResolver,
     emitDecoratorMetadata: tsconfigOptions.emitDecoratorMetadata,
-    // Single-package analysis omits `packages` → emitIR's byte-identical one-unit path.
-    ...(isWorkspace ? { packages: units } : {}),
+    // Single-package analysis omits `packages`/`resolversByUnitDir` → emitIR's
+    // byte-identical one-unit path (every file resolved with `rootResolver`).
+    ...(isWorkspace ? { packages: units, resolversByUnitDir } : {}),
   });
 
   // Fix 2 + T3.1b, per package: expand each unit's wildcard `exports` subpaths into
@@ -247,7 +273,7 @@ export async function analyzeProject(
       graph,
       root,
       unit.dir,
-      resolver,
+      resolversByUnitDir.get(unit.dir) ?? rootResolver,
       files,
       unit.packageJson,
     );

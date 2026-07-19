@@ -98,8 +98,24 @@ export interface EmitInput {
    * without one still gets a bare file node (never a silent drop).
    */
   records: readonly ModuleRecord[];
-  /** The T2.2 resolver for this project (reused across all specifiers). */
+  /**
+   * The T2.2 resolver for this project (the root/default resolver). Used for
+   * every specifier in single-package analysis, and for root-owned files (and as
+   * the fallback) in a monorepo. See {@link resolversByUnitDir}.
+   */
   resolver: Resolver;
+  /**
+   * Per-workspace-member resolvers, keyed by the member's **absolute directory**
+   * (T4.6). When present, each importing file resolves through its *deepest
+   * owning* member's resolver — so a member's own
+   * `tsconfig.json#paths`/`baseUrl`/`extends` govern module resolution for the
+   * files under it (the workspace-member-`paths` fix) — and each unit's
+   * entrypoint detection uses its own resolver. A file under no member (a
+   * root-owned file) falls back to {@link resolver}. Omitted for single-package
+   * analysis, where {@link resolver} resolves every file — byte-identical to the
+   * pre-T4.6 single-resolver path. Passed together with {@link packages}.
+   */
+  resolversByUnitDir?: ReadonlyMap<string, Resolver>;
   /**
    * The project's `package.json`. `undefined` ⇒ read `<root>/package.json` from
    * disk (missing/invalid ⇒ zero-config fallback). `null` ⇒ treat as absent.
@@ -130,6 +146,26 @@ export function emitIR(input: EmitInput): IRGraph {
   const root = resolvePath(input.projectRoot);
   const rel = (abs: string): string => toPosixRel(root, abs);
   const graph = new IRGraph();
+
+  // Per-unit resolver selection (T4.6). A file is owned by the deepest workspace
+  // member whose directory contains it; that member's resolver (its own tsconfig
+  // `paths`/`baseUrl`/`extends`) resolves the file's specifiers, else the root
+  // resolver. Absent map ⇒ the single root resolver for every file — the
+  // byte-identical single-package path.
+  const resolversByUnitDir = input.resolversByUnitDir ?? null;
+  const unitsByDepth =
+    resolversByUnitDir !== null && input.packages !== undefined
+      ? [...input.packages].sort((a, b) => resolvePath(b.dir).length - resolvePath(a.dir).length)
+      : [];
+  const resolverForFile = (absFilePath: string): Resolver => {
+    if (resolversByUnitDir === null) return input.resolver;
+    for (const unit of unitsByDepth) {
+      if (isUnderDir(absFilePath, resolvePath(unit.dir))) {
+        return resolversByUnitDir.get(unit.dir) ?? input.resolver;
+      }
+    }
+    return input.resolver;
+  };
 
   const site = (fileRel: string, span: Span): Site => ({ file: fileRel, span });
   const ensureFile = (fileRel: string): void => {
@@ -211,6 +247,9 @@ export function emitIR(input: EmitInput): IRGraph {
     const fileRel = rel(record.filePath);
     const fileNode = fileId(fileRel);
     const nsLocals = namespaceLocalsOf(record);
+    // Resolve this file's specifiers through its owning workspace member's
+    // resolver (member tsconfig `paths`), root resolver otherwise (T4.6).
+    const recordResolver = resolverForFile(record.filePath);
     // localName -> target file rel (internal namespace import), for `export { ns }`.
     const namespaceTargets = new Map<string, string | null>();
 
@@ -317,7 +356,7 @@ export function emitIR(input: EmitInput): IRGraph {
 
     // 2a. static imports (named/default/namespace) + side-effect imports.
     for (const imp of record.imports) {
-      const outcome = input.resolver.resolve(
+      const outcome = recordResolver.resolve(
         imp.source,
         record.filePath,
         imp.sourceSpan,
@@ -350,7 +389,7 @@ export function emitIR(input: EmitInput): IRGraph {
     for (const exp of record.exports) {
       if (exp.kind === "named-reexport") {
         const symId = symbolId(fileRel, exp.exportedName);
-        const outcome = input.resolver.resolve(
+        const outcome = recordResolver.resolve(
           exp.source,
           record.filePath,
           exp.sourceSpan,
@@ -363,7 +402,7 @@ export function emitIR(input: EmitInput): IRGraph {
           emitNamed("re-export", symId, fileRel, outcome, exp.importedName, s, exp.typeOnly);
         }
       } else if (exp.kind === "star-reexport") {
-        const outcome = input.resolver.resolve(
+        const outcome = recordResolver.resolve(
           exp.source,
           record.filePath,
           exp.sourceSpan,
@@ -402,7 +441,7 @@ export function emitIR(input: EmitInput): IRGraph {
     // 2c. string-literal dynamic import() → dynamic-resolved (computed ⇒ hazard, below).
     for (const dyn of record.dynamicImports) {
       if (dyn.source === null) continue;
-      const outcome = input.resolver.resolve(
+      const outcome = recordResolver.resolve(
         dyn.source,
         record.filePath,
         dyn.argSpan,
@@ -422,7 +461,7 @@ export function emitIR(input: EmitInput): IRGraph {
     // 2d. string-literal require() → dynamic-resolved.
     for (const req of record.requires) {
       if (req.source === null) continue;
-      const outcome = input.resolver.resolve(
+      const outcome = recordResolver.resolve(
         req.source,
         record.filePath,
         req.argSpan,
@@ -441,7 +480,7 @@ export function emitIR(input: EmitInput): IRGraph {
 
     // 2e. TSImportType → type-only static edge to the file surface.
     for (const ti of record.typeImports) {
-      const outcome = input.resolver.resolve(
+      const outcome = recordResolver.resolve(
         ti.source,
         record.filePath,
         ti.sourceSpan,
@@ -501,10 +540,14 @@ export function emitIR(input: EmitInput): IRGraph {
   ];
   const unresolvedTargets: string[] = [];
   for (const unit of units) {
+    // Detect each unit's entrypoints through its own resolver (T4.6); entry
+    // targets are package-relative, so this matches the pre-T4.6 single-resolver
+    // result while keeping the owning-member tsconfig consistent per unit.
+    const unitResolver = resolversByUnitDir?.get(unit.dir) ?? input.resolver;
     const detection = detectProductionEntrypointsWithDiagnostics(
       unit.packageJson,
       unit.dir,
-      input.resolver,
+      unitResolver,
       { fallbackFiles: unitRelativeFiles(recordRels, unit.rootRelDir) },
     );
     for (const hit of detection.hits) {
@@ -852,6 +895,13 @@ function suppressionsByName(
 /** Absolute path → POSIX, repo/project-relative. */
 function toPosixRel(root: string, abs: string): string {
   return relative(root, abs).split(sep).join("/");
+}
+
+/** Is absolute `path` equal to, or contained within, absolute directory `dir`? (Segment-boundary safe.) */
+function isUnderDir(path: string, dir: string): boolean {
+  if (path === dir) return true;
+  const prefix = dir.endsWith(sep) ? dir : dir + sep;
+  return path.startsWith(prefix);
 }
 
 /**

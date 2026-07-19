@@ -237,6 +237,23 @@ export interface ResolverOptions {
   /** Absolute path to the project (analysis) root. */
   readonly projectRoot: string;
   /**
+   * Directory the applicable tsconfig is discovered from (walks up, resolving
+   * the `extends` chain). Defaults to {@link projectRoot}.
+   *
+   * In a monorepo the composition layer builds one resolver **per workspace
+   * member** with this set to the member's own directory, so that member's
+   * `tsconfig.json#paths`/`baseUrl`/`extends` govern module resolution for the
+   * files under it (T4.6, the workspace-member-`paths` fix). Crucially,
+   * {@link projectRoot} still stays the analysis root — internal vs
+   * outside-project classification and the {@link discoveredFiles} authority are
+   * unchanged; only tsconfig *discovery* is per-member. The discovered tsconfig
+   * is still bounded to {@link projectRoot} (a member never inherits an ancestor
+   * repo's `paths`). A member with **no** tsconfig of its own walks up to the
+   * root's — root behaviour unchanged. Absent ⇒ discovery from
+   * {@link projectRoot}, byte-identical to the pre-T4.6 single-resolver path.
+   */
+  readonly tsconfigDir?: string;
+  /**
    * The discovered, analyzable file set (absolute paths, as `discover.ts`
    * emits). When supplied it is the authority for `internal` vs
    * `outside-project`: an internal path not in the set is `outside-project`
@@ -298,10 +315,15 @@ export class Resolver {
     this.discovered = options.discoveredFiles ?? null;
     this.workspacePackages = options.workspacePackages ?? null;
 
-    // Discover the tsconfig via get-tsconfig (walks up, resolving `extends`).
-    // Bound it to the project root: a fixture/package with no tsconfig of its
-    // own must not silently inherit an ancestor repo's `paths`.
-    const found = getTsconfig(this.projectRoot);
+    // Discover the tsconfig via get-tsconfig (walks up from `tsconfigDir`,
+    // resolving `extends`). In a monorepo this is the owning member's directory,
+    // so a member's own `tsconfig.json#paths` is honoured for its files (T4.6);
+    // by default it is the project root (single-package, unchanged). Bound it to
+    // the project root either way: a package with no tsconfig of its own must not
+    // silently inherit an ancestor repo's `paths`.
+    const tsconfigDir =
+      options.tsconfigDir !== undefined ? resolvePath(options.tsconfigDir) : this.projectRoot;
+    const found = getTsconfig(tsconfigDir);
     const bounded = found !== null && isInside(found.path, this.projectRoot) ? found : null;
     this.tsconfigPath = bounded?.path ?? null;
     this.pathsMatcher = bounded !== null ? createPathsMatcher(bounded) : null;
