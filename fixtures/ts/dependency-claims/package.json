@@ -1,0 +1,16 @@
+{
+  "name": "fixture-dependency-claims",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "lint": "config-cli check"
+  },
+  "dependencies": {
+    "unused-lib": "1.0.0",
+    "used-lib": "1.0.0",
+    "@types/unused-lib": "1.0.0",
+    "config-cli": "1.0.0"
+  }
+}

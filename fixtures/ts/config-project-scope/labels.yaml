@@ -1,0 +1,35 @@
+case: config-project-scope
+description: >-
+  unused.config.jsonc declares "project": ["src/**"], narrowing which files
+  may receive an "unused" claim without narrowing DISCOVERY (config.ts's
+  documented "project vs ignore" distinction — a reviewer-fixed
+  false-positive bug). scripts/build.ts sits outside the project scope and
+  imports src/helper.ts; src/orphan.ts is an in-scope, genuinely
+  unreferenced control. scripts/build.ts itself is deliberately NOT given a
+  label subject here: it is out of claimability scope (isClaimable() always
+  returns false for it, regardless of whether anything imports it), so
+  neither "alive" nor "dead" is the right ground truth for it — the harness
+  has no vocabulary for "unclaimable", and labelling it either way would
+  assert something the config contract does not promise.
+subjects:
+  - kind: file
+    name: src/helper.ts
+    file: src/helper.ts
+    expected: alive
+    because: >-
+      imported only by scripts/build.ts, a file outside the config
+      "project": ["src/**"] scope — but still discovered and parsed (project
+      narrows claimability, not visibility), so this import edge is a real
+      reference and src/helper.ts must not be flagged. The narrowing trap:
+      an analyzer that mistakenly treated "project" as narrowing discovery
+      (undiscovering scripts/build.ts entirely) would lose this edge and
+      wrongly claim src/helper.ts dead.
+  - kind: file
+    name: src/orphan.ts
+    file: src/orphan.ts
+    expected: dead
+    minConfidence: high
+    because: >-
+      inside the "project": ["src/**"] claimable scope and referenced by no
+      file anywhere in the project — a clean dead file with no hazard in
+      scope, the in-scope control alongside the narrowing-trap subject above.

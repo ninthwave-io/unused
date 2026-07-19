@@ -1,0 +1,7 @@
+# This fixture's dependency-claim mechanism needs a real (but hand-authored,
+# never `npm install`ed) node_modules/unused-lib/package.json manifest — see
+# labels.yaml's case description for why. The repo-root .gitignore excludes
+# every "node_modules/" directory; these two negations re-include only this
+# fixture's own hand-authored one.
+!node_modules/
+!node_modules/**

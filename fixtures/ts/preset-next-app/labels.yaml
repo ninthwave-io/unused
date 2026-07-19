@@ -1,0 +1,51 @@
+case: preset-next-app
+description: >-
+  A minimal Next.js App Router-shaped fixture, activated purely by the "next"
+  marker dependency in package.json (no next.config.* file — T4.4's
+  auto-detection accepts either signal). app/page.tsx, app/sitemap.ts
+  (file-based metadata convention), and app/api/x/route.ts (an API route
+  handler) are all convention files Next invokes by filename with no import
+  edge, and must all be kept alive by the preset's entrypoint conventions;
+  an ordinary orphan component sitting alongside them, matching no
+  convention filename, must stay claimable — the FP trap this case guards
+  against (presets.ts: "an ordinary component placed alongside a route stays
+  claimable").
+subjects:
+  - kind: file
+    name: app/page.tsx
+    file: app/page.tsx
+    expected: alive
+    because: >-
+      an App Router convention file (presets.ts's APP_ROUTER_CONVENTION_FILES)
+      — Next invokes it by filename, never by an import edge; the "next"
+      preset seeds it as a production entrypoint.
+  - kind: file
+    name: app/sitemap.ts
+    file: app/sitemap.ts
+    expected: alive
+    because: >-
+      an App Router file-based metadata convention file
+      (presets.ts's APP_METADATA_CONVENTION_FILES) — Next generates the
+      sitemap from it with no import edge; the reviewer-fixed false positive
+      this preset specifically closes (previously unmatched and confidently
+      flagged unused/high).
+  - kind: file
+    name: app/api/x/route.ts
+    file: app/api/x/route.ts
+    expected: alive
+    because: >-
+      an App Router API route handler (the "route" convention filename) —
+      invoked by Next's router by filename convention; being seeded as a
+      production entrypoint already reserves it (no separate endpoint
+      mechanism needed, presets.ts module doc).
+  - kind: file
+    name: app/components/OrphanWidget.tsx
+    file: app/components/OrphanWidget.tsx
+    expected: dead
+    minConfidence: high
+    because: >-
+      an ordinary component whose filename matches no App Router convention
+      name and which nothing imports — the preset's entrypoint patterns are
+      convention-filename-specific, not "everything under app/**", so this
+      file must remain claimable. The FP trap: a preset that seeded every
+      file under app/** as an entrypoint would wrongly keep this alive.

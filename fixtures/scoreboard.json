@@ -1,19 +1,19 @@
 {
   "analyzer": "ts-reference-graph",
   "corpus": {
-    "cases": 25,
-    "subjects": 66
+    "cases": 30,
+    "subjects": 81
   },
   "precision": 1,
-  "recall": 0.9032258064516129,
+  "recall": 0.918918918918919,
   "falsePositives": 0,
   "confidenceViolations": 0,
   "misses": 3,
   "unlabelledClaims": 0,
   "byConfidenceTier": {
     "high": {
-      "claims": 18,
-      "truePositives": 18,
+      "claims": 24,
+      "truePositives": 24,
       "falsePositives": 0,
       "confidenceViolations": 0
     },
@@ -109,6 +109,17 @@
       "unlabelledClaims": 0
     },
     {
+      "case": "config-project-scope",
+      "subjects": 2,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
       "case": "config-referenced-file",
       "subjects": 2,
       "deadLabels": 1,
@@ -153,6 +164,28 @@
       "unlabelledClaims": 0
     },
     {
+      "case": "dependency-claims",
+      "subjects": 4,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "dependency-workspace",
+      "subjects": 2,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
       "case": "entrypoint-exports-map",
       "subjects": 3,
       "deadLabels": 1,
@@ -188,6 +221,17 @@
     {
       "case": "import-type-reexport",
       "subjects": 2,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "preset-next-app",
+      "subjects": 4,
       "deadLabels": 1,
       "precision": 1,
       "recall": 1,
@@ -249,6 +293,17 @@
       "falsePositives": 0,
       "confidenceViolations": 0,
       "misses": 1,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "suppression-comment",
+      "subjects": 3,
+      "deadLabels": 2,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
       "unlabelledClaims": 0
     },
     {

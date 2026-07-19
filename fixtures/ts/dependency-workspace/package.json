@@ -1,0 +1,8 @@
+{
+  "name": "fixture-dependency-workspace-root",
+  "private": true,
+  "version": "0.0.0",
+  "dependencies": {
+    "shared-lib": "1.0.0"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "@ws/service",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "own-unused-dep": "1.0.0"
+  }
+}

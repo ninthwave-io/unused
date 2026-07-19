@@ -1,0 +1,41 @@
+case: dependency-workspace
+description: >-
+  A pnpm workspace (pnpm-workspace.yaml) with one member, @ws/service,
+  exercising T4.1/T4.2's per-workspace dependency claims: a dependency
+  declared ONLY in the root package.json and imported only by the member
+  (the hoisting trap — must stay alive, not phantom-claimed against the
+  root, which has no import of its own) and a dependency declared in the
+  member's OWN package.json that nothing imports (a clean per-workspace
+  dead dependency). The fixture commits a minimal hand-authored
+  packages/service/node_modules/own-unused-dep/package.json manifest (no
+  "bin" field, never `npm install`ed — see this directory's .gitignore),
+  the same pre-install-conservatism workaround as fixtures/ts/
+  dependency-claims — without it this claim is swallowed entirely (verified
+  empirically).
+subjects:
+  - kind: dependency
+    name: shared-lib
+    file: package.json
+    expected: alive
+    because: >-
+      declared only in the ROOT package.json's "dependencies", never
+      redeclared by @ws/service, but imported by
+      packages/service/src/index.ts — a root-declared dependency hoists to
+      every workspace member, so it is alive if referenced by ANY unit
+      (assumption-set.md, "Dependency claims cover per-workspace
+      dependencies only"). The false-positive trap this catches: naively
+      checking only the ROOT's own files for a reference would wrongly
+      claim this dead.
+  - kind: dependency
+    name: own-unused-dep
+    file: packages/service/package.json
+    expected: dead
+    minConfidence: high
+    because: >-
+      declared in @ws/service's own "dependencies" but imported by no file
+      in either workspace unit, is not an @types/* package, is not named in
+      any config/scripts string, and is not a workspace:-protocol sibling —
+      and its committed node_modules manifest declares no "bin", so
+      bin-only-dependency's pre-install conservatism does not apply.
+      Verified empirically to be tagged subject.loc.package "@ws/service"
+      (the T4.2 per-claim workspace-package tag).

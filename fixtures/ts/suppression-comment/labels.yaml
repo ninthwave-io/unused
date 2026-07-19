@@ -1,0 +1,49 @@
+case: suppression-comment
+description: >-
+  Two dead exports in the same otherwise-alive file, each preceded by a
+  `/* unused:ignore ... */` directive (suppression.ts): one carries a reason
+  ("migration pending"), one omits it. Both are still claimed dead/high —
+  suppression.ts's contract is "still claimed, carrying suppression,
+  counted" (PRD §4/§6), never a silent drop. Verified empirically
+  (dist/cli/index.js --json) that the reason-carrying claim's
+  `suppression.reason` is exactly "migration pending", and the
+  reason-missing claim's `suppression.reason` is the empty string with no
+  extra warning field on the claim itself — rendering that warning to the
+  user is documented as deferred to M6 (suppression.ts: "so M6 renders the
+  warning rather than silently dropping the directive"); today's contract is
+  only that the directive is captured and the claim still emitted, which
+  this case's expected labels hold the analyzer to. Also verified: the
+  fixture-corpus scoring harness (testing/corpus/metrics.ts) joins claims to
+  labels purely by (kind, name, file) and does not special-case a claim's
+  `suppression` field, so both suppressed claims here are scored as normal
+  true positives — i.e. the harness does already handle suppressed claims in
+  its metrics.
+subjects:
+  - kind: export
+    name: keepAlive
+    file: src/legacy.ts
+    expected: alive
+    because: imported and called by src/index.ts, the package entrypoint (package.json "main").
+  - kind: export
+    name: withReason
+    file: src/legacy.ts
+    expected: dead
+    minConfidence: high
+    because: >-
+      unreferenced anywhere and preceded directly by
+      `/* unused:ignore migration pending */` — a clean dead export that
+      must still be claimed (suppression never drops a claim), carrying a
+      suppression object whose reason is "migration pending".
+  - kind: export
+    name: withoutReason
+    file: src/legacy.ts
+    expected: dead
+    minConfidence: high
+    because: >-
+      unreferenced anywhere and preceded directly by a reason-less
+      `/* unused:ignore */` — still claimed dead/high per the same
+      never-silently-drop contract; the directive is captured
+      (reasonMissing) but today's Claim schema only carries a `reason`
+      string (empty here), not a separate missing-reason warning field —
+      that user-facing warning is documented (M6) as deferred, not yet
+      rendered.

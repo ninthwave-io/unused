@@ -1,0 +1,53 @@
+case: dependency-claims
+description: >-
+  A single-package project.json "dependencies" map exercising T4.1's
+  declared-vs-referenced dependency core plus two of its keep-alive rules in
+  one case: a genuinely unused prod dep, an imported prod dep, an @types/*
+  companion (blunt v1 pairing rule), and a dep named only inside a
+  package.json "scripts" value (config-named keep-alive). The fixture
+  commits a minimal hand-authored node_modules/unused-lib/package.json
+  manifest (no "bin" field, never `npm install`ed — see this directory's
+  .gitignore) specifically so the dead label is not masked by the
+  bin-only-dependency hazard's pre-install conservatism (assumption-set.md:
+  "pre-install ... every otherwise-unreferenced dependency is kept alive"),
+  which was verified empirically to swallow the claim entirely (zero claims
+  of any kind) when no node_modules is present at all.
+subjects:
+  - kind: dependency
+    name: unused-lib
+    file: package.json
+    expected: dead
+    minConfidence: high
+    because: >-
+      declared in "dependencies" but imported by no source file, is not an
+      @types/* package, is not named in any config/scripts string, and its
+      committed node_modules/unused-lib/package.json manifest declares no
+      "bin" — so bin-only-dependency's pre-install conservatism does not
+      apply here and the dependency is definitively provable dead. Verified
+      empirically: this claim disappears entirely (kept alive) if the
+      node_modules manifest is removed.
+  - kind: dependency
+    name: used-lib
+    file: package.json
+    expected: alive
+    because: imported by src/index.ts — a real external-import reference edge.
+  - kind: dependency
+    name: "@types/unused-lib"
+    file: package.json
+    expected: alive
+    because: >-
+      every @types/* dependency is kept alive whenever the project contains
+      any TypeScript file (assumption-set.md's blunt v1 @types-pairing
+      rule) — true here regardless of whether "unused-lib" itself ends up
+      claimed dead, by design (the rule does not pair by name, deliberately
+      generous to stay false-positive-proof).
+  - kind: dependency
+    name: config-cli
+    file: package.json
+    expected: alive
+    because: >-
+      named only inside package.json's "scripts"."lint" value
+      ("config-cli check"), never imported from source — the
+      config-named-dependency keep-alive rule (assumption-set.md), which
+      also generously covers package.json "scripts" values, not just
+      project config file strings.
