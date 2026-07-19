@@ -1,0 +1,8 @@
+{
+  "name": "dep-jsx-js",
+  "main": "src/index.js",
+  "dependencies": {
+    "react": "^18.0.0",
+    "unused-dep": "^1.0.0"
+  }
+}

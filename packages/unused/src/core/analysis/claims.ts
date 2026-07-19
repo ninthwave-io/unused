@@ -57,11 +57,14 @@ import { computeClaimId } from "../claims/id.js";
 import type {
   Claim,
   Confidence,
+  DependencyClaim,
+  DependencySubject,
   Evidence,
   ExportClaim,
   ExportSubject,
   FileClaim,
   FileSubject,
+  Loc,
   Provenance,
   Span,
   Suppression,
@@ -88,6 +91,24 @@ const CAP_CONFIDENCE: Readonly<Record<Exclude<ConfidenceCap, "no-claim">, Confid
   low: "low",
 };
 
+/**
+ * One declared dependency the frontend has already judged **claimable unused**
+ * (T4.1, phasing.md M4). Dependency liveness — declared vs. referenced package
+ * names, `@types` pairing, bin-only tools, the JSX runtime, `workspace:`
+ * siblings, config/scripts-named packages — is ecosystem-specific, so the
+ * TS/JS frontend (`frontends/ts/dependencies.ts`) resolves it and passes core
+ * only the leftover unused declarations. Core owns just the claim construction:
+ * the stable id, the subject, and the project-scope confidence cap (below), so
+ * dependency claims read identically to export/file claims and respect the same
+ * hazard plumbing.
+ */
+export interface DependencyClaimInput {
+  /** The declared package name (`lodash`, `@scope/pkg`). */
+  readonly packageName: string;
+  /** The declaring `package.json` location (file + span + owning workspace). */
+  readonly loc: Loc;
+}
+
 export interface EmitClaimsInput {
   readonly graph: IRGraph;
   readonly reachability: Reachability;
@@ -100,6 +121,15 @@ export interface EmitClaimsInput {
   readonly fileLineCounts?: ReadonlyMap<string, number>;
   /** Claim-id language slot (empty/absent ⇒ `ts`, ADR 0006). */
   readonly language?: string;
+  /**
+   * Declared dependencies the frontend judged unused (T4.1). Each becomes a
+   * `dependency`/`unused` claim, at `high` unless a **project-scope** hazard
+   * caps the workspace project-wide (the existing cap plumbing —
+   * `unresolvable-entrypoint-target`, a whole-package `project-references`, or a
+   * repo-root computed import — applies to dependency claims exactly as to file
+   * claims). Absent/empty ⇒ no dependency claims (byte-identical to pre-M4).
+   */
+  readonly dependencies?: readonly DependencyClaimInput[];
 }
 
 /**
@@ -123,7 +153,7 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
   //                (symbol-set scope). An unregistered class ⇒ project no-claim.
   const caps = buildHazardCaps(graph);
   if (caps.projectNoClaim) return [];
-  const { fileCap, exportCap } = caps;
+  const { fileCap, exportCap, projectCap } = caps;
 
   // Files reached by any reference edge (to the file node or any symbol it
   // exposes) — the "has an inbound edge" test for file claims.
@@ -185,6 +215,20 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
     }
   }
 
+  // --- dependency claims (T4.1) ---------------------------------------------
+  // The frontend already excluded referenced / kept-alive dependencies; every
+  // input here is a declared-but-unreferenced package. Confidence is `high`
+  // unless a project-wide hazard caps the whole workspace (the same
+  // `projectCap` a file claim in this project would carry) — dependency claims
+  // are not affected by per-file/symbol-set hazards (a dep is a project-level
+  // subject, not a file-level one). The entrypoint / no-claim guards above also
+  // gate these: a project that anchors no liveness, or is wholly kept alive,
+  // proves nothing about its dependencies either.
+  for (const dep of input.dependencies ?? []) {
+    const confidence = confidenceForCap(projectCap);
+    claims.push(buildDependencyClaim(dep, input, confidence, noteForCap(projectCap)));
+  }
+
   claims.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   return claims;
 }
@@ -200,6 +244,15 @@ interface HazardCaps {
   readonly fileCap: ReadonlyMap<string, AppliedCap>;
   /** fileId → strongest cap on the file's export claims only (symbol-set). */
   readonly exportCap: ReadonlyMap<string, AppliedCap>;
+  /**
+   * The strongest cap that applies **project-wide** — a `project`-scoped hazard
+   * (`unresolvable-entrypoint-target`), or a whole-package `directory-subtree`
+   * hazard whose prefix is `""` (a `project-references` cap, a repo-root
+   * computed import). This is the ceiling a dependency claim (T4.1), which has
+   * no file to attach a per-file cap to, is emitted at. `undefined` ⇒ no
+   * project-wide hazard ⇒ dependency claims stay `high`.
+   */
+  readonly projectCap: AppliedCap | undefined;
 }
 
 /**
@@ -211,6 +264,11 @@ function buildHazardCaps(graph: IRGraph): HazardCaps {
   const fileCap = new Map<string, AppliedCap>();
   const exportCap = new Map<string, AppliedCap>();
   let projectNoClaim = false;
+  let projectCap: AppliedCap | undefined;
+  const raiseProjectCap = (applied: AppliedCap): void => {
+    if (projectCap === undefined || capIsStrongerOrEqual(applied.cap, projectCap.cap))
+      projectCap = applied;
+  };
   const warned = new Set<string>();
 
   // Precompute the file-node (id, path) list ONCE: every directory-subtree
@@ -243,11 +301,13 @@ function buildHazardCaps(graph: IRGraph): HazardCaps {
       case "project":
         // `no-claim` suppresses the whole project; a `medium`/`low` project cap
         // instead lowers every file's ceiling (file claim AND its export claims),
-        // exactly like a directory-subtree hazard with an empty prefix.
+        // exactly like a directory-subtree hazard with an empty prefix, and caps
+        // dependency claims project-wide (they have no per-file cap).
         if (entry.cap === "no-claim") {
           projectNoClaim = true;
         } else {
           for (const f of fileNodes) mergeCap(fileCap, f.id, applied);
+          raiseProjectCap(applied);
         }
         break;
       case "file":
@@ -261,12 +321,15 @@ function buildHazardCaps(graph: IRGraph): HazardCaps {
         for (const f of fileNodes) {
           if (f.path.startsWith(prefix)) mergeCap(fileCap, f.id, applied);
         }
+        // A whole-package (empty-prefix) subtree cap covers every file, so it is
+        // also a project-wide cap for the (file-less) dependency claims.
+        if (prefix === "") raiseProjectCap(applied);
         break;
       }
     }
   }
 
-  return { projectNoClaim, fileCap, exportCap };
+  return { projectNoClaim, fileCap, exportCap, projectCap };
 }
 
 function appliedCap(hazard: HazardAnnotation, cap: ConfidenceCap): AppliedCap {
@@ -345,6 +408,30 @@ function buildFileClaim(
   const evidence: Evidence = {
     type: "static-reachability",
     detail: `0 inbound references to \`${file}\` from any production entrypoint in the reference graph.${capNote ?? ""}`,
+    source: EVIDENCE_SOURCE,
+  };
+  const id = computeClaimId(subject, langOpt(input));
+  return {
+    id,
+    subject,
+    verdict: "unused",
+    confidence,
+    evidence: [evidence],
+    provenance: input.provenance,
+  };
+}
+
+function buildDependencyClaim(
+  dep: DependencyClaimInput,
+  input: EmitClaimsInput,
+  confidence: Confidence,
+  capNote: string | undefined,
+): DependencyClaim {
+  const subject: DependencySubject = { kind: "dependency", name: dep.packageName, loc: dep.loc };
+  const where = dep.loc.package !== undefined ? `workspace \`${dep.loc.package}\`` : "the project";
+  const evidence: Evidence = {
+    type: "static-reachability",
+    detail: `Declared dependency \`${dep.packageName}\` is imported by no file in ${where} and matches no dependency keep-alive rule (\`@types\` pairing, a \`bin\` tool, the JSX runtime, a \`workspace:\` sibling, or a config/scripts reference).${capNote ?? ""}`,
     source: EVIDENCE_SOURCE,
   };
   const id = computeClaimId(subject, langOpt(input));

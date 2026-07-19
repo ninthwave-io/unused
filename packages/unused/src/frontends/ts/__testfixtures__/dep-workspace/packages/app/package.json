@@ -1,0 +1,8 @@
+{
+  "name": "@fx/app",
+  "main": "index.ts",
+  "dependencies": {
+    "@fx/lib": "workspace:*",
+    "@fx/unused-sib": "workspace:*"
+  }
+}

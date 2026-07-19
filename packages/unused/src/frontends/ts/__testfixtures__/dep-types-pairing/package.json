@@ -1,0 +1,8 @@
+{
+  "name": "dep-types-pairing",
+  "main": "src/index.ts",
+  "dependencies": {
+    "@types/node": "^22.0.0",
+    "dead-lib": "^1.0.0"
+  }
+}

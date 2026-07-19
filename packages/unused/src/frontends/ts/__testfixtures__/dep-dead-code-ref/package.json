@@ -1,0 +1,8 @@
+{
+  "name": "dep-dead-code-ref",
+  "main": "src/index.ts",
+  "dependencies": {
+    "alive-dep": "^1.0.0",
+    "dead-code-dep": "^1.0.0"
+  }
+}

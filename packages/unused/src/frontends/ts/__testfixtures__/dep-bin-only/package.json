@@ -1,0 +1,8 @@
+{
+  "name": "dep-bin-only",
+  "main": "src/index.ts",
+  "dependencies": {
+    "some-cli": "^1.0.0",
+    "dead-lib": "^1.0.0"
+  }
+}

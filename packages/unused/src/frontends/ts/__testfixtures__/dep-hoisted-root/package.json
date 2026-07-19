@@ -1,0 +1,9 @@
+{
+  "name": "@h/root",
+  "private": true,
+  "workspaces": ["packages/*"],
+  "dependencies": {
+    "shared-lib": "^1.0.0",
+    "truly-unused": "^1.0.0"
+  }
+}

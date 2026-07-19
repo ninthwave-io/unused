@@ -14,7 +14,7 @@ export {
   type GlobalAssumption,
   renderAssumptionSet,
 } from "./assumption-set.js";
-export { type EmitClaimsInput, emitClaims } from "./claims.js";
+export { type DependencyClaimInput, type EmitClaimsInput, emitClaims } from "./claims.js";
 export {
   type ConfidenceCap,
   capIsStrongerOrEqual,

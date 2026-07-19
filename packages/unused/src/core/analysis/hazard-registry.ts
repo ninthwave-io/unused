@@ -185,7 +185,21 @@ export const HAZARD_REGISTRY: Readonly<Record<HazardClass, HazardClassEntry>> = 
     scope: "none",
     cap: "medium",
     rationale:
-      "JSX compiled with the automatic runtime (`jsxImportSource`) injects imports of `react/jsx-runtime` (or the configured source) that never appear in source — so the JSX runtime package is used without a visible import. This concerns *dependency* liveness (tier-1 dependency claims), which do not exist until M4; the entry is registered with no claim effect and activates at M4, when dependency claims can consume it.",
+      "JSX compiled with the automatic runtime (tsconfig `jsx: react-jsx`/`react-jsxdev`, optionally with `jsxImportSource`) injects imports of `react/jsx-runtime` (or the configured source's `/jsx-runtime`) that never appear in source — so the JSX runtime package is used without any visible import. ACTIVE at M4 (dependency claims): when a project has an automatic-runtime tsconfig, the runtime package (the `jsxImportSource` value, defaulting to `react`) is kept alive whenever any source file exists — never claimed as an unused dependency even though nothing imports it. The keep-alive is not restricted to `.tsx`/`.jsx` files because automatic JSX also compiles from `.js`/`.mjs` (CRA-style); the blunt any-source-file rule is false-positive-proof. This is the classic `react`-declared-but-not-imported false positive the rule exists to prevent.",
+  },
+  "bin-only-dependency": {
+    hazardClass: "bin-only-dependency",
+    scope: "none",
+    cap: "medium",
+    rationale:
+      "A declared dependency whose installed package.json declares a `bin` field is a command-line tool (e.g. a linter, bundler, or test runner) commonly invoked through package.json scripts, a Makefile, or a git hook rather than imported from source. Such a package can have zero static import edges yet still be genuinely used, so a declared dependency that ships a `bin` is kept alive (never claimed) as a dependency-liveness keep-alive rationale — a no-claim-effect entry, like the JSX runtime rule. Pre-install conservatism: when no `node_modules` is present to inspect (an un-installed or unbuilt checkout), a bin cannot be confirmed or ruled out, so every otherwise-unreferenced dependency is kept alive — a CLI whose bin name differs from its package name and is not named in scripts would otherwise false-flag. This trades recall (dependency claims are weaker before an install) for the zero-false-positive guarantee; a `workspace:` sibling, resolved by name and never a bin, is exempt.",
+  },
+  "config-named-dependency": {
+    hazardClass: "config-named-dependency",
+    scope: "none",
+    cap: "medium",
+    rationale:
+      "A declared dependency whose name — or its conventional plugin/preset shorthand (an `eslint-plugin-x` referenced as `x`, an `@scope/eslint-plugin-x` as `@scope/x`, a `babel-plugin-x`/`babel-preset-x` as `x`, and the common `@scope/plugin-x`/`@scope/preset-x` forms) — appears as a token inside a project config string or a package.json `scripts` value is wired in by configuration rather than a source import (an ESLint plugin named in `.eslintrc`, a tool named in a script). It is kept alive (never claimed) as a dependency-liveness keep-alive rationale. Deliberately generous: config matching only reduces recall, never adds a false positive.",
   },
 };
 

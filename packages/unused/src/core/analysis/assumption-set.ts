@@ -28,7 +28,7 @@ import { HAZARD_REGISTRY, type HazardClassEntry } from "./hazard-registry.js";
  * wording or the set of globals (a behaviour-affecting change), so a consumer
  * pinning a version can detect it. Independent of the analyzer/tool version.
  */
-export const ASSUMPTION_SET_VERSION = "1.2.1";
+export const ASSUMPTION_SET_VERSION = "1.4.0";
 
 /** One global analysis assumption (independent of any single hazard class). */
 export interface GlobalAssumption {
@@ -73,6 +73,12 @@ export const GLOBAL_ASSUMPTIONS: readonly GlobalAssumption[] = [
     title: "Monorepo workspaces are analyzed per package",
     detail:
       "In a monorepo — npm, pnpm, yarn-classic, or bun workspaces, auto-detected from `pnpm-workspace.yaml` or the `workspaces` field — every workspace package contributes its own entrypoints (`main`/`module`/`exports`/`bin`, plus config and test roots) to one shared reference graph, so a symbol used across packages is alive. Cross-workspace imports resolve to a sibling's source — via the `workspace:` protocol, a direct relative import, or a bare/subpath import of a sibling package name (resolved through the sibling's `exports`/`main`) — and are classified internal, never as an external dependency. Each claim is tagged with the workspace package that owns its file (`subject.loc.package`). Root-level files outside every member are analyzed under the root package. A would-be member removed by a negative glob (e.g. `!packages/legacy`) is excluded: its whole subtree is out of scope — discovered but never claimed, and imported as an outside-project keep-alive — so externally-built code under it is not flagged.",
+  },
+  {
+    id: "dependency-liveness-declared-dependencies",
+    title: "Dependency claims cover per-workspace `dependencies` only",
+    detail:
+      'A `dependency` claim is raised for a package listed in a workspace package.json\'s `dependencies` map that no source file references — where a reference is a normal import, a `/// <reference types="…" />` triple-slash directive (comment-borne, so scanned separately from the import graph), or, for a `workspace:` sibling, a cross-package import by name or relative path. References from unreachable (dead) files still keep a dependency alive: deleting it is a human cascade decision, not our claim. A dependency declared in the ROOT package.json hoists to every workspace member, so it is alive if ANY unit references it (the same any-unit rule covers a member that redeclares a root-declared name — phantom hoisting). `devDependencies` are out of scope in v1: their liveness needs modelling of the scripts and tools that run them, which we do not have — flagging them would risk false positives, so they are left alone (documented debt); `peer`/`optional` dependencies are likewise not analysed. Several declared dependencies are kept alive despite having no reference: every `@types/*` package whenever the project contains any TypeScript file (a blunt, false-positive-proof rule — precise `@types` pairing is a deferred recall improvement); the JSX runtime package (`react`, or the `jsxImportSource` value) under an automatic-runtime tsconfig (`jsx: react-jsx`) whenever any source file exists, since automatic JSX can live in `.js`/`.mjs` as well as `.tsx`/`.jsx`; a package whose installed manifest declares a `bin` (a CLI run via scripts/hooks), and — pre-install, when no `node_modules` is present to inspect — any dependency, conservatively treated as a potential CLI whose bin name may differ from the package name (recall is sacrificed for zero false positives until the project is installed); a package whose name or conventional plugin/preset shorthand appears in a config string or a package.json `scripts` value; and a `workspace:` sibling that the workspace actually references. Dependency claims are `high` confidence unless a project-wide hazard caps the whole workspace, exactly as for file claims.',
   },
   {
     id: "yarn-pnp-unsupported",

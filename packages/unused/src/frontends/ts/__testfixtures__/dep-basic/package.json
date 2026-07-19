@@ -1,0 +1,8 @@
+{
+  "name": "dep-basic",
+  "main": "src/index.ts",
+  "dependencies": {
+    "used-lib": "^1.0.0",
+    "dead-lib": "^1.0.0"
+  }
+}

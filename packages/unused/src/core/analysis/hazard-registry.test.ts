@@ -31,6 +31,8 @@ const ALL_CLASSES: readonly HazardClass[] = [
   "project-references",
   "unresolvable-entrypoint-target",
   "jsx-runtime-dependency",
+  "bin-only-dependency",
+  "config-named-dependency",
 ];
 
 describe("HAZARD_REGISTRY — vocabulary coverage", () => {
@@ -101,9 +103,17 @@ describe("HAZARD_REGISTRY — scope/cap per class group (T3.1a)", () => {
     expectEntry("unresolvable-entrypoint-target", { scope: "project", cap: "medium" });
   });
 
-  it("jsx-runtime-dependency is scope none (note-only; activates at M4)", () => {
+  it("jsx-runtime-dependency is scope none (activates at M4)", () => {
     expect(HAZARD_REGISTRY["jsx-runtime-dependency"].scope).toBe("none");
     expect(HAZARD_REGISTRY["jsx-runtime-dependency"].rationale).toMatch(/M4/);
+  });
+
+  it("the M4 dependency keep-alive rationales are scope none (no claim effect)", () => {
+    // T4.1: bin-only and config-named are dependency-liveness keep-alive
+    // rationales — they never emit or cap a claim (a kept-alive dependency is
+    // simply not claimed), they document why a declared dependency is spared.
+    expect(HAZARD_REGISTRY["bin-only-dependency"].scope).toBe("none");
+    expect(HAZARD_REGISTRY["config-named-dependency"].scope).toBe("none");
   });
 });
 

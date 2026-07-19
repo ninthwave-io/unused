@@ -82,7 +82,9 @@ export type HazardClass =
   | "conditional-exports-divergence"
   | "project-references"
   | "unresolvable-entrypoint-target"
-  | "jsx-runtime-dependency";
+  | "jsx-runtime-dependency"
+  | "bin-only-dependency"
+  | "config-named-dependency";
 
 // ---------------------------------------------------------------------------
 // Nodes

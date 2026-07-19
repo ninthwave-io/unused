@@ -14,7 +14,7 @@ import {
   type Site,
   symbolId,
 } from "../ir/index.js";
-import { emitClaims } from "./claims.js";
+import { type DependencyClaimInput, emitClaims } from "./claims.js";
 import { computeReachability } from "./reachability.js";
 
 const PROVENANCE: Provenance = {
@@ -551,6 +551,69 @@ describe("entrypoint boundary (T2.4 review)", () => {
     addConfigEntry(g, "vite.config.ts"); // config root — must not be claimed
     addFile(g, "src/orphan.ts"); // genuine orphan — must be claimed
     expect(shape(run(g)).map((c) => c.name)).toEqual(["src/orphan.ts"]);
+  });
+});
+
+describe("dependency claims (core)", () => {
+  const DEP: DependencyClaimInput = {
+    packageName: "left-pad",
+    loc: { file: "package.json", span: [7, 7] },
+  };
+
+  const runWithDeps = (g: IRGraph, dependencies: DependencyClaimInput[]): Claim[] => {
+    const reachability = computeReachability(g);
+    return emitClaims({ graph: g, reachability, provenance: PROVENANCE, dependencies });
+  };
+
+  it("emits a dependency/unused claim at high when no project hazard caps it", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    const claims = runWithDeps(g, [DEP]);
+    expect(shape(claims)).toEqual([
+      {
+        kind: "dependency",
+        name: "left-pad",
+        file: "package.json",
+        verdict: "unused",
+        confidence: "high",
+      },
+    ]);
+    expect(claims[0]?.subject.loc.span).toEqual([7, 7]);
+    expect(claims[0]?.evidence[0]?.source).toBe("reference-graph");
+  });
+
+  it("respects a project-scope cap: unresolvable-entrypoint-target downgrades deps to medium", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    hazard(g, "package.json", "unresolvable-entrypoint-target"); // scope project, cap medium
+    expect(sorted(runWithDeps(g, [DEP]))[0]).toMatchObject({
+      kind: "dependency",
+      confidence: "medium",
+    });
+  });
+
+  it("respects a whole-package cap: a project-references hazard (empty prefix) downgrades deps", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    hazard(g, "tsconfig.json", "project-references"); // directory-subtree, no prefix ⇒ whole package
+    expect(shape(runWithDeps(g, [DEP]))).toEqual([
+      expect.objectContaining({ kind: "dependency", confidence: "medium" }),
+    ]);
+  });
+
+  it("emits no dependency claim when there is no production entrypoint (nothing anchors liveness)", () => {
+    const g = new IRGraph();
+    addConfigEntry(g, "vite.config.ts"); // a root, but not a production one
+    expect(runWithDeps(g, [DEP])).toEqual([]);
+  });
+
+  it("suppresses dependency claims when an unregistered hazard forces whole-project no-claim", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    hazard(g, "src/index.ts", "totally-unknown-hazard" as HazardClass);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(runWithDeps(g, [DEP])).toEqual([]);
+    warn.mockRestore();
   });
 });
 

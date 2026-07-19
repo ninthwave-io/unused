@@ -1,0 +1,8 @@
+{
+  "name": "dep-reference-types",
+  "main": "src/index.ts",
+  "dependencies": {
+    "some-types": "^1.0.0",
+    "dead-lib": "^1.0.0"
+  }
+}

@@ -69,10 +69,11 @@ import {
   SCHEMA_VERSION,
 } from "../../core/claims/index.js";
 import { entrypointId, fileId, type IRGraph, type Site } from "../../core/ir/index.js";
+import { addConfigTokens, computeUnusedDependencies } from "./dependencies.js";
 import { discover } from "./discover.js";
 import { type EmitPackageUnit, emitIR, type PackageJsonLike } from "./emit.js";
 import { parseSource } from "./parse.js";
-import { Resolver } from "./resolve.js";
+import { packageNameOf, Resolver } from "./resolve.js";
 import { detectWorkspaces, type WorkspaceLayout } from "./workspaces.js";
 
 const ANALYZER_NAME = "ts-reference-graph";
@@ -255,8 +256,10 @@ export async function analyzeProject(
 
   // Fix 3: keep alive any source file referenced as a string in a JSON config or
   // in a config root's own source (closes `.json` and `.js`/`.ts` config paths).
-  const referenced = await scanConfigReferences(root, files, jsonFiles, configRoots, contentByAbs);
-  for (const abs of referenced) {
+  // The same pass collects the config/scripts token corpus for T4.1's
+  // `config-named-dependency` keep-alive.
+  const configScan = await scanConfigReferences(root, files, jsonFiles, configRoots, contentByAbs);
+  for (const abs of configScan.referenced) {
     const rel = toPosixRel(root, abs);
     const site: Site = { file: rel, span: { start: 0, end: 0, startLine: 1, endLine: 1 } };
     graph.addHazard({
@@ -267,6 +270,22 @@ export async function analyzeProject(
     });
   }
 
+  // T4.1: dependency claims. The declared-vs-referenced + keep-alive decision
+  // (per-workspace `dependencies`, `@types`/bin/JSX-runtime/`workspace:`/config
+  // rules) is TS/JS-specific and computed here; core stamps id/confidence.
+  // JSX runtime: automatic JSX can live in `.js`/`.mjs` (CRA-style), not only
+  // `.tsx`/`.jsx`, so the runtime package is kept alive whenever the automatic
+  // runtime is configured and any source file exists (blunt, false-positive-proof).
+  const dependencies = computeUnusedDependencies({
+    root,
+    units,
+    graph,
+    files,
+    fileContents: contentByAbs,
+    jsxRuntimePackages: files.length > 0 ? tsconfigOptions.jsxRuntimePackages : new Set<string>(),
+    configTokens: configScan.configTokens,
+  });
+
   // reachability → claims.
   const reachability = computeReachability(graph);
   const provenance: Provenance = {
@@ -274,7 +293,7 @@ export async function analyzeProject(
     version,
     generatedAt: now.toISOString(),
   };
-  const claims = emitClaims({ graph, reachability, provenance, fileLineCounts });
+  const claims = emitClaims({ graph, reachability, provenance, fileLineCounts, dependencies });
 
   // Populate `subject.loc.package` in a monorepo (schema field; each claim tagged
   // with its owning workspace package). The claim `id` excludes package, so this
@@ -399,22 +418,31 @@ function buildWorkspaceMap(units: readonly AnalyzeUnit[]): Map<string, string> {
 }
 
 /**
- * `emitDecoratorMetadata` / project `references` across all package units: any
- * unit's tsconfig enabling either flips it on for the run. Over-approximating the
- * resulting keep-alive/cap costs recall, never precision — the safe direction.
+ * `emitDecoratorMetadata` / project `references` / JSX-runtime packages across
+ * all package units: any unit's tsconfig enabling a flag flips it on for the
+ * run, and every unit with an automatic-runtime `jsx` setting contributes its
+ * runtime package (`jsxImportSource` value, default `react`) to the keep-alive
+ * set (T4.1). Over-approximating the resulting keep-alive/cap costs recall,
+ * never precision — the safe direction.
  */
 function readTsconfigOptionsForUnits(units: readonly AnalyzeUnit[]): {
   emitDecoratorMetadata: boolean;
   hasReferences: boolean;
+  jsxRuntimePackages: Set<string>;
 } {
   let emitDecoratorMetadata = false;
   let hasReferences = false;
+  const jsxRuntimePackages = new Set<string>();
   for (const unit of units) {
     const opts = readTsconfigOptions(unit.dir);
     emitDecoratorMetadata = emitDecoratorMetadata || opts.emitDecoratorMetadata;
     hasReferences = hasReferences || opts.hasReferences;
+    if (opts.jsxAutomatic) {
+      const source = opts.jsxImportSource ?? "react";
+      jsxRuntimePackages.add(packageNameOf(source) ?? source);
+    }
   }
-  return { emitDecoratorMetadata, hasReferences };
+  return { emitDecoratorMetadata, hasReferences, jsxRuntimePackages };
 }
 
 /**
@@ -507,8 +535,13 @@ async function walkConfigTree(
 }
 
 /**
- * Absolute paths of discovered source files referenced as a string in a JSON
- * config or a config root's own source. Size-capped and lockfile-excluded.
+ * Scans every JSON config and config-root source once, returning both:
+ *  - `referenced` — absolute paths of discovered source files named as a string
+ *    (the `config-referenced-file` keep-alive input);
+ *  - `configTokens` — the identifier-ish tokens of every scanned config string
+ *    and (package.json being a JSON config) every `scripts` value, the corpus a
+ *    `config-named-dependency` keep-alive matches a dependency name against
+ *    (T4.1). Size-capped and lockfile-excluded.
  */
 async function scanConfigReferences(
   root: string,
@@ -516,19 +549,23 @@ async function scanConfigReferences(
   jsonFiles: readonly string[],
   configRoots: readonly string[],
   contentByAbs: ReadonlyMap<string, string>,
-): Promise<Set<string>> {
+): Promise<{ referenced: Set<string>; configTokens: Set<string> }> {
   const discovered = new Set(discoveredAbs);
   const referenced = new Set<string>();
+  const configTokens = new Set<string>();
 
-  const matchStrings = (strings: Iterable<string>, fromDir: string): void => {
+  const matchPaths = (strings: Iterable<string>, fromDir: string): void => {
     for (const value of strings) {
       for (const candidate of candidatePaths(value, root, fromDir)) {
         if (discovered.has(candidate)) referenced.add(candidate);
       }
     }
   };
+  const addTokens = (strings: Iterable<string>): void => {
+    for (const value of strings) addConfigTokens(configTokens, value);
+  };
 
-  // JSON configs (jest.config.json setupFiles, etc.).
+  // JSON configs (jest.config.json setupFiles, package.json scripts, etc.).
   for (const jsonFile of jsonFiles) {
     let raw: string;
     try {
@@ -543,17 +580,90 @@ async function scanConfigReferences(
     } catch {
       continue;
     }
-    matchStrings(collectStringLeaves(parsed), dirname(jsonFile));
+    // Path matching considers every string (a `name`/`version` is harmless there).
+    matchPaths(collectStringLeaves(parsed), dirname(jsonFile));
+    // Config-named tokens: from a package.json only the config-bearing fields
+    // (`scripts`, `eslintConfig`, …), never its metadata — a workspace member's
+    // own `name` must not keep a sibling's `workspace:` dependency alive (T4.1).
+    addTokens(
+      basename(jsonFile) === "package.json"
+        ? packageJsonConfigLeaves(parsed)
+        : collectStringLeaves(parsed),
+    );
   }
 
   // Config-root sources (jest.config.js / vitest.config.ts string paths).
   for (const configRoot of configRoots) {
     const source = contentByAbs.get(configRoot);
     if (source === undefined) continue;
-    matchStrings(stringLiteralsOf(source), dirname(configRoot));
+    matchPaths(stringLiteralsOf(source), dirname(configRoot));
+    addTokens(stringLiteralsOf(source));
   }
 
-  return referenced;
+  return { referenced, configTokens };
+}
+
+/**
+ * package.json top-level fields that are metadata / resolution / dependency
+ * declarations rather than tool configuration — excluded from the
+ * `config-named-dependency` token corpus so a package's own `name` (and, in a
+ * monorepo, a sibling's) never keeps a dependency alive. Everything else
+ * (`scripts` and in-manifest tool configs like `eslintConfig`, `prettier`,
+ * `jest`, `husky`, `lint-staged`, …) is scanned.
+ */
+const PACKAGE_JSON_NON_CONFIG_FIELDS: ReadonlySet<string> = new Set([
+  "name",
+  "version",
+  "description",
+  "keywords",
+  "homepage",
+  "bugs",
+  "license",
+  "author",
+  "contributors",
+  "funding",
+  "files",
+  "main",
+  "module",
+  "browser",
+  "types",
+  "typings",
+  "exports",
+  "imports",
+  "bin",
+  "man",
+  "directories",
+  "repository",
+  "dependencies",
+  "devDependencies",
+  "peerDependencies",
+  "peerDependenciesMeta",
+  "bundleDependencies",
+  "bundledDependencies",
+  "optionalDependencies",
+  "overrides",
+  "resolutions",
+  "engines",
+  "os",
+  "cpu",
+  "libc",
+  "private",
+  "publishConfig",
+  "workspaces",
+  "type",
+  "packageManager",
+  "sideEffects",
+]);
+
+/** String leaves of a package.json's config-bearing fields only (see the denylist above). */
+function packageJsonConfigLeaves(parsed: unknown): string[] {
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+  const out: string[] = [];
+  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (PACKAGE_JSON_NON_CONFIG_FIELDS.has(key)) continue;
+    out.push(...collectStringLeaves(value));
+  }
+  return out;
 }
 
 /** Extract quoted string literals from JS/TS source (best-effort, keep-alive only). */
@@ -610,6 +720,8 @@ const CONFIG_SITE_SPAN = { start: 0, end: 0, startLine: 1, endLine: 1 } as const
 function readTsconfigOptions(root: string): {
   emitDecoratorMetadata: boolean;
   hasReferences: boolean;
+  jsxAutomatic: boolean;
+  jsxImportSource: string | null;
 } {
   let found: ReturnType<typeof getTsconfig>;
   try {
@@ -618,15 +730,27 @@ function readTsconfigOptions(root: string): {
     found = null;
   }
   if (found === null || !isInsideRoot(found.path, root)) {
-    return { emitDecoratorMetadata: false, hasReferences: false };
+    return {
+      emitDecoratorMetadata: false,
+      hasReferences: false,
+      jsxAutomatic: false,
+      jsxImportSource: null,
+    };
   }
   const config = found.config as {
-    compilerOptions?: { emitDecoratorMetadata?: unknown };
+    compilerOptions?: { emitDecoratorMetadata?: unknown; jsx?: unknown; jsxImportSource?: unknown };
     references?: unknown;
   };
+  const jsx = config.compilerOptions?.jsx;
+  const importSource = config.compilerOptions?.jsxImportSource;
   return {
     emitDecoratorMetadata: config.compilerOptions?.emitDecoratorMetadata === true,
     hasReferences: Array.isArray(config.references) && config.references.length > 0,
+    // Only the automatic runtime injects an unseen runtime-package import
+    // (`react-jsx`/`react-jsxdev`); the classic runtime requires an explicit
+    // `React` import, which the reference graph already sees.
+    jsxAutomatic: jsx === "react-jsx" || jsx === "react-jsxdev",
+    jsxImportSource: typeof importSource === "string" && importSource !== "" ? importSource : null,
   };
 }
 
