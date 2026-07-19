@@ -60,7 +60,7 @@ import type { Dirent } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve as resolvePath, sep } from "node:path";
 import { getTsconfig } from "get-tsconfig";
-import { computeReachability, emitClaims } from "../../core/analysis/index.js";
+import { computePartitionedReachability, emitClaims } from "../../core/analysis/index.js";
 import {
   type Claim,
   type ClaimRun,
@@ -351,15 +351,18 @@ export async function analyzeProject(
     });
   }
 
-  // T3.6: interim test-file recognition (ahead of full tier-2 / M5). Files
-  // matching zero-config test conventions become `test` reachability roots —
-  // everything reachable from them is kept alive and they are never claimed, so
-  // nothing reachable only from a test is flagged at any confidence. The
-  // `test-only` verdict and the production/test partition report stay M5.
+  // Zero-config test-file recognition. Files matching test conventions become
+  // `test` reachability roots (a partition, architecture §3). Under M5 (T5.1/
+  // T5.2) code reachable only from these roots is claimed `test-only` (not
+  // silently kept alive as in the M3 interim), and a test exercising only such
+  // code is flagged a zombie. `testFileRels` also drives dependency test-only
+  // classification (a dep referenced solely from these files, T5.2 point 4).
   const packageRootRels = new Set([...packageRootDirs].map((dir) => toPosixRel(root, dir)));
+  const testFileRels = new Set<string>();
   for (const file of files) {
     const rel = toPosixRel(root, file);
     if (!isTestFilePath(rel, packageRootRels)) continue;
+    testFileRels.add(rel);
     graph.addNode({
       kind: "entrypoint",
       id: entrypointId("test", rel),
@@ -402,10 +405,11 @@ export async function analyzeProject(
     fileContents: contentByAbs,
     jsxRuntimePackages: files.length > 0 ? tsconfigOptions.jsxRuntimePackages : new Set<string>(),
     configTokens: configScan.configTokens,
+    testFiles: testFileRels,
   }).filter((dep) => !isIgnoredDependency(dep.packageName, config));
 
-  // reachability → claims.
-  const reachability = computeReachability(graph);
+  // partitioned reachability → claims (T5.1: production/config/test partitions).
+  const reachability = computePartitionedReachability(graph);
   const provenance: Provenance = {
     analyzer: ANALYZER_NAME,
     version,
@@ -447,7 +451,7 @@ export async function analyzeProject(
     },
     claims,
     summary: computeSummary(claims),
-    productionEntrypointCount: reachability.productionEntrypointFiles.size,
+    productionEntrypointCount: reachability.production.productionEntrypointFiles.size,
   };
 }
 

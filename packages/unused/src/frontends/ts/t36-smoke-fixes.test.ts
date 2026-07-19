@@ -3,9 +3,11 @@
  * (docs/smoke/M3.md), each pinned to a `__testfixtures__` mini-repo shaped like
  * the real-world case that produced the false positive:
  *
- *  1. **Interim test-file recognition** (`test-file-roots`) — a `*.spec.ts` file
- *     and a `tests/` directory keep their reachable code alive; the test files
- *     themselves are never claimed; a genuine orphan still flags high.
+ *  1. **Test-file recognition** (`test-file-roots`) — a `*.spec.ts` file and a
+ *     `tests/` directory are `test` reachability roots. Under M5 (T5.1/T5.2) the
+ *     code reached only from them is claimed `test-only` (the M3 interim kept it
+ *     silently alive), a test exercising only such code is a zombie `test`, and a
+ *     genuine orphan still flags `unused` high.
  *  2. **Unresolvable declared entrypoints / the hono trap** (`unresolvable-
  *     entrypoint`) — `exports` targets into an unbuilt `dist/` are remapped to
  *     `src/`, a still-unresolved target raises `unresolvable-entrypoint-target`,
@@ -45,20 +47,36 @@ const names = (claims: readonly Claim[]): string[] =>
 // Fix 1 — interim test-file recognition
 // ---------------------------------------------------------------------------
 
-describe("T3.6 Fix 1 — interim test-file recognition", () => {
-  it("test-reachable code stays alive, test files are never claimed, a real orphan flags high", async () => {
+describe("T3.6 Fix 1 — test-file recognition (M5 tier-2 semantics)", () => {
+  it("test-reachable-only code is test-only, its lone test is a zombie, a real orphan flags unused high", async () => {
     const run = await analyzeProject(testfx("test-file-roots"), { now: FIXED_CLOCK });
     const ns = names(run.claims);
 
-    // Reached only from `only-tested.spec.ts` ⇒ alive (no claim at any confidence).
-    expect(ns).not.toContain("file:src/only-tested.ts");
-    expect(ns).not.toContain("export:helper");
-    // The `*.spec.ts` file and the `tests/` directory file are test roots ⇒ never claimed.
+    // A test file is never a `file` claim (it is a reachability root); `tests/setup.ts`
+    // imports nothing, so it is not even a zombie.
     expect(ns).not.toContain("file:src/only-tested.spec.ts");
     expect(ns).not.toContain("file:tests/setup.ts");
+    expect(ns).not.toContain("test:tests/setup.ts");
+    // Production-alive code stays unflagged.
+    expect(ns).not.toContain("file:src/app.ts");
+    expect(ns).not.toContain("export:app");
 
-    // Only the genuine orphan is flagged, at high.
-    expect(shapes(run.claims)).toEqual([{ kind: "file", name: "src/dead.ts", confidence: "high" }]);
+    // Under M5: the genuine orphan is `unused` high; `only-tested.ts` (reached only
+    // from the spec) is `test-only` high; the spec, exercising only test-only code,
+    // is a zombie `test` at high.
+    const shapesWithVerdict = run.claims
+      .map((c) => ({
+        kind: c.subject.kind,
+        name: c.subject.name,
+        verdict: c.verdict,
+        confidence: c.confidence,
+      }))
+      .sort((a, b) => `${a.kind} ${a.name}`.localeCompare(`${b.kind} ${b.name}`));
+    expect(shapesWithVerdict).toEqual([
+      { kind: "file", name: "src/dead.ts", verdict: "unused", confidence: "high" },
+      { kind: "file", name: "src/only-tested.ts", verdict: "test-only", confidence: "high" },
+      { kind: "test", name: "src/only-tested.spec.ts", verdict: "test-only", confidence: "high" },
+    ]);
   });
 });
 

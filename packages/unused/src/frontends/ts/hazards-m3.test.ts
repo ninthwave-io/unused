@@ -15,7 +15,7 @@
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { computeReachability, emitClaims } from "../../core/analysis/index.js";
+import { computePartitionedReachability, emitClaims } from "../../core/analysis/index.js";
 import type { Provenance } from "../../core/claims/types.js";
 import type { IRGraph } from "../../core/ir/index.js";
 import { analyzeProject } from "./analyze.js";
@@ -46,7 +46,7 @@ async function buildIR(root: string, emitDecoratorMetadata = false): Promise<IRG
 function claimShapes(graph: IRGraph): Array<{ kind: string; name: string; confidence: string }> {
   const claims = emitClaims({
     graph,
-    reachability: computeReachability(graph),
+    reachability: computePartitionedReachability(graph),
     provenance: PROVENANCE,
   });
   return claims

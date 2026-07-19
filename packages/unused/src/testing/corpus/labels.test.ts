@@ -42,14 +42,15 @@ describe("loadLabelCases against the real corpus", () => {
     }
   });
 
-  it("every dead subject carries minConfidence and every alive subject omits it", async () => {
+  it("every non-alive subject carries minConfidence and every alive subject omits it", async () => {
     const cases = await loadLabelCases();
     for (const c of cases) {
       for (const subject of c.subjects) {
-        if (subject.expected === "dead") {
-          expect(subject.minConfidence).toBeDefined();
-        } else {
+        if (subject.expected === "alive") {
           expect(subject.minConfidence).toBeUndefined();
+        } else {
+          // `dead` and `test-only` both expect a claim, so both carry a ceiling.
+          expect(subject.minConfidence).toBeDefined();
         }
       }
     }

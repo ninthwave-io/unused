@@ -1,8 +1,9 @@
 /**
  * Claim emission from reachability (T2.4 for the base walk; T3.1 for the hazard
- * registry). Language-agnostic: IR + {@link Reachability} in, {@link Claim}s
- * out. Imports only `core/ir`, `core/claims`, the hazard registry, and its
- * sibling `reachability.ts` — never a frontend.
+ * registry; T5.1/T5.2 for the tier-2 partition). Language-agnostic: IR +
+ * {@link PartitionedReachability} in, {@link Claim}s out. Imports only
+ * `core/ir`, `core/claims`, the hazard registry, and its sibling
+ * `reachability.ts` — never a frontend.
  *
  * ## Base emission
  * `unused` verdicts for `export` and `file` subjects. Absent any hazard a
@@ -10,6 +11,16 @@
  * confidence (`medium`/`low`) or suppresses it (`no-claim`). Real per-subject
  * confidence *assignment* (below the cap) is T3.3; here the base confidence is
  * `high` and the cap is the only thing that can lower it.
+ *
+ * ## Tier-2 partition (T5.1/T5.2)
+ * Reachability arrives split into production/config/test partitions. A subject
+ * reachable from production or config is alive (never flagged). A subject
+ * reachable ONLY from tests is `test-only` (export/file/dependency); a test file
+ * exercising only test-only/dead code is a zombie `test` claim. A subject
+ * reachable from nothing stays `unused`. The `test-only` verdict runs through
+ * the identical hazard-cap machinery (`high` when clean); its evidence names the
+ * test entrypoint keeping it alive, read from the test partition's stored
+ * predecessor map.
  *
  * ## Hazard scoping (T3.1 — replaces M2's blanket whole-project suppression)
  * Each hazard annotation is looked up in the registry (`hazard-registry.ts`),
@@ -60,6 +71,7 @@ import type {
   DependencyClaim,
   DependencySubject,
   Evidence,
+  EvidenceType,
   ExportClaim,
   ExportSubject,
   FileClaim,
@@ -68,10 +80,20 @@ import type {
   Provenance,
   Span,
   Suppression,
+  TestClaim,
+  TestSubject,
 } from "../claims/types.js";
 import { fileId, type HazardAnnotation, type IRGraph } from "../ir/index.js";
 import { type ConfidenceCap, capIsStrongerOrEqual, lookupHazard } from "./hazard-registry.js";
-import type { Reachability } from "./reachability.js";
+import {
+  computeReachability,
+  type PartitionedReachability,
+  type Reachability,
+  whyReachable,
+} from "./reachability.js";
+
+/** The claim verdicts M5 emits for export/file/dependency subjects. */
+type LivenessVerdict = "unused" | "test-only";
 
 const EVIDENCE_SOURCE = "reference-graph";
 
@@ -107,11 +129,22 @@ export interface DependencyClaimInput {
   readonly packageName: string;
   /** The declaring `package.json` location (file + span + owning workspace). */
   readonly loc: Loc;
+  /**
+   * `unused` (referenced by nothing) or `test-only` (referenced only from
+   * test-partition files — T5.2 point 4). The frontend classifies this, since
+   * dependency liveness is ecosystem-specific; absent ⇒ `unused` (pre-M5).
+   */
+  readonly verdict?: LivenessVerdict;
 }
 
 export interface EmitClaimsInput {
   readonly graph: IRGraph;
-  readonly reachability: Reachability;
+  /**
+   * The three per-partition reachability walks (T5.1). Production ∪ config
+   * reachable is alive; test-reachable-only is `test-only`; reachable-from-
+   * nothing is `unused`. Built by `computePartitionedReachability`.
+   */
+  readonly reachability: PartitionedReachability;
   /** Provenance stamped on every claim (analyzer / version / generatedAt). */
   readonly provenance: Provenance;
   /**
@@ -133,19 +166,43 @@ export interface EmitClaimsInput {
 }
 
 /**
- * Emit the M2 claim set for one project: deterministic, sorted by claim id.
- * Returns `[]` when an unscoped hazard forces whole-project keep-alive.
+ * How each non-entrypoint, non-declaration file sits relative to the three root
+ * partitions (T5.1):
+ *  - `alive`     — production ∪ config reachable ⇒ never a file claim; its dead
+ *                  exports are still individually claimable in the symbol pass.
+ *  - `test-only` — test-reachable but NOT production/config-reachable ⇒ one
+ *                  whole-file `test-only` claim, subsuming its exports.
+ *  - `unused`    — reachable from nothing AND no inbound reference edge (a bare
+ *                  orphan) ⇒ a whole-file `unused` claim, subsuming its exports.
+ *  - `none`      — reachable from nothing but referenced by (dead) code, so not a
+ *                  bare orphan ⇒ no file claim; its symbols are not claimed
+ *                  either (the pre-M5 "subsumed by the file claim" behaviour).
+ */
+type FileClass = "alive" | "test-only" | "unused" | "none";
+
+/**
+ * Emit the claim set for one project: deterministic, sorted by claim id. Returns
+ * `[]` when there is no production root or an unscoped hazard forces whole-
+ * project keep-alive.
+ *
+ * M5 partitions liveness: a subject reachable only from tests is `test-only`
+ * (export/file/dependency), a test file exercising only test-only/dead code is a
+ * zombie `test` claim, and code reachable from production or config is alive as
+ * before. The hazard-cap machinery is applied identically to every verdict.
  */
 export function emitClaims(input: EmitClaimsInput): Claim[] {
   const { graph, reachability } = input;
+  const { production, config, test } = reachability;
 
   // --- no production entrypoint ⇒ nothing anchors liveness -------------------
   // With zero production roots the reference graph has no basis to prove ANY
   // subject dead (a library with no `main`/`exports`/`bin` and no fallback
   // entry, or a project the frontend could not root). Claiming here would flag
   // the whole codebase — the entrypoint-detection contract's "no confident
-  // root" case. Emit nothing; the caller surfaces "no entrypoints detected".
-  if (reachability.productionEntrypointFiles.size === 0) return [];
+  // root" case. This also gates `test-only`: without a production baseline we
+  // cannot tell "reachable only from tests" from "the whole project". Emit
+  // nothing; the caller surfaces "no entrypoints detected".
+  if (production.productionEntrypointFiles.size === 0) return [];
 
   // --- registry-driven hazard caps ------------------------------------------
   // `fileCap[F]`   caps F's file claim AND F's export claims (directory-subtree,
@@ -155,8 +212,14 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
   if (caps.projectNoClaim) return [];
   const { fileCap, exportCap, projectCap } = caps;
 
+  // Every root file (production, config, or test) — never itself flagged as a
+  // file or export; a test root can only surface as a zombie `test` claim.
+  const entrypointFiles = new Set<string>();
+  for (const entry of graph.entrypoints()) entrypointFiles.add(fileId(entry.file));
+
   // Files reached by any reference edge (to the file node or any symbol it
-  // exposes) — the "has an inbound edge" test for file claims.
+  // exposes) — the "has an inbound edge" test that distinguishes a bare orphan
+  // (`unused`) from a file referenced only by other dead code (`none`).
   const referencedFiles = new Set<string>();
   for (const edge of graph.edges()) {
     if (edge.kind !== "references") continue;
@@ -166,34 +229,62 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
     else if (target.kind === "symbol") referencedFiles.add(fileId(target.file));
   }
 
+  const aliveFile = (id: string): boolean =>
+    production.reachableFiles.has(id) || config.reachableFiles.has(id);
+  const aliveSymbol = (id: string): boolean =>
+    production.reachableSymbols.has(id) || config.reachableSymbols.has(id);
+
+  // Per-file classification, precomputed so the symbol pass can subsume exports
+  // by their file's class regardless of node iteration order.
+  const fileClass = new Map<string, FileClass>();
+  for (const node of graph.nodes()) {
+    if (node.kind !== "file") continue;
+    if (isDeclarationFile(node.path)) continue; // ambient/declaration — never classified/claimed
+    if (entrypointFiles.has(node.id)) continue; // a root — never a file/export claim
+    if (aliveFile(node.id)) fileClass.set(node.id, "alive");
+    else if (test.reachableFiles.has(node.id)) fileClass.set(node.id, "test-only");
+    else if (referencedFiles.has(node.id)) fileClass.set(node.id, "none");
+    else fileClass.set(node.id, "unused");
+  }
+
   const claims: Claim[] = [];
 
   for (const node of graph.nodes()) {
     if (node.kind === "file") {
-      if (isDeclarationFile(node.path)) continue; // ambient/declaration — never claimed
-      if (reachability.entrypointFiles.has(node.id)) continue; // public API root
-      if (referencedFiles.has(node.id)) continue; // has an inbound edge ⇒ not a bare orphan
-      // Not referenced and not an entrypoint ⇒ unreachable: a dead file. A
-      // symbol-set (export-only) cap never applies to a file claim (file
+      const cls = fileClass.get(node.id);
+      if (cls === undefined || cls === "alive" || cls === "none") continue;
+      // A symbol-set (export-only) cap never applies to a file claim (file
       // liveness is unaffected by a computed-CJS-export hazard).
       const applied = fileCap.get(node.id);
       if (applied?.cap === "no-claim") continue; // e.g. an unparseable file
       const confidence = confidenceForCap(applied);
-      claims.push(
-        buildFileClaim(
-          node.path,
-          spanForFile(node.id, input.fileLineCounts),
-          input,
-          confidence,
-          noteForCap(applied),
-        ),
-      );
+      const span = spanForFile(node.id, input.fileLineCounts);
+      if (cls === "test-only") {
+        claims.push(
+          buildFileClaim(
+            node.path,
+            span,
+            input,
+            confidence,
+            noteForCap(applied),
+            "test-only",
+            testEntrypointFor(test, node.id),
+          ),
+        );
+      } else {
+        claims.push(
+          buildFileClaim(node.path, span, input, confidence, noteForCap(applied), "unused"),
+        );
+      }
     } else if (node.kind === "symbol") {
       if (!node.local) continue; // forwarded (re-export) symbols are not declarations
       if (isDeclarationFile(node.file)) continue;
-      if (reachability.reachableSymbols.has(node.id)) continue; // used
       const fileNodeId = fileId(node.file);
-      if (!reachability.reachableFiles.has(fileNodeId)) continue; // subsumed by the file claim
+      // Only a symbol in an alive file is individually claimable: a test-only /
+      // unused file already emitted one whole-file claim that subsumes it; a
+      // `none` / entrypoint / declaration file yields no export claim (pre-M5).
+      if (fileClass.get(fileNodeId) !== "alive") continue;
+      if (aliveSymbol(node.id)) continue; // used from production or config
       // An export claim is capped by the stronger of the file-scoped and the
       // export-only (symbol-set) hazard covering its file.
       const applied = strongerCap(fileCap.get(fileNodeId), exportCap.get(fileNodeId));
@@ -201,29 +292,52 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
       const confidence = confidenceForCap(applied);
       const span: Span = [node.span.startLine, node.span.endLine];
       const suppression = suppressionOf(node.suppression);
-      claims.push(
-        buildExportClaim(
-          node.exportedName,
-          node.file,
-          span,
-          input,
-          suppression,
-          confidence,
-          noteForCap(applied),
-        ),
-      );
+      // A dead export in an alive file: `test-only` when a test still reaches it,
+      // otherwise plainly `unused`.
+      if (test.reachableSymbols.has(node.id)) {
+        claims.push(
+          buildExportClaim(
+            node.exportedName,
+            node.file,
+            span,
+            input,
+            suppression,
+            confidence,
+            noteForCap(applied),
+            "test-only",
+            testEntrypointFor(test, node.id),
+          ),
+        );
+      } else {
+        claims.push(
+          buildExportClaim(
+            node.exportedName,
+            node.file,
+            span,
+            input,
+            suppression,
+            confidence,
+            noteForCap(applied),
+            "unused",
+          ),
+        );
+      }
     }
   }
 
-  // --- dependency claims (T4.1) ---------------------------------------------
-  // The frontend already excluded referenced / kept-alive dependencies; every
-  // input here is a declared-but-unreferenced package. Confidence is `high`
-  // unless a project-wide hazard caps the whole workspace (the same
-  // `projectCap` a file claim in this project would carry) — dependency claims
-  // are not affected by per-file/symbol-set hazards (a dep is a project-level
-  // subject, not a file-level one). The entrypoint / no-claim guards above also
-  // gate these: a project that anchors no liveness, or is wholly kept alive,
-  // proves nothing about its dependencies either.
+  // --- zombie tests (T5.2 point 3) ------------------------------------------
+  // A test file that exercises nothing production-alive is a zombie: everything
+  // it reaches is itself test-only or dead. Conservative — if it reaches ANY
+  // production/config-reachable subject it is kept (not a zombie).
+  claims.push(...emitZombieTestClaims(graph, reachability, fileCap, input));
+
+  // --- dependency claims (T4.1, T5.2 point 4) -------------------------------
+  // The frontend already excluded referenced / kept-alive dependencies and
+  // tagged each leftover `unused` or `test-only` (referenced only from tests).
+  // Confidence is `high` unless a project-wide hazard caps the whole workspace
+  // (the same `projectCap` a file claim in this project would carry) — deps are
+  // a project-level subject, unaffected by per-file/symbol-set hazards. The
+  // entrypoint / no-claim guards above also gate these.
   for (const dep of input.dependencies ?? []) {
     const confidence = confidenceForCap(projectCap);
     claims.push(buildDependencyClaim(dep, input, confidence, noteForCap(projectCap)));
@@ -367,8 +481,108 @@ function noteForCap(applied: AppliedCap | undefined): string | undefined {
 }
 
 // ---------------------------------------------------------------------------
+// Zombie tests + test-partition provenance (T5.2)
+// ---------------------------------------------------------------------------
+
+/**
+ * The test entrypoint keeping `nodeId` alive, for a `test-only` claim's evidence
+ * detail — read from the test partition's stored predecessor map (no re-
+ * analysis, PRD §8). `undefined` if the node is not test-reachable (should not
+ * happen for a `test-only` subject, but degrade gracefully rather than lie).
+ */
+function testEntrypointFor(test: Reachability, nodeId: string): string | undefined {
+  return whyReachable(test, nodeId).entrypoint?.file;
+}
+
+/**
+ * Emit a `test`/`test-only` claim for every zombie test: a test file whose
+ * forward reach (walked from that root alone) contains no production- or config-
+ * reachable subject — i.e. it exercises only test-only or dead code (T5.2 point
+ * 3). Reaching ANY alive subject makes it a real test, never a zombie
+ * (conservative). Confidence flows through the same file-scoped hazard cap a
+ * file claim on that path would carry (`high` when clean).
+ */
+function emitZombieTestClaims(
+  graph: IRGraph,
+  reachability: PartitionedReachability,
+  fileCap: ReadonlyMap<string, AppliedCap>,
+  input: EmitClaimsInput,
+): TestClaim[] {
+  const { production, config } = reachability;
+  // The production ∪ config alive surface (files + symbols): reaching any of
+  // these disqualifies a test from being a zombie.
+  const aliveNodes = new Set<string>([
+    ...production.reachableFiles,
+    ...production.reachableSymbols,
+    ...config.reachableFiles,
+    ...config.reachableSymbols,
+  ]);
+
+  const claims: TestClaim[] = [];
+  for (const entry of graph.entrypoints()) {
+    if (entry.entryKind !== "test") continue;
+    const testFileId = fileId(entry.file);
+    if (graph.outEdges(testFileId).length === 0) continue; // imports nothing ⇒ not a zombie
+
+    // Walk from this one test root; a zombie reaches ≥1 subject beyond itself,
+    // none of them alive.
+    const reach = computeReachability(graph, { seedFilter: (e) => e.id === entry.id });
+    let reachedOther = false;
+    let reachesAlive = false;
+    for (const fid of reach.reachableFiles) {
+      if (fid === testFileId) continue; // its own file is the seed, not "exercised"
+      reachedOther = true;
+      if (aliveNodes.has(fid)) {
+        reachesAlive = true;
+        break;
+      }
+    }
+    if (!reachesAlive) {
+      for (const sid of reach.reachableSymbols) {
+        const sym = graph.getNode(sid);
+        if (sym?.kind === "symbol" && sym.file === entry.file) continue; // its own export
+        reachedOther = true;
+        if (aliveNodes.has(sid)) {
+          reachesAlive = true;
+          break;
+        }
+      }
+    }
+    if (!reachedOther || reachesAlive) continue;
+
+    const applied = fileCap.get(testFileId);
+    if (applied?.cap === "no-claim") continue; // e.g. an unparseable test file
+    claims.push(
+      buildTestClaim(
+        entry.file,
+        spanForFile(testFileId, input.fileLineCounts),
+        input,
+        confidenceForCap(applied),
+        noteForCap(applied),
+      ),
+    );
+  }
+  return claims;
+}
+
+// ---------------------------------------------------------------------------
 // Claim builders
 // ---------------------------------------------------------------------------
+
+/** Evidence for a `unused` vs `test-only` claim on a `subjectRef` (a name or path). */
+function buildLivenessEvidence(
+  verdict: LivenessVerdict,
+  subjectRef: string,
+  capNote: string | undefined,
+  testEntry: string | undefined,
+): Evidence {
+  const type: EvidenceType = verdict === "test-only" ? "test-only" : "static-reachability";
+  const detail =
+    verdict === "test-only"
+      ? `${subjectRef} is reachable only from test entrypoint ${testEntry !== undefined ? `\`${testEntry}\`` : "(s)"}; no production or config entrypoint references it.${capNote ?? ""}`
+      : `0 inbound references to ${subjectRef} from any production entrypoint in the reference graph.${capNote ?? ""}`;
+  return { type, detail, source: EVIDENCE_SOURCE };
+}
 
 function buildExportClaim(
   name: string,
@@ -378,18 +592,16 @@ function buildExportClaim(
   suppression: Suppression | undefined,
   confidence: Confidence,
   capNote: string | undefined,
+  verdict: LivenessVerdict,
+  testEntry?: string,
 ): ExportClaim {
   const subject: ExportSubject = { kind: "export", name, loc: { file, span } };
-  const evidence: Evidence = {
-    type: "static-reachability",
-    detail: `0 inbound references to \`${name}\` from any production entrypoint in the reference graph.${capNote ?? ""}`,
-    source: EVIDENCE_SOURCE,
-  };
+  const evidence = buildLivenessEvidence(verdict, `\`${name}\``, capNote, testEntry);
   const id = computeClaimId(subject, langOpt(input));
   return {
     id,
     subject,
-    verdict: "unused",
+    verdict,
     confidence,
     evidence: [evidence],
     provenance: input.provenance,
@@ -403,18 +615,33 @@ function buildFileClaim(
   input: EmitClaimsInput,
   confidence: Confidence,
   capNote: string | undefined,
+  verdict: LivenessVerdict,
+  testEntry?: string,
 ): FileClaim {
   const subject: FileSubject = { kind: "file", name: file, loc: { file, span } };
+  const evidence = buildLivenessEvidence(verdict, `\`${file}\``, capNote, testEntry);
+  const id = computeClaimId(subject, langOpt(input));
+  return { id, subject, verdict, confidence, evidence: [evidence], provenance: input.provenance };
+}
+
+function buildTestClaim(
+  file: string,
+  span: Span,
+  input: EmitClaimsInput,
+  confidence: Confidence,
+  capNote: string | undefined,
+): TestClaim {
+  const subject: TestSubject = { kind: "test", name: file, loc: { file, span } };
   const evidence: Evidence = {
-    type: "static-reachability",
-    detail: `0 inbound references to \`${file}\` from any production entrypoint in the reference graph.${capNote ?? ""}`,
+    type: "test-only",
+    detail: `\`${file}\` is a test file that exercises no production-alive code — every file and symbol it reaches is itself test-only or unused (a zombie test).${capNote ?? ""}`,
     source: EVIDENCE_SOURCE,
   };
   const id = computeClaimId(subject, langOpt(input));
   return {
     id,
     subject,
-    verdict: "unused",
+    verdict: "test-only",
     confidence,
     evidence: [evidence],
     provenance: input.provenance,
@@ -429,20 +656,18 @@ function buildDependencyClaim(
 ): DependencyClaim {
   const subject: DependencySubject = { kind: "dependency", name: dep.packageName, loc: dep.loc };
   const where = dep.loc.package !== undefined ? `workspace \`${dep.loc.package}\`` : "the project";
+  const verdict: LivenessVerdict = dep.verdict ?? "unused";
+  const detail =
+    verdict === "test-only"
+      ? `Declared dependency \`${dep.packageName}\` is imported only from test files in ${where} (no production or config reference) and matches no dependency keep-alive rule.${capNote ?? ""}`
+      : `Declared dependency \`${dep.packageName}\` is imported by no file in ${where} and matches no dependency keep-alive rule (\`@types\` pairing, a \`bin\` tool, the JSX runtime, a \`workspace:\` sibling, or a config/scripts reference).${capNote ?? ""}`;
   const evidence: Evidence = {
-    type: "static-reachability",
-    detail: `Declared dependency \`${dep.packageName}\` is imported by no file in ${where} and matches no dependency keep-alive rule (\`@types\` pairing, a \`bin\` tool, the JSX runtime, a \`workspace:\` sibling, or a config/scripts reference).${capNote ?? ""}`,
+    type: verdict === "test-only" ? "test-only" : "static-reachability",
+    detail,
     source: EVIDENCE_SOURCE,
   };
   const id = computeClaimId(subject, langOpt(input));
-  return {
-    id,
-    subject,
-    verdict: "unused",
-    confidence,
-    evidence: [evidence],
-    provenance: input.provenance,
-  };
+  return { id, subject, verdict, confidence, evidence: [evidence], provenance: input.provenance };
 }
 
 // ---------------------------------------------------------------------------

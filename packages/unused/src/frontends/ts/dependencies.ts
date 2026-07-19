@@ -97,6 +97,14 @@ export interface DependencyAnalysisInput {
    * value — the corpus a `config-named-dependency` keep-alive matches against.
    */
   readonly configTokens: ReadonlySet<string>;
+  /**
+   * POSIX root-relative paths of the discovered test files (the `test`
+   * reachability roots). A dependency referenced ONLY from these files — and by
+   * no production/config file and no keep-alive rule — is `test-only` rather
+   * than `unused` (T5.2 point 4). Absent/empty ⇒ every reference counts as
+   * production (pre-M5 behaviour).
+   */
+  readonly testFiles?: ReadonlySet<string>;
 }
 
 /**
@@ -106,18 +114,29 @@ export interface DependencyAnalysisInput {
  */
 export function computeUnusedDependencies(input: DependencyAnalysisInput): DependencyClaimInput[] {
   const { units, graph } = input;
+  const testFiles = input.testFiles ?? EMPTY_SET;
   const owner = ownerResolver(units);
+  // Production (non-test) references keep a dependency fully alive; references
+  // that come ONLY from test files make it `test-only` (T5.2 point 4). Both are
+  // tracked per unit, split by whether the referencing site is a test file.
   const referencedExternalByUnit = units.map(() => new Set<string>());
   const crossRefByUnit = units.map(() => new Set<string>());
+  const testReferencedExternalByUnit = units.map(() => new Set<string>());
+  const testCrossRefByUnit = units.map(() => new Set<string>());
 
   for (const edge of graph.edges()) {
     if (edge.kind !== "references") continue;
     const target = graph.getNode(edge.to);
     if (target === undefined) continue;
     const fromUnit = owner(edge.site.file);
+    const isTest = testFiles.has(edge.site.file);
     if (target.kind === "dependency") {
       // An external import of `packageName` from a file in `fromUnit`.
-      if (fromUnit >= 0) referencedExternalByUnit[fromUnit]?.add(target.packageName);
+      if (fromUnit >= 0) {
+        (isTest ? testReferencedExternalByUnit : referencedExternalByUnit)[fromUnit]?.add(
+          target.packageName,
+        );
+      }
       continue;
     }
     // A reference into another workspace package's files (workspace: sibling use).
@@ -127,17 +146,25 @@ export function computeUnusedDependencies(input: DependencyAnalysisInput): Depen
     const toUnit = owner(toFile);
     if (toUnit < 0 || toUnit === fromUnit) continue;
     const toName = units[toUnit]?.name;
-    if (toName != null) crossRefByUnit[fromUnit]?.add(toName);
+    if (toName != null) (isTest ? testCrossRefByUnit : crossRefByUnit)[fromUnit]?.add(toName);
   }
 
   // Triple-slash `/// <reference types="X" />` directives live in comments and
-  // never become graph edges; scan them into the referencing file's unit.
-  addReferenceTypesDirectives(input, owner, referencedExternalByUnit);
+  // never become graph edges; scan them into the referencing file's unit,
+  // split prod vs test by the directive's own file.
+  addReferenceTypesDirectives(
+    input,
+    owner,
+    testFiles,
+    referencedExternalByUnit,
+    testReferencedExternalByUnit,
+  );
 
   // Hoisting: a root-declared dependency is alive if ANY unit references it
   // externally (root deps hoist to every member; the same any-unit test covers a
   // member that redeclares a root-declared name — phantom hoisting).
   const referencedExternalAnyUnit = unionOf(referencedExternalByUnit);
+  const testReferencedExternalAnyUnit = unionOf(testReferencedExternalByUnit);
   const rootDeclaredNames = rootDeclaredDependencyNames(units);
   // Workspace member package names — governed by cross-package references, never
   // the external-import or pre-install-bin rules (a sibling is not a bin tool).
@@ -153,12 +180,16 @@ export function computeUnusedDependencies(input: DependencyAnalysisInput): Depen
     if (declared === null) return;
     const referencedExternal = referencedExternalByUnit[unitIndex] ?? EMPTY_SET;
     const crossRef = crossRefByUnit[unitIndex] ?? EMPTY_SET;
+    const testReferencedExternal = testReferencedExternalByUnit[unitIndex] ?? EMPTY_SET;
+    const testCrossRef = testCrossRefByUnit[unitIndex] ?? EMPTY_SET;
     const pkgFileRel =
       unit.rootRelDir === "" ? "package.json" : posix.join(unit.rootRelDir, "package.json");
 
     for (const depName of declared.names) {
       const isSibling = workspaceMemberNames.has(depName);
-      const alive =
+      // A keep-alive rule or a production/config reference keeps the dependency
+      // fully alive (never claimed).
+      const prodAlive =
         referencedExternal.has(depName) ||
         crossRef.has(depName) ||
         (rootDeclaredNames.has(depName) && referencedExternalAnyUnit.has(depName)) ||
@@ -166,14 +197,21 @@ export function computeUnusedDependencies(input: DependencyAnalysisInput): Depen
         input.jsxRuntimePackages.has(depName) ||
         isConfigNamed(depName, input.configTokens) ||
         (!isSibling && isMaybeBinDependency(depName, unit.dir, input.root));
-      if (alive) continue;
+      if (prodAlive) continue;
+
+      // Not production-alive: `test-only` if a test file references it, else
+      // `unused` (referenced by nothing at all).
+      const testRef =
+        testReferencedExternal.has(depName) ||
+        testCrossRef.has(depName) ||
+        (rootDeclaredNames.has(depName) && testReferencedExternalAnyUnit.has(depName));
 
       // `subject.loc.package` is stamped by the composition layer's
       // `annotateClaimPackages` post-pass (the single source of truth for every
       // claim kind in a monorepo), which owns this package.json path to its unit.
       const line = declared.lines.get(depName) ?? 1;
       const loc: Loc = { file: pkgFileRel, span: [line, line] };
-      out.push({ packageName: depName, loc });
+      out.push({ packageName: depName, loc, verdict: testRef ? "test-only" : "unused" });
     }
   });
 
@@ -205,19 +243,26 @@ const REFERENCE_TYPES_RE = /\/\/\/\s*<reference\s+types\s*=\s*["']([^"']+)["']\s
  * Scan every discovered source file's contents for `/// <reference types="X" />`
  * directives and record `X` as an external reference in the owning unit — the
  * directive is a real dependency use that carries no import edge (a prod dep
- * referenced solely this way would otherwise false-flag). Values that are paths
- * (`./local.d.ts`), not package names, are ignored.
+ * referenced solely this way would otherwise false-flag). A directive in a test
+ * file routes to the test bucket, so a dep pulled in only by a test this way is
+ * `test-only`, not fully alive (T5.2). Values that are paths (`./local.d.ts`),
+ * not package names, are ignored.
  */
 function addReferenceTypesDirectives(
   input: DependencyAnalysisInput,
   owner: (fileRel: string) => number,
+  testFiles: ReadonlySet<string>,
   referencedExternalByUnit: readonly Set<string>[],
+  testReferencedExternalByUnit: readonly Set<string>[],
 ): void {
   for (const [abs, content] of input.fileContents) {
     if (!content.includes("<reference")) continue; // cheap pre-filter
-    const unitIndex = owner(toPosixRel(input.root, abs));
+    const fileRel = toPosixRel(input.root, abs);
+    const unitIndex = owner(fileRel);
     if (unitIndex < 0) continue;
-    const bucket = referencedExternalByUnit[unitIndex];
+    const bucket = (
+      testFiles.has(fileRel) ? testReferencedExternalByUnit : referencedExternalByUnit
+    )[unitIndex];
     if (bucket === undefined) continue;
     REFERENCE_TYPES_RE.lastIndex = 0;
     let match: RegExpExecArray | null = REFERENCE_TYPES_RE.exec(content);

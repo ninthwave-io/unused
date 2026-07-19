@@ -28,7 +28,14 @@
  * genuine state change re-enqueues a node.
  */
 
-import { type EntrypointKind, fileId, type IREdge, type IRGraph, symbolId } from "../ir/index.js";
+import {
+  type EntrypointKind,
+  type EntrypointNode,
+  fileId,
+  type IREdge,
+  type IRGraph,
+  symbolId,
+} from "../ir/index.js";
 
 // ---------------------------------------------------------------------------
 // Result shapes
@@ -65,12 +72,36 @@ export interface Reachability {
   readonly predecessor: ReadonlyMap<string, Predecessor>;
 }
 
+/**
+ * Options for {@link computeReachability}. The default (no options) seeds every
+ * production, config, AND test root — the historical single-partition behaviour.
+ * A `seedFilter` restricts seeding to the entrypoints it accepts, which is how
+ * {@link computePartitionedReachability} builds the three per-partition walks
+ * (T5.1) and how zombie-test detection (T5.2) walks from one test root in
+ * isolation.
+ */
+export interface ComputeReachabilityOptions {
+  /**
+   * When present, only entrypoints for which this returns `true` are seeded.
+   * Absent ⇒ seed all production/config/test roots (the pre-M5 behaviour).
+   */
+  readonly seedFilter?: (entry: EntrypointNode) => boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Reachability
 // ---------------------------------------------------------------------------
 
-/** Compute forward reachability from every production entrypoint. */
-export function computeReachability(graph: IRGraph): Reachability {
+/**
+ * Compute forward reachability from the seeded entrypoints. With no options the
+ * seeds are every production, config, and test root (the union walk used by
+ * `why_alive` and the pre-M5 claim path); pass `options.seedFilter` to restrict
+ * the seed set (the M5 partition walks and per-test zombie walks).
+ */
+export function computeReachability(
+  graph: IRGraph,
+  options?: ComputeReachabilityOptions,
+): Reachability {
   const reachableFiles = new Set<string>();
   const surfaceLiveFiles = new Set<string>();
   const reachableSymbols = new Set<string>();
@@ -238,12 +269,14 @@ export function computeReachability(graph: IRGraph): Reachability {
     }
   };
 
-  // --- seed: every production, config AND test root, surface-live ------------
-  // Production roots anchor liveness; config roots (architecture.md §3) and
-  // test roots (M3-interim, ahead of full tier-2/M5) keep their reachable code
-  // alive but do not, on their own, license a dead claim. So code reachable
-  // only from a test is ALIVE, never claimed at any confidence — the `test-only`
-  // verdict and the production/test partition report stay M5.
+  // --- seed the (optionally filtered) roots, surface-live --------------------
+  // Production roots anchor liveness; config roots (architecture.md §3) keep
+  // their reachable code alive and are never flagged; test roots seed the test
+  // partition (T5.1). Which of the three are seeded here is governed by
+  // `options.seedFilter` — the union of all three (no filter) is the historical
+  // walk `why_alive` uses; the single-partition walks are how M5 tells
+  // production-alive apart from test-only apart from dead.
+  const seedFilter = options?.seedFilter;
   for (const entry of graph.entrypoints()) {
     if (
       entry.entryKind !== "production" &&
@@ -251,6 +284,7 @@ export function computeReachability(graph: IRGraph): Reachability {
       entry.entryKind !== "test"
     )
       continue;
+    if (seedFilter !== undefined && !seedFilter(entry)) continue;
     entrypointFiles.add(fileId(entry.file));
     if (entry.entryKind === "production") productionEntrypointFiles.add(fileId(entry.file));
     markSurfaceLive(entry.file, {
@@ -278,6 +312,41 @@ export function computeReachability(graph: IRGraph): Reachability {
     entrypointFiles,
     productionEntrypointFiles,
     predecessor,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Partitioned reachability (T5.1 — the tier-2 partition rule, architecture §3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Reachability computed independently from each root partition, so the claim
+ * engine can tell three states apart (T5.1):
+ *  - **production ∪ config reachable** ⇒ alive, never flagged (config-reachable
+ *    is alive by the architecture §3 partition rule and never a claim);
+ *  - **test-reachable but NOT production/config-reachable** ⇒ `test-only`;
+ *  - **reachable from nothing** ⇒ `unused` (the existing verdict).
+ *
+ * Each partition is a separate {@link computeReachability} walk seeded by a
+ * kind filter. A shared symbol imported from BOTH production and a test is in
+ * the production walk, so it is production-alive and never test-only — the
+ * classic false-positive trap the partition rule exists to avoid.
+ */
+export interface PartitionedReachability {
+  /** Reachability seeded from production roots only (anchors dead-code claims). */
+  readonly production: Reachability;
+  /** Reachability seeded from config roots only (alive, never flagged). */
+  readonly config: Reachability;
+  /** Reachability seeded from test roots only (drives `test-only` + zombie tests). */
+  readonly test: Reachability;
+}
+
+/** Compute the three per-partition reachability walks (T5.1). */
+export function computePartitionedReachability(graph: IRGraph): PartitionedReachability {
+  return {
+    production: computeReachability(graph, { seedFilter: (e) => e.entryKind === "production" }),
+    config: computeReachability(graph, { seedFilter: (e) => e.entryKind === "config" }),
+    test: computeReachability(graph, { seedFilter: (e) => e.entryKind === "test" }),
   };
 }
 

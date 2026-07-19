@@ -16,6 +16,7 @@ import {
   symbolId,
 } from "../ir/index.js";
 import {
+  computePartitionedReachability,
   computeReachability,
   type Predecessor,
   type Reachability,
@@ -50,6 +51,17 @@ function addConfigEntry(g: IRGraph, rel: string): void {
     entryKind: "config",
     file: rel,
     reason: "config-root",
+  });
+}
+
+function addTestEntry(g: IRGraph, rel: string): void {
+  addFile(g, rel);
+  g.addNode({
+    kind: "entrypoint",
+    id: entrypointId("test", rel),
+    entryKind: "test",
+    file: rel,
+    reason: "test-file",
   });
 }
 
@@ -231,6 +243,59 @@ describe("config roots as seeds (architecture §3)", () => {
     expect(r.productionEntrypointFiles.size).toBe(0); // config is not a production root
     expect(r.surfaceLiveFiles.has(fileId("vite.config.ts"))).toBe(true);
     expect(r.reachableSymbols.has(symbolId("src/build.ts", "buildOptions"))).toBe(true);
+  });
+});
+
+describe("partitioned reachability (T5.1)", () => {
+  it("separates production, config, and test reach; a test-only file is test-reachable only", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addSymbol(g, "src/prod.ts", "prodThing");
+    ref(g, "src/index.ts", symbolId("src/prod.ts", "prodThing"), "static", "prodThing");
+    addSymbol(g, "src/feature.ts", "computeFeature");
+    addTestEntry(g, "test/feature.test.ts");
+    ref(
+      g,
+      "test/feature.test.ts",
+      symbolId("src/feature.ts", "computeFeature"),
+      "static",
+      "computeFeature",
+    );
+
+    const p = computePartitionedReachability(g);
+    // Production code is in the production partition, not the test partition.
+    expect(p.production.reachableFiles.has(fileId("src/prod.ts"))).toBe(true);
+    expect(p.test.reachableFiles.has(fileId("src/prod.ts"))).toBe(false);
+    // The test-only file is reachable only from the test partition.
+    expect(p.test.reachableFiles.has(fileId("src/feature.ts"))).toBe(true);
+    expect(p.production.reachableFiles.has(fileId("src/feature.ts"))).toBe(false);
+    expect(p.config.reachableFiles.size).toBe(0);
+    // The production partition still records the production root.
+    expect(p.production.productionEntrypointFiles.size).toBe(1);
+  });
+
+  it("a symbol imported by BOTH production and a test is in the production partition (the shared-util trap)", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addSymbol(g, "src/shared.ts", "sharedUtil");
+    ref(g, "src/index.ts", symbolId("src/shared.ts", "sharedUtil"), "static", "sharedUtil");
+    addTestEntry(g, "test/shared.test.ts");
+    ref(g, "test/shared.test.ts", symbolId("src/shared.ts", "sharedUtil"), "static", "sharedUtil");
+
+    const p = computePartitionedReachability(g);
+    expect(p.production.reachableSymbols.has(symbolId("src/shared.ts", "sharedUtil"))).toBe(true);
+    expect(p.test.reachableSymbols.has(symbolId("src/shared.ts", "sharedUtil"))).toBe(true);
+  });
+
+  it("seedFilter restricts the seeded roots (a config-only walk ignores the production root)", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addConfigEntry(g, "vite.config.ts");
+
+    const configOnly = computeReachability(g, { seedFilter: (e) => e.entryKind === "config" });
+    expect(configOnly.entrypointFiles.has(fileId("vite.config.ts"))).toBe(true);
+    expect(configOnly.entrypointFiles.has(fileId("src/index.ts"))).toBe(false);
+    expect(configOnly.productionEntrypointFiles.size).toBe(0);
   });
 });
 

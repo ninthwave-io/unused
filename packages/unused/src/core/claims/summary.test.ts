@@ -155,6 +155,24 @@ describe("estimateDeletableLoc", () => {
     expect(estimateDeletableLoc([file, nestedExport])).toBe(50);
   });
 
+  it("excludes a test-only claim from the estimate (deleting it is a code+test cascade, T5.2)", () => {
+    // A test-only export in an otherwise-alive file: real, but not deletable on
+    // its own, so it contributes nothing to the deletable-LOC estimate.
+    const testOnlyExport = exportClaim({
+      subject: { kind: "export", name: "onlyTested", loc: { file: "src/x.ts", span: [1, 20] } },
+      verdict: "test-only",
+      evidence: [
+        { type: "test-only", detail: "reachable only from a test", source: "reference-graph" },
+      ],
+    });
+    expect(estimateDeletableLoc([testOnlyExport])).toBe(0);
+    // Alongside a real unused claim, only the unused lines count.
+    const dead = exportClaim({
+      subject: { kind: "export", name: "dead", loc: { file: "src/y.ts", span: [1, 10] } },
+    });
+    expect(estimateDeletableLoc([testOnlyExport, dead])).toBe(10);
+  });
+
   it("excludes a suppressed claim from the estimate", () => {
     const suppressed = exportClaim({
       subject: { kind: "export", name: "ignored", loc: { file: "src/b.ts", span: [1, 20] } },
@@ -228,6 +246,8 @@ describe("computeSummary", () => {
     const summary = computeSummary(claims);
     expect(summary.byKind).toEqual({ export: 1, file: 1, dependency: 0, endpoint: 0, test: 1 });
     expect(summary.byConfidence).toEqual({ high: 1, medium: 1, low: 1 });
-    expect(summary.estDeletableLoc).toBe(13 + 50 + 30);
+    // The 30-line test-only (zombie) claim is counted in byKind/byConfidence but
+    // NOT in estDeletableLoc — only the two `unused` claims (13 + 50) count (T5.2).
+    expect(summary.estDeletableLoc).toBe(13 + 50);
   });
 });

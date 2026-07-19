@@ -30,35 +30,44 @@ never deleted, only added or corrected via reviewed label changes (ADR 0009).
 case: <kebab-name>
 description: <one line>
 subjects:
-  - kind: export | file | dependency
-    name: <symbol name, or repo-relative path for file, or package name for dependency>
+  - kind: export | file | dependency | test
+    name: <symbol name, or repo-relative path for a file/test, or package name for dependency>
     file: <repo-relative file the subject lives in>   # for dependency: package.json
-    expected: dead | alive
-    minConfidence: high | medium | low   # ONLY when expected: dead
+    expected: dead | alive | test-only
+    minConfidence: high | medium | low   # ONLY when expected is NOT alive (dead or test-only)
     because: <why this label is true — one sentence>
 ```
 
 - `kind` — what's being judged: an `export` (a named symbol), a `file`
-  (whole-file liveness, e.g. a dead file or an ambient `.d.ts`), or a
-  `dependency` (an npm package).
+  (whole-file liveness, e.g. a dead file or an ambient `.d.ts`), a
+  `dependency` (an npm package), or a `test` (a whole test file flagged
+  as a zombie — the M5 tier-2 subject; see `expected: test-only` below).
 - `name` — the export's symbol name; the repo-relative path for a `file`
-  subject; the package name for a `dependency` subject.
-- `file` — the repo-relative file the subject lives in (for a `file`
-  subject this is the same path as `name`; for a `dependency` subject
-  this is `package.json`).
-- `expected` — `alive` or `dead`. **Alive labels are not decoration** —
-  they are the primary defence against false positives, which is the
-  product's top quality metric. A case that only ever labels dead code
-  can never catch an analyzer that is dead-happy.
-- `because` — mandatory on every subject, dead or alive. Explains *why*
-  the label is true in one sentence, so a human reviewing a label (or a
-  disagreement) doesn't have to re-derive the reasoning from the source.
+  or `test` subject; the package name for a `dependency` subject.
+- `file` — the repo-relative file the subject lives in (for a `file` or
+  `test` subject this is the same path as `name`; for a `dependency`
+  subject this is `package.json`).
+- `expected` — `alive`, `dead`, or `test-only`. **Alive labels are not
+  decoration** — they are the primary defence against false positives,
+  which is the product's top quality metric. A case that only ever labels
+  dead code can never catch an analyzer that is dead-happy.
+  - `dead` expects an **`unused`** claim (reachable from nothing).
+  - `test-only` expects a **`test-only`** claim — the M5 tier-2 verdict
+    (T5.2): code, a dependency, or a whole test file reachable only from
+    test entrypoints, deletable together with its test. The verdict must
+    **match**: an `unused` claim on a `test-only` subject is scored a
+    false positive (it tells you to delete code a test still imports — the
+    exact hazard tier 2 exists to catch), and vice versa.
+- `because` — mandatory on every subject. Explains *why* the label is
+  true in one sentence, so a human reviewing a label (or a disagreement)
+  doesn't have to re-derive the reasoning from the source.
 
 ### The `minConfidence` rule
 
-`minConfidence` is present **only** on subjects with `expected: dead`. It
-means two different things depending on whether a dynamic-reference
-hazard (architecture §4) is in play for that subject:
+`minConfidence` is present on every **non-`alive`** subject (`dead` or
+`test-only`) and absent on `alive` subjects. It means two different things
+depending on whether a dynamic-reference hazard (architecture §4) is in
+play for that subject:
 
 - **Hazard subjects** (e.g. a string/computed-import target, a
   `require(expr)` target, a config-referenced file): `minConfidence` is a

@@ -15,17 +15,29 @@ import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import type { Confidence } from "../../core/claims/types.js";
 
-/** `fixtures/README.md`: the three kinds a label may judge. */
-export type LabelKind = "export" | "file" | "dependency";
+/**
+ * `fixtures/README.md`: the kinds a label may judge. `test` is the M5 (T5.2)
+ * zombie-test subject kind — a whole test file flagged `test-only`.
+ */
+export type LabelKind = "export" | "file" | "dependency" | "test";
 
-export type LabelExpected = "alive" | "dead";
+/**
+ * The expected outcome for a subject. `dead` ⇒ an `unused` claim; `test-only` ⇒
+ * a `test-only` claim (the M5 tier-2 verdict — code/deps reachable only from
+ * tests, and zombie test files). `alive` ⇒ no claim of any verdict.
+ */
+export type LabelExpected = "alive" | "dead" | "test-only";
 
 export interface Label {
   kind: LabelKind;
   name: string;
   file: string;
   expected: LabelExpected;
-  /** Present only when `expected === "dead"` (fixtures/README.md, the `minConfidence` rule). */
+  /**
+   * Present (and required) on every non-`alive` subject (`dead` or `test-only`)
+   * — the confidence ceiling for the expected claim (fixtures/README.md, the
+   * `minConfidence` rule). Absent on `alive` subjects.
+   */
   minConfidence?: Confidence;
   because: string;
 }
@@ -41,8 +53,8 @@ export interface LabelCase {
   labelsPath: string;
 }
 
-const LABEL_KINDS: readonly LabelKind[] = ["export", "file", "dependency"];
-const LABEL_EXPECTED: readonly LabelExpected[] = ["alive", "dead"];
+const LABEL_KINDS: readonly LabelKind[] = ["export", "file", "dependency", "test"];
+const LABEL_EXPECTED: readonly LabelExpected[] = ["alive", "dead", "test-only"];
 const CONFIDENCES: readonly Confidence[] = ["high", "medium", "low"];
 
 /**
@@ -131,11 +143,13 @@ function validateSubject(raw: unknown, index: number, context: string): Label {
 
   const namedContext = `${subjectContext} (kind=${kind}, name=${JSON.stringify(name)})`;
 
-  if (expected === "dead") {
+  // Every non-alive expectation (`dead` ⇒ unused claim, `test-only` ⇒ test-only
+  // claim) carries a confidence ceiling; `alive` never does.
+  if (expected !== "alive") {
     if (record.minConfidence === undefined) {
       fail(
         namedContext,
-        'field "minConfidence" is required when expected is "dead" (fixtures/README.md, the minConfidence rule)',
+        `field "minConfidence" is required when expected is "${expected}" (fixtures/README.md, the minConfidence rule)`,
       );
     }
     const minConfidence = requireEnum(

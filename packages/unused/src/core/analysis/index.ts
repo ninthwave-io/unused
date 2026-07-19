@@ -24,7 +24,10 @@ export {
   lookupHazard,
 } from "./hazard-registry.js";
 export {
+  type ComputeReachabilityOptions,
+  computePartitionedReachability,
   computeReachability,
+  type PartitionedReachability,
   type Predecessor,
   type Reachability,
   type WhyReachable,

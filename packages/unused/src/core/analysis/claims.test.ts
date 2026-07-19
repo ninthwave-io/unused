@@ -15,7 +15,7 @@ import {
   symbolId,
 } from "../ir/index.js";
 import { type DependencyClaimInput, emitClaims } from "./claims.js";
-import { computeReachability } from "./reachability.js";
+import { computePartitionedReachability } from "./reachability.js";
 
 const PROVENANCE: Provenance = {
   analyzer: "ts-reference-graph",
@@ -54,6 +54,17 @@ function addConfigEntry(g: IRGraph, rel: string): void {
     entryKind: "config",
     file: rel,
     reason: "config-root",
+  });
+}
+
+function addTestEntry(g: IRGraph, rel: string): void {
+  addFile(g, rel);
+  g.addNode({
+    kind: "entrypoint",
+    id: entrypointId("test", rel),
+    entryKind: "test",
+    file: rel,
+    reason: "test-file",
   });
 }
 
@@ -110,7 +121,7 @@ function hazard(
 }
 
 function run(g: IRGraph, fileLineCounts?: Map<string, number>): Claim[] {
-  const reachability = computeReachability(g);
+  const reachability = computePartitionedReachability(g);
   return emitClaims({
     graph: g,
     reachability,
@@ -554,6 +565,160 @@ describe("entrypoint boundary (T2.4 review)", () => {
   });
 });
 
+describe("tier-2 partition: test-only verdicts (T5.1/T5.2)", () => {
+  it("flags a file reached only from a test as a whole-file test-only claim, naming the test entrypoint", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addSymbol(g, "src/index.ts", "publicApi"); // a production-alive symbol
+    addSymbol(g, "src/feature.ts", "computeFeature"); // reached only by the test
+    addTestEntry(g, "test/feature.test.ts");
+    // The test also exercises production code, so it is NOT itself a zombie —
+    // isolating the test-only FILE behaviour on feature.ts.
+    ref(g, "test/feature.test.ts", symbolId("src/index.ts", "publicApi"), "static", "publicApi");
+    ref(
+      g,
+      "test/feature.test.ts",
+      symbolId("src/feature.ts", "computeFeature"),
+      "static",
+      "computeFeature",
+    );
+
+    const claims = run(g);
+    expect(shape(claims)).toEqual([
+      {
+        kind: "file",
+        name: "src/feature.ts",
+        file: "src/feature.ts",
+        verdict: "test-only",
+        confidence: "high",
+      },
+    ]);
+    // Evidence is tier-2 and names the test entrypoint keeping it alive.
+    expect(claims[0]?.evidence[0]?.type).toBe("test-only");
+    expect(claims[0]?.evidence[0]?.detail).toContain("test/feature.test.ts");
+  });
+
+  it("flags a dead export used only from a test as a test-only export, in an otherwise-alive file", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addSymbol(g, "src/lib.ts", "used"); // production reaches this ⇒ lib.ts is alive
+    addSymbol(g, "src/lib.ts", "testOnly"); // only a test reaches this
+    ref(g, "src/index.ts", symbolId("src/lib.ts", "used"), "static", "used");
+    addTestEntry(g, "test/lib.test.ts");
+    ref(g, "test/lib.test.ts", symbolId("src/lib.ts", "testOnly"), "static", "testOnly");
+
+    // lib.ts is production-alive (the test reaches it too), so it is not a
+    // zombie; only the test-only EXPORT is flagged.
+    expect(shape(run(g))).toEqual([
+      {
+        kind: "export",
+        name: "testOnly",
+        file: "src/lib.ts",
+        verdict: "test-only",
+        confidence: "high",
+      },
+    ]);
+  });
+
+  it("a shared util imported by BOTH production and a test stays production-alive (not test-only)", () => {
+    // The classic partition trap: a symbol in both partitions is production-
+    // reachable, so it is never flagged test-only.
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addSymbol(g, "src/shared.ts", "sharedUtil");
+    ref(g, "src/index.ts", symbolId("src/shared.ts", "sharedUtil"), "static", "sharedUtil");
+    addTestEntry(g, "test/shared.test.ts");
+    ref(g, "test/shared.test.ts", symbolId("src/shared.ts", "sharedUtil"), "static", "sharedUtil");
+
+    expect(run(g)).toEqual([]);
+  });
+
+  it("a file reachable from BOTH config and a test is alive (config wins over test-only)", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts"); // production baseline so claiming is enabled
+    addConfigEntry(g, "vite.config.ts");
+    addSymbol(g, "src/buildHelper.ts", "buildHelper");
+    ref(
+      g,
+      "vite.config.ts",
+      symbolId("src/buildHelper.ts", "buildHelper"),
+      "static",
+      "buildHelper",
+    );
+    addTestEntry(g, "test/build.test.ts");
+    ref(
+      g,
+      "test/build.test.ts",
+      symbolId("src/buildHelper.ts", "buildHelper"),
+      "static",
+      "buildHelper",
+    );
+
+    // config-reachable ⇒ alive & never flagged; the test reaching it too does
+    // not downgrade it to test-only, and the test is not a zombie.
+    expect(run(g)).toEqual([]);
+  });
+
+  it("a test-only verdict is capped by the same hazard machinery as unused (medium under a subtree cap)", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addSymbol(g, "src/index.ts", "publicApi");
+    addSymbol(g, "src/mods/plugin.ts", "plugin"); // reached only by the test
+    addTestEntry(g, "test/plugin.test.ts");
+    ref(g, "test/plugin.test.ts", symbolId("src/index.ts", "publicApi"), "static", "publicApi");
+    ref(g, "test/plugin.test.ts", symbolId("src/mods/plugin.ts", "plugin"), "static", "plugin");
+    // A computed-dynamic-import subtree cap over src/mods/ downgrades everything there.
+    hazard(g, "src/index.ts", "computed-dynamic-import", "src/mods/");
+
+    const claims = run(g).filter((c) => c.subject.name === "src/mods/plugin.ts");
+    expect(claims[0]).toMatchObject({ verdict: "test-only", confidence: "medium" });
+  });
+});
+
+describe("tier-2 partition: zombie tests (T5.2 point 3)", () => {
+  it("flags a test whose whole reach (via a helper chain) is test-only/dead as a zombie test", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addSymbol(g, "src/index.ts", "publicApi"); // production-alive, NOT reached by the test
+    addSymbol(g, "src/helper.ts", "helper");
+    addSymbol(g, "src/leaf.ts", "leafThing");
+    ref(g, "src/helper.ts", symbolId("src/leaf.ts", "leafThing"), "static", "leafThing"); // helper → leaf
+    addTestEntry(g, "test/chain.test.ts");
+    ref(g, "test/chain.test.ts", symbolId("src/helper.ts", "helper"), "static", "helper"); // test → helper
+
+    const claims = run(g);
+    const zombie = claims.find((c) => c.subject.kind === "test");
+    expect(zombie).toMatchObject({
+      verdict: "test-only",
+      confidence: "high",
+      subject: { kind: "test", name: "test/chain.test.ts" },
+    });
+    expect(zombie?.id).toMatch(/^tst_[0-9a-f]{16}$/);
+    // The helper chain it keeps alive is itself reported test-only (order-independent).
+    const files = claims.filter((c) => c.subject.kind === "file");
+    expect(files.map((c) => c.subject.name).sort()).toEqual(["src/helper.ts", "src/leaf.ts"]);
+    expect(files.every((c) => c.verdict === "test-only" && c.confidence === "high")).toBe(true);
+  });
+
+  it("does NOT flag a test that reaches production-alive code (conservative — not a zombie)", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addSymbol(g, "src/index.ts", "publicApi");
+    addTestEntry(g, "test/real.test.ts");
+    ref(g, "test/real.test.ts", symbolId("src/index.ts", "publicApi"), "static", "publicApi");
+
+    expect(run(g).some((c) => c.subject.kind === "test")).toBe(false);
+    expect(run(g)).toEqual([]);
+  });
+
+  it("does NOT flag a test that imports nothing (reaches only itself) as a zombie", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addTestEntry(g, "test/empty.test.ts");
+    expect(run(g).some((c) => c.subject.kind === "test")).toBe(false);
+  });
+});
+
 describe("dependency claims (core)", () => {
   const DEP: DependencyClaimInput = {
     packageName: "left-pad",
@@ -561,7 +726,7 @@ describe("dependency claims (core)", () => {
   };
 
   const runWithDeps = (g: IRGraph, dependencies: DependencyClaimInput[]): Claim[] => {
-    const reachability = computeReachability(g);
+    const reachability = computePartitionedReachability(g);
     return emitClaims({ graph: g, reachability, provenance: PROVENANCE, dependencies });
   };
 
@@ -580,6 +745,28 @@ describe("dependency claims (core)", () => {
     ]);
     expect(claims[0]?.subject.loc.span).toEqual([7, 7]);
     expect(claims[0]?.evidence[0]?.source).toBe("reference-graph");
+  });
+
+  it("emits a dependency/test-only claim when the frontend tagged the dep test-only (T5.2 point 4)", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    const testOnlyDep: DependencyClaimInput = {
+      packageName: "supertest",
+      loc: { file: "package.json", span: [9, 9] },
+      verdict: "test-only",
+    };
+    const claims = runWithDeps(g, [testOnlyDep]);
+    expect(shape(claims)).toEqual([
+      {
+        kind: "dependency",
+        name: "supertest",
+        file: "package.json",
+        verdict: "test-only",
+        confidence: "high",
+      },
+    ]);
+    expect(claims[0]?.evidence[0]?.type).toBe("test-only");
+    expect(claims[0]?.evidence[0]?.detail).toContain("only from test files");
   });
 
   it("respects a project-scope cap: unresolvable-entrypoint-target downgrades deps to medium", () => {

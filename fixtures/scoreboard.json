@@ -5,15 +5,15 @@
     "subjects": 81
   },
   "precision": 1,
-  "recall": 0.918918918918919,
+  "recall": 0.9230769230769231,
   "falsePositives": 0,
   "confidenceViolations": 0,
   "misses": 3,
   "unlabelledClaims": 0,
   "byConfidenceTier": {
     "high": {
-      "claims": 24,
-      "truePositives": 24,
+      "claims": 26,
+      "truePositives": 26,
       "falsePositives": 0,
       "confidenceViolations": 0
     },
@@ -309,7 +309,7 @@
     {
       "case": "test-root-recognition",
       "subjects": 3,
-      "deadLabels": 1,
+      "deadLabels": 3,
       "precision": 1,
       "recall": 1,
       "falsePositives": 0,
