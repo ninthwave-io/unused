@@ -1,0 +1,56 @@
+# Elixir dead-code/liveness landscape — research for ADR 0011 (Elixir frontend approach)
+
+Research date: 2026-07-19. Sources: `elixir-lang/elixir` source and `CHANGELOG.md` at tag `v1.20.2` (raw-fetched), hexdocs.pm (`mix`, `elixir`, `phoenix`, `phoenix_live_view`, `ex_unit`), GitHub REST API, hex.pm API, erlang.org. Several compiler-behavior claims below were empirically verified by installing Elixir 1.20.2/OTP 29 and running real `elixirc`/`mix xref` commands against a scratch project, not just read from docs — flagged inline. Anything not independently re-checked this session is flagged "inference."
+
+## 1. Native tooling capabilities
+
+**`mix xref`** ([hexdocs.pm/mix/Mix.Tasks.Xref.html](https://hexdocs.pm/mix/Mix.Tasks.Xref.html); source `lib/mix/tasks/xref.ex`) has three live modes: `graph`, `trace FILE`, `callers MODULE`. `graph --format` accepts `pretty|plain|stats|cycles|dot|json` (json added **v1.19.0**, 2025-10-16) with `--output`, and filters `--sink`/`--source`/`--label {compile|export|runtime|compile-connected}`/`--only-nodes`/`--only-direct`/`--group`/`--exclude`/`--min-cycle-size`. JSON shape empirically confirmed: a flat `{"lib/a.ex":{"lib/b.ex":"runtime"},...}` source→sink→edge-type map. `callers MODULE` **only accepts a bare Module**, not `Module.function` or `Module.function/arity` — confirmed by triggering the actual error live; older docs (pre-v1.10.4) advertised MFA support but it was hard-restricted. `mix xref unreachable`/`deprecated` were removed and folded into compiler warnings in **v1.10.0 (2020-01-27)**, per CHANGELOG: *"This check has been moved into the compiler and has no effect now."* Critically, that same release note states: *"xref now only tracks dependencies between modules and files, no longer between functions"* — **`mix xref` has been module/file-level only since v1.10**, not function-level. There is no programmatic in-process graph API; `Mix.Tasks.Xref.calls/1` is explicitly deprecated in source, pointing callers at "compilation tracers described in the Code module" instead.
+
+**Blind spots (empirically tested):** a module reachable only via `Module.concat/2` + `apply/3` produced **zero callers** in `mix xref callers`; a struct used only via `defimpl … for: Struct` likewise showed zero callers. Macro-generated references are seen — expansion happens before dependency tracking; `use`/`import`/`require` register as `compile`-mode edges.
+
+**Compiler tracer API**: `Code.put_compiler_option(:tracers, [Mod])`, tracer implements `trace/2`, introduced **v1.10.0 (2020-01-27)**. Confirmed event set from `lib/elixir/lib/code.ex` moduledoc at the pinned tag: `:start`/`:stop` (v1.11), `:defmodule` (v1.16.2), `{:import,…}`, `{:imported_function/:imported_macro,…}`, `{:alias,…}`/`{:alias_expansion,…}`/`{:alias_reference,…}`, `{:require,…}`, `{:struct_expansion,…}`, `{:remote_function/:remote_macro,…}`, `{:local_function/:local_macro,…}`, `{:compile_env,…}`, `{:on_module,…}` (v1.13.0). Function-level granularity (module + name + arity per event) — the opposite of xref's coarseness. Docs say new events may appear anytime (implement a catch-all clause); not marked experimental, but additive/evolving. Real usage found via GitHub code search: `hauleth/mix_unused`, `sasa1977/boundary`, `elixir-lsp/elixir-ls`, `jsvitolo/scip-elixir`.
+
+**`--warnings-as-errors`** coverage (empirically verified): unused `defp` functions, unused variables (unless `_`-prefixed), unused module attributes, unused aliases, unused imports, and **unused `require`** (added **v1.20.0**, 2026-06-03). Separately, **v1.18.0** (2024-12-19) added type-system-driven "clauses/patterns that will never match" and "unused clauses in private functions" detection — native, not Dialyzer.
+
+## 2. Existing tools/competitors
+
+**mix_unused** ([hauleth/mix_unused](https://github.com/hauleth/mix_unused)) — stale, re-confirmed live: 229 stars, 9 open issues, pushed 2023-12-26, latest release v0.4.1 (2023-06-29). Mechanism: installs itself as a compiler tracer, the same primitive recommended below. Known limitation (README): blind to `apply/3`, causing FPs on reflectively-invoked callbacks like `child_spec/1`; issue #46 (2024-08-02) reports FPs on Phoenix-generated functions (`__phoenix_verify_routes__`). An Elixir Forum thread (2024-12-22) calls it "no longer working nor maintained."
+
+**Dialyzer** ([erlang.org dialyzer docs](https://www.erlang.org/doc/apps/dialyzer/dialyzer.html)) does emit an "unused functions" warning (`-Wno_unused` suppresses it, `warn_not_called` internally), but it's success-typing-driven, not call-graph-driven — community reports (Elixir Forum #14249) show it firing as a side-effect of broken upstream type inference, not reliable dead-code detection. Little usable overlap; Dialyxir (v1.4.7, 2025-11-06) is just a Mix wrapper, no dead-code feature.
+
+**gradient** ([esl/gradient](https://github.com/esl/gradient)) is purely a gradual typechecker over Gradualizer — no dead-code capability, and stale (pushed 2023-07-14, 440 stars, not on hex.pm).
+
+**boundary** ([sasa1977/boundary](https://github.com/sasa1977/boundary)) is the real prior art: active (974 stars, pushed 2026-06-27, latest v0.10.4). It installs as a compiler tracer, mechanism-identical to what an `unused` frontend needs — `trace/2` handles `remote_function`, `imported_function`, `local_function`, `struct_expansion`, `alias_reference`, `on_module` — persisting a full cross-module reference table (ETS-backed) powering `mix boundary.visualize`. It solves a different problem (enforcing module-boundary contracts, not liveness), but proves the tracer-as-reference-graph pattern works in production.
+
+**recode** ([hrzndhrn/recode](https://github.com/hrzndhrn/recode), 317 stars, pushed 2025-10-29, v0.8.0) has only `Recode.Task.UnusedVariable`, an autocorrect for unused variables — not dead-function/export detection.
+
+**credo** ([rrrene/credo](https://github.com/rrrene/credo), very active, 5,200 stars, v1.7.19, 2026-06-05) has no cross-function dead-code checks; its "Unused" family (`UnusedEnumOperation`, `UnusedKeywordOperation`, etc.) flags ignored return values from stdlib calls, an unrelated bug class.
+
+**New entrants 2024–2026**: none found. `AdRoll/meandro` ("the Elixir dead code cleaner") is the only other name that surfaces, abandoned since a single 2022 release.
+
+**Verdict**: no live, credible competitor exists for Elixir liveness detection. mix_unused is closest and is unmaintained, public-function-only; boundary is the strongest architectural precedent (tracer-based reference graph) but targets a different claim — boundary violations, not deletability.
+
+## 3. Elixir-specific hazard classes
+
+1. **Behaviours/`@impl`**: `handle_call/3`-style callbacks are dispatched by the OTP runtime, never called by name in user source — invisible to any direct call-graph walk (GenServer/Module docs; mix_unused's history shows this driving early FPs).
+2. **OTP entrypoints**: `mod: {MyApp, []}` and supervisor `children` lists pass module atoms as *data*, not call syntax — structurally different from `Module.func()`.
+3. **Phoenix**: router macros (`get "/", Ctrl, :index`) expand to compile-time dispatch, visible to macro-aware analysis; LiveView `mount/3`/`handle_event/3`/`render/1` are runtime-dispatched by the LiveView process; HEEx `.heex` files get compile-time template validation, but visibility to tracer events needs empirical confirmation in Phase 2; config-driven `plug SomeModule` resolved from `Application.get_env` at runtime is a genuine blind spot since `Plug.init/1` runs at compile time against whatever's literal.
+4. **Protocols**: `defimpl` dispatch is by the runtime type of the first argument (`Protocol.impl_for/1`) — no static caller ever exists.
+5. **Macros**: `use`/`__using__` injected calls ARE visible — expansion precedes dependency tracking.
+6. **Dynamic dispatch**: `apply(Mod, :f, args)`, `spawn(Mod, :f, args)`, MFA-form `Task.Supervisor.start_child/4` pass module/function as data, invisible to tracer/xref alike (confirmed for the first case); closure-form `Task.start(fn -> Mod.f() end)` IS visible since the inner call is literal syntax.
+7. **Umbrella apps**: a genuine multi-app/workspace analogue (the Elixir guide calls it "the mono-repo pattern"); `xref graph` at the root lists children unnamespaced, but function-level queries behave inconsistently across the boundary and are best run per-app.
+8. **Releases/`runtime.exs`**: `Config.Provider` modules and env-driven adapter selection resolve at deploy time, after analysis would run — an unavoidable blind spot, same class as #6.
+
+## 4. Entrypoint model
+
+Production root set: the `Application` callback module (`mix.exs` `mod:`) and everything reachable from its supervision tree (including children passed as data); `Phoenix.Endpoint` modules; `Mix.Task`-behaviour modules (invoked by CLI-name convention, never from application code — always roots); release boot starts each app's `mod:` callback in dependency order, no single "main." Test partition: `test/test_helper.exs` + `ExUnit.start()` is the boundary; everything only reachable from `*_test.exs`/`use ExUnit.Case` is test-only. `doctest MyModule` is a distinct third bucket worth its own claim tier — it turns `@doc` examples into tests, so code reachable *only* via doctest is "exercised by documentation," not production-live.
+
+## Recommended frontend architecture
+
+**Compiler-tracer-based, not xref-based, not source-parsing.** Since v1.10, `mix xref` is module/file-level only — it cannot answer "is `Foo.bar/2` unused," the exact question the product needs answered, and Elixir core's own source deprecates `Xref.calls/1` in favor of tracers. Hand-rolled source parsing (tree-sitter-elixir or similar) would force us to reimplement macro/protocol/`use` expansion to get the same visibility the real compiler already gives away for free — the same anti-pattern already rejected for TS/JS (archived `stack-graphs`).
+
+Primary mechanism: a custom tracer registered via `Code.put_compiler_option(:tracers, [Unused.Tracer])`, invoked through `mix compile`, aggregating `remote_function`/`remote_macro`/`local_function`/`struct_expansion`/`alias_reference`/`on_module` events into our own function-level reference graph — the pattern boundary and mix_unused already run in production. Supplement with `mix xref graph --format json` as a near-zero-cost module/file-level cross-check (cycles, umbrella boundaries), not a replacement.
+
+This leaves every hazard in §3 unresolved by the mechanism alone — behaviour/callback roots, OTP child-spec data-references, and protocol impls need dedicated entrypoint heuristics on top of the raw graph, and dynamic dispatch (`apply/3`, config-driven resolution, `runtime.exs`) is structurally invisible regardless of approach and must route through the existing ambiguity-margin/LLM-triage policy, defaulting to "alive" over a confident wrong "unused."
+
+**Trade-off summary**: tracer-based costs a real `mix compile` (deps must fetch, project must compile cleanly) versus xref's near-zero marginal cost once compiled, but only the tracer gives the function-level granularity the claim schema needs; xref alone ships a materially coarser, module-only v1.
