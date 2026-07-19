@@ -174,6 +174,23 @@ export function collectBindings(node: RawNode, kind: ScopeKind): ScopeBindings {
   return { values, types };
 }
 
+/**
+ * The value+type binding names a single top-level (or block) declaration
+ * statement introduces — the owner name(s) of that statement, for attributing
+ * intra-file references to the symbol they belong to (the aws-lambda
+ * intra-file-reachability fix). `export const handle = …` ⇒ `["handle"]`,
+ * `export class C …` ⇒ `["C"]`, `export const { a, b } = …` ⇒ `["a", "b"]`.
+ * A statement that binds no name (a bare expression, `export { x } from "…"`)
+ * ⇒ `[]`.
+ */
+export function declarationBindingNames(stmt: RawNode): string[] {
+  const values = new Set<string>();
+  const types = new Set<string>();
+  addDeclarationBinding(stmt, values, types);
+  const out = new Set<string>([...values, ...types]);
+  return [...out];
+}
+
 /** Add the binding(s) a top-level/block declaration statement introduces. */
 function addDeclarationBinding(stmt: RawNode, values: Set<string>, types: Set<string>): void {
   let n = stmt;

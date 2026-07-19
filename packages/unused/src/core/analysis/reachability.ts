@@ -250,12 +250,22 @@ export function computeReachability(
   };
 
   const processSymbol = (id: string): void => {
-    // A reachable symbol forwards through its own re-export out-edges (a barrel
-    // entry that was actually consumed).
+    // A reachable symbol forwards through:
+    //  - its own `re-export` out-edges (a barrel entry that was actually
+    //    consumed), and
+    //  - its intra-file `static` out-edges to sibling export symbols (emitIR's
+    //    flattened intra-file reachability: an alive symbol's body uses a
+    //    sibling export, directly or via private module-scope bindings).
     for (const edge of graph.outEdges(id)) {
-      if (edge.kind !== "references" || edge.referenceKind !== "re-export") continue;
+      if (edge.kind !== "references") continue;
       const target = graph.getNode(edge.to);
       const pred: Predecessor = { via: "edge", edge };
+      if (edge.referenceKind === "static") {
+        // Intra-file sibling edge: always symbol→symbol, keep that export alive.
+        if (target?.kind === "symbol") markSymbol(target.id, pred);
+        continue;
+      }
+      if (edge.referenceKind !== "re-export") continue;
       const name = edge.name;
       if (name === undefined || name === "*") {
         // `import * as ns …; export { ns }` forwards the whole target surface.

@@ -97,6 +97,9 @@ type LivenessVerdict = "unused" | "test-only";
 
 const EVIDENCE_SOURCE = "reference-graph";
 
+/** Shared empty set for the optional self-dependency exemption (avoids per-call allocation). */
+const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
+
 /** A confidence cap plus the hazard site that produced it, for the evidence note. */
 interface AppliedCap {
   readonly cap: ConfidenceCap;
@@ -163,6 +166,16 @@ export interface EmitClaimsInput {
    * claims). Absent/empty ⇒ no dependency claims (byte-identical to pre-M4).
    */
   readonly dependencies?: readonly DependencyClaimInput[];
+  /**
+   * Dependency node ids of the analyzed project's OWN package name(s) (T5 zombie
+   * hardening). A test that imports the package by its own name (`require('fastify')`
+   * inside fastify) resolves **external** — a resolver limitation — so its edge to
+   * its own production code is severed and it would look like it exercises nothing.
+   * A test whose reach references any of these is exempt from zombie classification
+   * (degrade toward alive): we cannot see what production code it really runs.
+   * Absent/empty ⇒ no self-name exemption (byte-identical to pre-T5.5).
+   */
+  readonly selfDependencyIds?: ReadonlySet<string>;
 }
 
 /**
@@ -220,13 +233,25 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
   // Files reached by any reference edge (to the file node or any symbol it
   // exposes) — the "has an inbound edge" test that distinguishes a bare orphan
   // (`unused`) from a file referenced only by other dead code (`none`).
+  // **Intra-file (self-file) edges do not count**: the flattened intra-file
+  // sibling edges (emitIR 2g) run symbol→symbol within one file, so a genuinely
+  // dead file whose exports merely reference each other must still read as a
+  // bare orphan (`unused`), not `none` — otherwise the fix would silently
+  // suppress its file claim.
   const referencedFiles = new Set<string>();
   for (const edge of graph.edges()) {
     if (edge.kind !== "references") continue;
     const target = graph.getNode(edge.to);
     if (target === undefined) continue;
-    if (target.kind === "file") referencedFiles.add(target.id);
-    else if (target.kind === "symbol") referencedFiles.add(fileId(target.file));
+    const targetFile =
+      target.kind === "file"
+        ? target.id
+        : target.kind === "symbol"
+          ? fileId(target.file)
+          : undefined;
+    if (targetFile === undefined) continue;
+    if (fileOfEdgeSource(graph, edge.from) === targetFile) continue; // intra-file — not an inbound reference
+    referencedFiles.add(targetFile);
   }
 
   const aliveFile = (id: string): boolean =>
@@ -518,6 +543,34 @@ function emitZombieTestClaims(
     ...config.reachableSymbols,
   ]);
 
+  // --- zombie hardening (T5.5): exempt tests whose visible reach can't be
+  // trusted complete (degrade toward alive) ----------------------------------
+  // (a) an `unresolvable-import` hazard hides what a file really pulls in; and
+  // (b) a self-name import of the analyzed package resolves *external* (resolver
+  //     limitation), severing the test's edge to its own production code. Either
+  //     way we cannot prove the test exercises nothing production-alive, so it is
+  //     NOT a confident zombie — no wrong zombie survives these shapes.
+  const filesWithUnresolvableImport = new Set<string>();
+  for (const hz of graph.hazards()) {
+    if (hz.hazardClass === "unresolvable-import") filesWithUnresolvableImport.add(hz.file);
+  }
+  const selfDeps = input.selfDependencyIds ?? EMPTY_ID_SET;
+  const referencesSelfPackage = (fileNodeId: string): boolean => {
+    if (selfDeps.size === 0) return false;
+    for (const edge of graph.outEdges(fileNodeId)) {
+      if (edge.kind === "references" && selfDeps.has(edge.to)) return true;
+    }
+    return false;
+  };
+  const reachIsUncertain = (testFileId: string, reachableFiles: ReadonlySet<string>): boolean => {
+    if (filesWithUnresolvableImport.has(testFileId) || referencesSelfPackage(testFileId))
+      return true;
+    for (const fid of reachableFiles) {
+      if (filesWithUnresolvableImport.has(fid) || referencesSelfPackage(fid)) return true;
+    }
+    return false;
+  };
+
   const claims: TestClaim[] = [];
   for (const entry of graph.entrypoints()) {
     if (entry.entryKind !== "test") continue;
@@ -527,6 +580,7 @@ function emitZombieTestClaims(
     // Walk from this one test root; a zombie reaches ≥1 subject beyond itself,
     // none of them alive.
     const reach = computeReachability(graph, { seedFilter: (e) => e.id === entry.id });
+    if (reachIsUncertain(testFileId, reach.reachableFiles)) continue; // can't see the real reach
     let reachedOther = false;
     let reachesAlive = false;
     for (const fid of reach.reachableFiles) {
@@ -692,6 +746,15 @@ function spanForFile(
 ): Span {
   const lines = lineCounts?.get(fileNodeId);
   return [1, lines !== undefined && lines >= 1 ? lines : 1];
+}
+
+/** The file id owning an edge's source node (a file node → itself; a symbol node → its file); `undefined` otherwise. */
+function fileOfEdgeSource(graph: IRGraph, from: string): string | undefined {
+  const node = graph.getNode(from);
+  if (node === undefined) return undefined;
+  if (node.kind === "file") return node.id;
+  if (node.kind === "symbol") return fileId(node.file);
+  return undefined;
 }
 
 /** A TypeScript declaration file (`.d.ts` / `.d.mts` / `.d.cts`) — never claimed. */

@@ -29,6 +29,7 @@ const empty = {
   typeImports: [],
   exports: [],
   references: [],
+  intraFileRefs: [],
   suppressions: [],
   hazards: [],
   parseErrors: [],

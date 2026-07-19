@@ -222,6 +222,29 @@ export interface ReferenceSite {
   span: Span;
 }
 
+/**
+ * An **intra-file** reference: a top-level declaration (`from`) whose body
+ * references another top-level binding of the *same* file (`to`) — both are
+ * module-scope names, exported or private. Captured by the same shadow-aware
+ * walk that produces {@link ReferenceSite}s, attributed to the enclosing
+ * top-level declaration.
+ *
+ * This is the input the IR layer flattens into export→export reachability
+ * edges: an alive exported symbol (`handle`) that calls a sibling
+ * (`getProcessor`), possibly through private module-scope bindings
+ * (`getProcessor` → `const albProcessor = new ALBProcessor()` → `ALBProcessor`),
+ * keeps that whole intra-file chain of exported symbols alive. Without it, a
+ * symbol reached by a *named* import (not a whole-surface import) never
+ * propagates to the siblings it uses, so a production-alive export can be
+ * mis-claimed `test-only`/`unused` (the M5 hono aws-lambda cluster).
+ */
+export interface IntraFileRef {
+  /** Local name of the enclosing top-level declaration doing the referencing. */
+  from: string;
+  /** Local name of the referenced top-level binding (exported or private). */
+  to: string;
+}
+
 // ---------------------------------------------------------------------------
 // Hazards (the "degrade toward alive" markers)
 // ---------------------------------------------------------------------------
@@ -330,6 +353,8 @@ export interface ModuleRecord {
   typeImports: TypeImportRecord[];
   exports: ExportRecord[];
   references: ReferenceSite[];
+  /** Top-level-symbol → top-level-symbol references within this file (the IR flattens these into export→export edges). */
+  intraFileRefs: IntraFileRef[];
   suppressions: SuppressionRecord[];
   hazards: HazardMarker[];
   parseErrors: ParseDiagnostic[];

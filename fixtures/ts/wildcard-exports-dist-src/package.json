@@ -1,0 +1,11 @@
+{
+  "name": "fixture-wildcard-exports-dist-src",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./utils/*": "./dist/utils/*.js"
+  }
+}

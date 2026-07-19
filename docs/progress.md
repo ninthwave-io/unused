@@ -1,25 +1,25 @@
 # Progress — unused
 
-Updated: 2026-07-18
+Updated: 2026-07-19. **Founder directive (2026-07-19): complete v1 autonomously; gates self-approved under delegation ("review on my behalf, do not stop for approval").**
 
 ## Current phase
-Phase 4 (implementation). **Milestone M3 — COMPLETE, awaiting founder gate approval.** M1 approved+tagged; M2 approved (founder "continue") + tagged `m2`. Do not start M4 until approved; tag `m3` on approval.
+Phase 4. M1–M5 complete: m1–m4 tagged; **M5 gate self-approved (delegated) — tag m5 on commit.** Next: M6 reporters.
 
-## M3 result (commits 578bc31..b5c9c8f)
-- **Hazard registry complete**: closed 16-class enum, compile-time-complete, per-class scope (project/subtree/file/symbol-set/none) + confidence caps; whole-project suppression replaced by scoped effects; every class has real, probe-verified detection (high without, capped with).
-- **Gate D** added: unlabelled high-confidence claims fail CI.
-- **Generated assumption set**: docs/generated/assumption-set.md rendered from code (globals + per-class rationale), byte-exact drift test. v1.1.x.
-- **estDeletableLoc** real (interval-merge, subsumption, suppression-excluded).
-- **Corpus: 19 cases / 49 subjects.** Scoreboard: precision 1.0, recall 0.870, 0 FP/CV/unlabelled. 367 tests.
-- **Smoke (docs/smoke/M3.md)**: pinned hono v4.12.30 / axios v1.18.1 / fastify v5.10.0. First run found **144 confirmed high FPs (axios)** + the hono unbuilt-exports trap — T3.6 fixed all root causes (interim test-root recognition, unresolvable-entrypoint-target hazard + dist→src remap, staticSpecifierPrefix relative-only, tool-config roots). **Post-fix: 0 high claims on all three repos; residual mediums triaged safe.**
-- **Bench (docs/bench/)**: 179–356ms medians on smoke repos, within 1.1× of Knip, <1% of the PRD 60s budget (repos are ~5% of target scale — budget unvalidated at 5k modules). Early-pivot checkpoint (M4 gate): no signal suggesting a Rust pivot.
+## State (through M5)
+- Analyzer: discovery/parse (oxc), per-unit resolution (member tsconfigs), IR with intra-file symbol edges (M5 fix — was a systemic gap), partitioned reachability (production/config/test), 16+-class hazard registry with scoped caps, dependency claims (conservative-first), test-only verdicts + zombie tests + CI-seconds estimate (schema 1.1.0), workspaces (4 managers, PnP refused), config (JSONC, project=claimability vs ignore=invisibility), presets (vite, next incl. metadata routes), generated assumption set (v1.5+, drift-tested).
+- Corpus: 36 cases / 103 subjects; precision 1.0, recall 0.939, 0 FP/CV/unlabelled; gates A–D + planted proofs. 585 tests.
+- Smoke (docs/smoke/M3–M5.md): pinned hono/axios/fastify/zod; every round found real FP classes (M3: 144 test-file highs; M4: member-tsconfig paths; M5: 15/21 wrong zombies incl. systemic intra-file edge gap) — all fixed, re-verified: 0 high FPs everywhere; remaining zombies 3 TP + 8 shared scope-gaps.
+- Perf: ≤1.23× knip, <1% PRD budget at ~400-file scale; checkpoint verdict: stay TS.
+- CLI: unused [--json|--cwd|--config]; exit 0/2/3 contract; bench wired.
 
-## Known debt
-- Corpus cases needed (labels exist only as __testfixtures__): emit-decorator-metadata, conditional-exports-divergence, project-references, test-root recognition, unresolvable-entrypoint; checker-only base-interface-via-merge gap (per-symbol scope post-v1); subsumption-aware label matching (metrics).
-- Test-only verdict/partition + zombie tests = M5 (interim: test-reachable is simply alive). PnP assumption-text nit ("M4" vs v1). Monorepo/workspaces = M4 (smoke had to skip zod). project-references cap is blunt (whole-package medium).
+## Remaining (v1)
+- M6 reporters: TTY per cli-ux spec + flags (--filter/--min-confidence/--all/--show-suppressed) + SARIF (fingerprints) + suppression rendering; contract tests.
+- M7 gate: baseline JSONL + check + exit 1; configHash must start reflecting ignore/gate config (recorded debt).
+- M8: unused why + MCP (find_unused/why_alive/usage_evidence; whyReachable provenance exists).
+- M9: packaging (npm pack verified; publish dry-run only — founder must register npm org + publish), README + --help, report/badge artifacts, beta checklist.
 
-## Next (after M3 gate approval)
-M4 (docs/phasing.md): dependency claims, workspaces (npm/pnpm/yarn-classic/bun; PnP refusal), unused.config.jsonc, vite+next presets, no-config regression, corpus additions above, smoke incl. a monorepo repo. **M4 gate includes the founder-directive performance checkpoint.**
+## Known debt (rolled)
+devDeps out of scope; YAML/JSONC config-string scan; per-test zombie walk cost at scale; external-only-test doc line; configHash under-hashing (M7); Elixir/Python post-v1; warm cache post-v1.
 
-## Standing founder actions
-npm org `ninthwave-io`; branch protection when remote; optional `unused` dispute; beta names before M9.
+## Founder checklist (cannot be done by the orchestrator)
+Register npm org `ninthwave-io`; npm publish (M9 prepared, dry-run verified); create remote + branch protection with required checks; optional unscoped-`unused` dispute; 5–10 beta users.

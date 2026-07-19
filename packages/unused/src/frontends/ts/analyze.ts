@@ -68,7 +68,13 @@ import {
   type Provenance,
   SCHEMA_VERSION,
 } from "../../core/claims/index.js";
-import { entrypointId, fileId, type IRGraph, type Site } from "../../core/ir/index.js";
+import {
+  dependencyId,
+  entrypointId,
+  fileId,
+  type IRGraph,
+  type Site,
+} from "../../core/ir/index.js";
 import {
   type ConfigUnit,
   collectConfigEntrypoints,
@@ -267,8 +273,11 @@ export async function analyzeProject(
   // production entrypoints, and keep-alive files reachable only under a non-selected
   // package.json condition/browser branch. A tsconfig with `references` anywhere
   // caps the whole project (medium — see the registry).
+  const unresolvedWildcardSubpaths: string[] = [];
   for (const unit of units) {
-    seedWildcardExportEntrypoints(graph, root, unit.dir, files, unit.packageJson);
+    unresolvedWildcardSubpaths.push(
+      ...seedWildcardExportEntrypoints(graph, root, unit.dir, files, unit.packageJson),
+    );
     addConditionalExportsDivergenceHazards(
       graph,
       root,
@@ -277,6 +286,25 @@ export async function analyzeProject(
       files,
       unit.packageJson,
     );
+  }
+  // A wildcard `exports` subpath that matched no project source file — even
+  // after the dist/**→src/** remap — means a declared slice of the public API
+  // could not be resolved (typically an unbuilt `dist/`). Cap the whole package
+  // (the same `unresolvable-entrypoint-target` project hazard the singular-target
+  // path raises in `emit.ts`): with the public surface incomplete, no file can
+  // be proven dead. Never silent — the pre-fix behaviour dropped these wildcards
+  // with no signal at all.
+  if (unresolvedWildcardSubpaths.length > 0) {
+    graph.addHazard({
+      file: fileId("package.json"),
+      hazardClass: "unresolvable-entrypoint-target",
+      detail:
+        `${unresolvedWildcardSubpaths.length} wildcard exports subpath pattern(s) ` +
+        `(e.g. \`${unresolvedWildcardSubpaths[0]}\`) matched no project source file, even after a ` +
+        "dist/**→src/** remap — the declared public API is incomplete (unbuilt dist/? misconfigured " +
+        "exports?), so no file can be proven dead. Whole-package cap: medium.",
+      site: { file: "package.json", span: { ...CONFIG_SITE_SPAN } },
+    });
   }
   if (tsconfigOptions.hasReferences) addProjectReferencesHazard(graph);
 
@@ -423,12 +451,21 @@ export async function analyzeProject(
   // (ADR 0003/dependency-cruiser); dependency claims are exempt (`project` is
   // a source-file scope, package.json's `dependencies` map is not). No-op
   // against `EMPTY_CONFIG` (`isClaimable` always returns `true`).
+  // Own package name(s) → dependency ids, so a test that imports the analyzed
+  // package by its own name (resolving external) is not mis-flagged a zombie
+  // (T5.5 hardening; `emitZombieTestClaims`).
+  const selfDependencyIds = new Set<string>();
+  for (const unit of units) {
+    if (unit.name !== null) selfDependencyIds.add(dependencyId(unit.name));
+  }
+
   const claims = emitClaims({
     graph,
     reachability,
     provenance,
     fileLineCounts,
     dependencies,
+    selfDependencyIds,
   }).filter(
     (claim) =>
       claim.subject.kind === "dependency" ||
@@ -480,9 +517,26 @@ function seedProductionEntrypoint(graph: IRGraph, rel: string, reason: string): 
 
 /**
  * Seed a production entrypoint for every discovered file matched by a wildcard
- * `exports` target. We expand against the literal prefix before `*` and keep the
- * whole matched subtree alive — a wildcard export means that subtree IS the
- * public API, so over-approximating here only costs recall, never precision.
+ * `exports` subpath pattern. We expand against the literal prefix before `*` and
+ * keep the whole matched subtree alive — a wildcard export means that subtree IS
+ * the public API, so over-approximating here only costs recall, never precision.
+ *
+ * **dist/**→src/** remap (parity with the singular-target path, T3.6).** A
+ * wildcard target commonly points into a build output that does not exist on an
+ * unbuilt clone (`"./utils/*": "./dist/utils/*.js"`, source under `src/utils/`).
+ * When the literal prefix matches no file we retry the prefix with its leading
+ * `dist/` segment rewritten to `src/`, exactly as `emit.ts` does for singular
+ * `main`/`exports`/`bin` targets — otherwise the wildcard silently seeds zero
+ * entrypoints and its (public, possibly tested) source files are mis-claimed
+ * dead (the M5 hono `./utils/*` regression).
+ *
+ * Returns the wildcard **subpath keys** that matched no source file even after
+ * the remap — a declared slice of the public API that could not be resolved.
+ * The caller raises an `unresolvable-entrypoint-target` hazard for these, so an
+ * unresolvable wildcard is never dropped silently. Grouping by subpath (rather
+ * than per condition target) means a subpath whose `import` condition resolves
+ * to source is NOT reported just because its `types`/`require` conditions point
+ * at other unbuilt directories.
  */
 function seedWildcardExportEntrypoints(
   graph: IRGraph,
@@ -490,22 +544,76 @@ function seedWildcardExportEntrypoints(
   packageDir: string,
   files: readonly string[],
   pkg: PackageJsonLike | null,
-): void {
-  if (pkg === null) return;
-  const targets = collectStringLeaves(pkg.exports).filter((t) => t.includes("*"));
-  for (const target of targets) {
-    const star = target.indexOf("*");
-    const prefixLit = target.slice(0, star);
-    // Wildcard targets are resolved relative to the OWNING package's directory
-    // (the root in single-package analysis, a member in a monorepo).
-    let matchPrefix = resolvePath(packageDir, prefixLit);
-    if (prefixLit.endsWith("/")) matchPrefix += sep;
-    for (const file of files) {
-      if (file.startsWith(matchPrefix)) {
+): string[] {
+  if (pkg === null) return [];
+  const unresolved: string[] = [];
+  for (const { subpath, targets } of collectWildcardSubpaths(pkg.exports)) {
+    let matched = 0;
+    for (const target of targets) {
+      const prefixLit = target.slice(0, target.indexOf("*"));
+      let hits = filesUnderWildcardPrefix(prefixLit, packageDir, files);
+      if (hits.length === 0) {
+        const remapped = remapDistPrefixToSrc(prefixLit);
+        if (remapped !== null) hits = filesUnderWildcardPrefix(remapped, packageDir, files);
+      }
+      for (const file of hits) {
         seedProductionEntrypoint(graph, toPosixRel(root, file), "exports:wildcard");
       }
+      matched += hits.length;
     }
+    if (matched === 0) unresolved.push(subpath);
   }
+  return unresolved;
+}
+
+/**
+ * Wildcard `exports` subpaths, grouped by subpath key. Only a subpath **key**
+ * containing `*` is a pattern (Node subpath-pattern semantics: a pattern key
+ * requires a pattern target); its wildcard target strings are the `*`-bearing
+ * string leaves of its value (across all conditions). A bare-string or
+ * conditions-object (`"."`-sugar) `exports` has no pattern subpaths.
+ */
+function collectWildcardSubpaths(
+  exportsValue: unknown,
+): Array<{ subpath: string; targets: string[] }> {
+  if (exportsValue === null || typeof exportsValue !== "object" || Array.isArray(exportsValue)) {
+    return [];
+  }
+  const out: Array<{ subpath: string; targets: string[] }> = [];
+  for (const [key, value] of Object.entries(exportsValue as Record<string, unknown>)) {
+    if (!key.includes("*")) continue;
+    const targets = collectStringLeaves(value).filter((t) => t.includes("*"));
+    if (targets.length > 0) out.push({ subpath: key, targets });
+  }
+  return out;
+}
+
+/**
+ * Discovered files (absolute) whose path starts with a wildcard target's literal
+ * prefix, resolved relative to the OWNING package's directory (the root in
+ * single-package analysis, a member in a monorepo). A trailing `/` prefix is
+ * anchored at the directory boundary.
+ */
+function filesUnderWildcardPrefix(
+  prefixLit: string,
+  packageDir: string,
+  files: readonly string[],
+): string[] {
+  let matchPrefix = resolvePath(packageDir, prefixLit);
+  if (prefixLit.endsWith("/")) matchPrefix += sep;
+  return files.filter((file) => file.startsWith(matchPrefix));
+}
+
+/**
+ * Rewrite a wildcard prefix's leading `dist/` segment to `src/`
+ * (`./dist/utils/` → `src/utils/`), mirroring `emit.ts`'s singular-target remap.
+ * Only the leading `dist/` is swapped; `null` when the prefix is not under
+ * `dist/` (no remap applies).
+ */
+function remapDistPrefixToSrc(prefixLit: string): string | null {
+  const rel = prefixLit.replace(/^\.\//, "");
+  if (!rel.startsWith("dist/")) return null;
+  return `src/${rel.slice("dist/".length)}`;
 }
 
 /** Every string leaf of a package.json value (subpaths + conditions). */

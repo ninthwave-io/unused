@@ -521,6 +521,16 @@ export function emitIR(input: EmitInput): IRGraph {
         ...(subtreePrefix !== undefined ? { subtreePrefix } : {}),
       });
     }
+
+    // 2g. intra-file reachability (the aws-lambda cluster fix). A top-level
+    // exported symbol that references a sibling — directly, or through private
+    // module-scope bindings — keeps that sibling alive. We flatten the
+    // extractor's local-name adjacency into export→export `static` edges: for
+    // each exported symbol, the exported siblings transitively reachable through
+    // the (possibly private) intra-file reference chain. Reachability only walks
+    // these once the source symbol is itself reached, so a dead symbol's
+    // intra-file uses stay dead — precise, never an over-reach.
+    emitIntraFileEdges(graph, fileRel, record, site);
   }
 
   // --- Phase 3: production entrypoints, per workspace package (T4.2) -------
@@ -811,6 +821,71 @@ function entrypointNode(fileRel: string, reason: string): EntrypointNode {
 // Edge builders (omit optional fields rather than set them undefined —
 // exactOptionalPropertyTypes) + small pure helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Flatten a file's intra-file reference adjacency (top-level local name →
+ * top-level local name, exported or private) into export→export `static`
+ * reference edges (the aws-lambda cluster fix). For each exported symbol, a DFS
+ * over the adjacency collects the exported siblings it can reach *through* any
+ * private module-scope bindings on the way (`handle` → `getProcessor` →
+ * `const albProcessor = new ALBProcessor()` → `ALBProcessor`), and one edge is
+ * emitted to each. Private intermediaries are not IR nodes, so the transitive
+ * hop is materialised here rather than walked at reachability time.
+ *
+ * Edges are anchored at the owning symbol's declaration span (the flattened
+ * transitive edge has no single use-site). They only ever *add* reachability
+ * from an already-reached symbol, so this can lower false positives but never
+ * introduce one.
+ */
+function emitIntraFileEdges(
+  graph: IRGraph,
+  fileRel: string,
+  record: ModuleRecord,
+  site: (fileRel: string, span: Span) => Site,
+): void {
+  if (record.intraFileRefs.length === 0) return;
+
+  // Exported local bindings: their local name → (symbol id, declaration span).
+  // Only locally-declared exports have a body that can reference siblings;
+  // re-export forwards are handled by the star-chain machinery, not here.
+  const exportedLocal = new Map<string, { readonly sym: string; readonly span: Span }>();
+  for (const exp of record.exports) {
+    if (exp.kind === "local" && exp.localName !== null) {
+      const localName = exp.localName;
+      if (!exportedLocal.has(localName)) {
+        exportedLocal.set(localName, { sym: symbolId(fileRel, exp.exportedName), span: exp.span });
+      }
+    }
+  }
+  if (exportedLocal.size === 0) return;
+
+  // Adjacency over ALL top-level local names (exported + private intermediaries).
+  const adj = new Map<string, string[]>();
+  for (const ref of record.intraFileRefs) {
+    const bucket = adj.get(ref.from);
+    if (bucket === undefined) adj.set(ref.from, [ref.to]);
+    else bucket.push(ref.to);
+  }
+
+  for (const [ownerLocal, owner] of exportedLocal) {
+    // DFS from the owner over the (private-inclusive) adjacency; emit an edge to
+    // every distinct exported symbol reached (excluding the owner itself).
+    const seen = new Set<string>([ownerLocal]);
+    const stack = [...(adj.get(ownerLocal) ?? [])];
+    while (stack.length > 0) {
+      const name = stack.pop() as string;
+      if (seen.has(name)) continue;
+      seen.add(name);
+      const target = exportedLocal.get(name);
+      if (target !== undefined && target.sym !== owner.sym) {
+        graph.addEdge(
+          referencesEdge("static", owner.sym, target.sym, site(fileRel, owner.span), name, false),
+        );
+      }
+      for (const next of adj.get(name) ?? []) if (!seen.has(next)) stack.push(next);
+    }
+  }
+}
 
 function referencesEdge(
   referenceKind: ReferenceKind,

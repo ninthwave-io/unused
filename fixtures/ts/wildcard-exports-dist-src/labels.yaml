@@ -1,0 +1,40 @@
+case: wildcard-exports-dist-src
+description: >-
+  M5 gate regression: a wildcard `exports` subpath pattern whose target points
+  into an unbuilt `dist/` (`"./utils/*": "./dist/utils/*.js"`) with real source
+  under `src/utils/`. Before the fix the wildcard was matched literally against
+  `dist/utils/` (absent on an unbuilt clone), so it silently seeded zero
+  entrypoints and the public, tested util was wrongly claimed test-only, its
+  unit test a zombie — a shape proven reachable at HIGH confidence in isolation.
+  The dist/**->src/** remap (parity with singular main/exports/bin targets) must
+  seed the source file as a production entrypoint. A dead file outside the
+  wildcard prefix is the recall baseline (both declared targets resolve via the
+  remap, so no unresolvable-entrypoint-target hazard caps the package).
+subjects:
+  - kind: file
+    name: src/utils/widget.ts
+    file: src/utils/widget.ts
+    expected: alive
+    because: >-
+      public API reachable only through the `"./utils/*": "./dist/utils/*.js"`
+      wildcard export; the dist/**->src/** remap seeds it as a production
+      entrypoint, so it is alive and never claimed (any test-only/unused claim
+      here is the false positive this case locks out).
+  - kind: test
+    name: test/widget.test.ts
+    file: test/widget.test.ts
+    expected: alive
+    because: >-
+      a real unit test of the wildcard-exported `widget`; because `widget` is
+      production-alive it exercises production-alive code, so no zombie test
+      claim may be emitted.
+  - kind: file
+    name: src/dead.ts
+    file: src/dead.ts
+    expected: dead
+    minConfidence: high
+    because: >-
+      not the `.` entry and not under the `./utils/*` wildcard prefix, imported
+      by nothing; both declared entry targets resolve via the remap so no
+      whole-package hazard applies and it is claimable at high confidence — a
+      recall baseline proving the remap did not blanket-alive the package.

@@ -32,15 +32,23 @@ import type { LineIndex } from "./line-index.js";
 import type {
   DynamicImport,
   HazardMarker,
+  IntraFileRef,
   ReferenceSite,
   RequireCall,
   Span,
   TypeImportRecord,
 } from "./module-record.js";
-import { collectBindings, type ScopeBindings, scopeKindFor } from "./scope.js";
+import {
+  collectBindings,
+  declarationBindingNames,
+  type ScopeBindings,
+  scopeKindFor,
+} from "./scope.js";
 
 export interface ExtractResult {
   references: ReferenceSite[];
+  /** Intra-file top-level-symbol → top-level-symbol references (the aws-lambda fix). */
+  intraFileRefs: IntraFileRef[];
   dynamicImports: DynamicImport[];
   requires: RequireCall[];
   typeImports: TypeImportRecord[];
@@ -57,6 +65,7 @@ export function extract(
   li: LineIndex,
 ): ExtractResult {
   const references: ReferenceSite[] = [];
+  const intraFileRefs: IntraFileRef[] = [];
   const dynamicImports: DynamicImport[] = [];
   const requires: RequireCall[] = [];
   const typeImports: TypeImportRecord[] = [];
@@ -64,7 +73,32 @@ export function extract(
 
   // scopeStack[0] is always the module frame and is EXCLUDED from shadow
   // checks (imports live there; a module-scope rebind of an import is illegal).
-  const scopeStack: ScopeBindings[] = [collectBindings(program, "module")];
+  const moduleFrame = collectBindings(program, "module");
+  const scopeStack: ScopeBindings[] = [moduleFrame];
+
+  // Module-scope binding names (exported or private) — the set an intra-file
+  // reference can target. A name shadowed by a nested (non-module) scope is not
+  // one of these at the use site (isShadowed handles that below).
+  const isModuleLocal = (name: string): boolean =>
+    moduleFrame.values.has(name) || moduleFrame.types.has(name);
+
+  // The top-level declaration currently being walked (its owner binding name(s)):
+  // every module-local reference recorded inside it is attributed to these
+  // owners, producing intra-file edges. Empty outside a named top-level
+  // declaration (a bare expression statement, `export { x } from "…"`).
+  let currentOwners: readonly string[] = [];
+  // De-dup identical owner→name edges (a symbol may reference a sibling many times).
+  const seenIntra = new Set<string>();
+  const recordIntraFileRef = (name: string): void => {
+    if (currentOwners.length === 0 || !isModuleLocal(name)) return;
+    for (const owner of currentOwners) {
+      if (owner === name) continue; // self-reference (recursion / own declaration) — not an edge
+      const key = `${owner} ${name}`;
+      if (seenIntra.has(key)) continue;
+      seenIntra.add(key);
+      intraFileRefs.push({ from: owner, to: name });
+    }
+  };
 
   // Span of the first decorator seen (the `emit-decorator-metadata` candidate
   // marker's site); at most one entry so we emit a single marker per file. An
@@ -81,9 +115,17 @@ export function extract(
   }
 
   function recordReference(name: string, position: "value" | "type", node: RawNode): void {
-    if (!importedLocals.has(name)) return;
+    // One shadow check serves both reference kinds: a nested rebinding of `name`
+    // means this occurrence denotes the local binding, not the import or the
+    // module-scope declaration.
     if (isShadowed(name, position)) return;
-    references.push({ localName: name, position, span: li.span(node.start, node.end) });
+    if (importedLocals.has(name)) {
+      references.push({ localName: name, position, span: li.span(node.start, node.end) });
+    }
+    // Intra-file: a reference to a module-scope binding from inside another
+    // top-level declaration (the aws-lambda cluster fix). Attribution only —
+    // no span kept (the flattened IR edge is anchored at the owner symbol).
+    recordIntraFileRef(name);
   }
 
   function recordDynamicImport(node: RawNode): void {
@@ -283,6 +325,18 @@ export function extract(
 
     try {
       switch (node.type) {
+        case "Program": {
+          // Walk each top-level statement with its owner binding name(s) in
+          // scope, so module-local references inside it become intra-file edges
+          // attributed to that declaration's symbol. (Program has no other
+          // reference-bearing children.)
+          for (const stmt of nodeArray(prop(node, "body"))) {
+            currentOwners = declarationBindingNames(stmt);
+            walk(stmt, false);
+          }
+          currentOwners = [];
+          return;
+        }
         case "Identifier": {
           const nm = str(node, "name");
           if (nm !== undefined) recordReference(nm, inType ? "type" : "value", node);
@@ -369,7 +423,7 @@ export function extract(
     });
   }
 
-  return { references, dynamicImports, requires, typeImports, hazards };
+  return { references, intraFileRefs, dynamicImports, requires, typeImports, hazards };
 }
 
 /**

@@ -1,0 +1,53 @@
+case: intra-file-reachability
+description: >-
+  M5 gate regression (hono aws-lambda cluster): a production-alive export
+  (`handle`, re-exported by the entrypoint) references sibling exports within
+  the same file — `getProcessor` directly, and the class `Processor` only
+  through a private module-scope binding (`const processor = new Processor()`).
+  A test imports `getProcessor` directly. Before the intra-file reachability fix,
+  reaching `handle` by a named import did not propagate to the siblings it uses,
+  so `getProcessor`/`Processor` looked reachable only from the test and were
+  mis-claimed test-only. The fix flattens intra-file references (through private
+  bindings) into export->export edges, keeping the whole used chain alive. A
+  never-referenced sibling is the recall baseline.
+subjects:
+  - kind: export
+    name: handle
+    file: src/handler.ts
+    expected: alive
+    because: >-
+      re-exported by src/index.ts, the production entrypoint — alive via the
+      production partition.
+  - kind: export
+    name: getProcessor
+    file: src/handler.ts
+    expected: alive
+    because: >-
+      used by `handle` intra-file; production-alive through the flattened
+      intra-file edge even though the test also imports it (the production
+      partition wins over test-only). A test-only claim here is the false
+      positive this case locks out.
+  - kind: export
+    name: Processor
+    file: src/handler.ts
+    expected: alive
+    because: >-
+      reached from `handle` -> `getProcessor` -> the private `processor`
+      binding -> `Processor`; the private-indirection hop the fix must trace
+      through (no exported symbol references `Processor` directly).
+  - kind: export
+    name: deadHelper
+    file: src/handler.ts
+    expected: dead
+    minConfidence: high
+    because: >-
+      referenced by nothing in production or test code; no hazard applies, so it
+      is claimable at high confidence — a recall baseline proving the fix keeps
+      only actually-referenced siblings alive, not the whole file.
+  - kind: test
+    name: test/handler.test.ts
+    file: test/handler.test.ts
+    expected: alive
+    because: >-
+      imports `getProcessor`, which is production-alive, so this test exercises
+      production-alive code and is not a zombie.

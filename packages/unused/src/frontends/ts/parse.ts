@@ -104,7 +104,7 @@ export function parseSource(filePath: string, source: string): ModuleRecord {
   const importedLocals = new Set<string>();
   for (const imp of imports) for (const s of imp.specifiers) importedLocals.add(s.localName);
 
-  const { references, dynamicImports, requires, typeImports, hazards } = extract(
+  const { references, intraFileRefs, dynamicImports, requires, typeImports, hazards } = extract(
     result.program,
     importedLocals,
     li,
@@ -133,6 +133,7 @@ export function parseSource(filePath: string, source: string): ModuleRecord {
     typeImports,
     exports,
     references,
+    intraFileRefs,
     suppressions,
     hazards,
     parseErrors,
