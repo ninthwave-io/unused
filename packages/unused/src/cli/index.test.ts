@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import type { FormatsPlugin } from "ajv-formats";
 import { beforeAll, describe, expect, it } from "vitest";
+import { isMixAvailable } from "../testing/corpus/elixir-corpus.js";
 // Direct import (not spawned) is safe here — `isEntryPoint()` guards `main()`
 // from auto-running merely because this module was imported (T9.1); this is
 // the one export in this file worth unit-testing directly rather than via a
@@ -31,6 +32,7 @@ const PACKAGE_ROOT = resolve(HERE, "../..");
 const REPO_ROOT = resolve(PACKAGE_ROOT, "../..");
 const TSC_BIN = join(REPO_ROOT, "node_modules/.bin/tsc");
 const CLI_ENTRY = join(PACKAGE_ROOT, "dist/cli/index.js");
+const MIX_AVAILABLE = isMixAvailable();
 
 const FIXTURES_ROOT = join(REPO_ROOT, "fixtures/ts");
 const CLEAN_FIXTURE = join(FIXTURES_ROOT, "basic-alive-export"); // real entrypoint, zero dead code
@@ -1912,27 +1914,30 @@ describe("unused CLI — why (T8.2, cli-ux §4)", () => {
     }
   });
 
-  it("produces deletion plans for Elixir subjects through auto-dispatch", () => {
-    const result = runCli([
-      "why",
-      "--delete",
-      "--json",
-      "BasicDead.Core.unused_helper/1",
-      "--cwd",
-      ELIXIR_FIXTURE,
-    ]);
-    expect(result.status).toBe(0);
-    expect(result.stderr).toBe("");
-    const plan = JSON.parse(result.stdout) as {
-      selected: { kind: string; name?: string };
-      supported: boolean;
-    };
-    expect(plan.selected).toMatchObject({
-      kind: "export",
-      name: "BasicDead.Core.unused_helper/1",
-    });
-    expect(plan.supported).toBe(true);
-  });
+  it.skipIf(!MIX_AVAILABLE)(
+    "produces deletion plans for Elixir subjects through auto-dispatch",
+    () => {
+      const result = runCli([
+        "why",
+        "--delete",
+        "--json",
+        "BasicDead.Core.unused_helper/1",
+        "--cwd",
+        ELIXIR_FIXTURE,
+      ]);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      const plan = JSON.parse(result.stdout) as {
+        selected: { kind: string; name?: string };
+        supported: boolean;
+      };
+      expect(plan.selected).toMatchObject({
+        kind: "export",
+        name: "BasicDead.Core.unused_helper/1",
+      });
+      expect(plan.supported).toBe(true);
+    },
+  );
 
   it("exits 3 with a fix hint on a nonexistent name (stdout clean)", () => {
     const result = runCli(["why", "noSuchSymbol", "--cwd", DEAD_FIXTURE]);
@@ -1994,7 +1999,7 @@ describe("unused report (T9.3, docs/design/report-and-badge.md §1)", () => {
     });
   });
 
-  it("includes modeled consequences for Elixir claims", async () => {
+  it.skipIf(!MIX_AVAILABLE)("includes modeled consequences for Elixir claims", async () => {
     await withTempFixtureCopy(ELIXIR_FIXTURE, async (dir) => {
       const result = runCli(["report", "--cwd", dir]);
       expect(result.status).toBe(0);

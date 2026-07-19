@@ -3,12 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { isMixAvailable } from "../testing/corpus/elixir-corpus.js";
 import { analyzeProjectAuto } from "./dispatch.js";
 
 const elixirFixture = fileURLToPath(
   new URL("../../../../fixtures/elixir/test-only-zombie", import.meta.url),
 );
 const temporaryProjects: string[] = [];
+const MIX_AVAILABLE = isMixAvailable();
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -17,7 +19,7 @@ afterEach(async () => {
   );
 });
 
-describe("mixed-language dispatch policy", () => {
+describe.skipIf(!MIX_AVAILABLE)("mixed-language dispatch policy", () => {
   it("uses union config diagnostics and preserves configured zombie-test cost", async () => {
     const root = await mkdtemp(join(tmpdir(), "unused-mixed-policy-"));
     temporaryProjects.push(root);
