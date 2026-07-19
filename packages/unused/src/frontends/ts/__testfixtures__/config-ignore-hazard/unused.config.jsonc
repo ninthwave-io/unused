@@ -1,0 +1,7 @@
+{
+  // src/loader.ts hosts a computed dynamic import that would otherwise cap
+  // src/mods/** at medium (see fixtures/ts/string-computed-import). Ignored
+  // files can't host hazards (PRD §6, documented interaction) — an ignored
+  // file is never parsed, so its hazard never enters the graph.
+  "ignore": ["src/loader.ts"],
+}

@@ -34,6 +34,7 @@ const NO_ENTRYPOINTS_FIXTURE = join(
 const TESTFIXTURES = join(PACKAGE_ROOT, "src/frontends/ts/__testfixtures__");
 const PNP_FIXTURE = join(TESTFIXTURES, "workspace-pnp"); // Yarn PnP → refused
 const WORKSPACE_FIXTURE = join(TESTFIXTURES, "workspace-pnpm"); // pnpm monorepo
+const CONFIG_BASIC_FIXTURE = join(TESTFIXTURES, "config-basic"); // T4.3 entry/project/ignore
 
 function readSchema(): object {
   return JSON.parse(
@@ -163,6 +164,56 @@ describe("unused CLI — monorepo workspaces (T4.2)", () => {
     expect(claims.length).toBeGreaterThan(0);
     // Every workspace claim is tagged with its owning package.
     expect(claims.every((c) => typeof c.subject.loc.package === "string")).toBe(true);
+  });
+});
+
+describe("unused CLI — config (T4.3)", () => {
+  it("auto-discovers unused.config.jsonc at the root: entry/project/ignore apply", () => {
+    const result = runCli(["--json", "--cwd", CONFIG_BASIC_FIXTURE]);
+    expect(result.status).toBe(0);
+    const parsed: unknown = JSON.parse(result.stdout);
+    const claims = (parsed as { claims: { subject: { name: string } }[] }).claims;
+    expect(claims.map((c) => c.subject.name)).toEqual(["src/orphan.ts"]);
+  });
+
+  it("--config <path> selects a specific config file, overriding auto-discovery", () => {
+    // custom-empty.jsonc has none of config-basic's entry/project/ignore
+    // fields — with it selected instead of unused.config.jsonc, every file
+    // in the fixture is in scope and none of the config-seeded chain exists,
+    // so this run's claim set differs from the auto-discovered one above.
+    const result = runCli([
+      "--json",
+      "--cwd",
+      CONFIG_BASIC_FIXTURE,
+      "--config",
+      "custom-empty.jsonc",
+    ]);
+    expect(result.status).toBe(0);
+    const parsed: unknown = JSON.parse(result.stdout);
+    const claims = (parsed as { claims: { subject: { name: string } }[] }).claims;
+    const names = claims.map((c) => c.subject.name);
+    // scripts/outside.ts is out of scope under unused.config.jsonc's
+    // "project" glob, but IS analyzed under the empty custom config.
+    expect(names).toContain("scripts/outside.ts");
+  });
+
+  it("exits 3 with the field named when --config points at an invalid config file", () => {
+    const result = runCli(["--cwd", CONFIG_BASIC_FIXTURE, "--config", "invalid.jsonc"]);
+    expect(result.status).toBe(3);
+    expect(result.stderr).toMatch(/bogusField/);
+    expect(result.stdout).toBe("");
+  });
+
+  it("exits 3 when --config points at a file that doesn't exist", () => {
+    const result = runCli(["--cwd", CONFIG_BASIC_FIXTURE, "--config", "does-not-exist.jsonc"]);
+    expect(result.status).toBe(3);
+    expect(result.stderr).toMatch(/does not exist/);
+  });
+
+  it("exits 3 when --config is missing its path argument", () => {
+    const result = runCli(["--config"]);
+    expect(result.status).toBe(3);
+    expect(result.stderr).toMatch(/--config requires a path argument/);
   });
 });
 

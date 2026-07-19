@@ -1,0 +1,85 @@
+{
+  "schemaVersion": "1.0.0",
+  "tool": {
+    "name": "unused",
+    "version": "0.1.0"
+  },
+  "run": {
+    "configHash": "10e96c2464f3",
+    "startedAt": "1970-01-01T00:00:00.000Z"
+  },
+  "claims": [
+    {
+      "id": "exp_412b6d4d70454a43",
+      "subject": {
+        "kind": "export",
+        "name": "siblingUnused",
+        "loc": {
+          "file": "src/app/util.ts",
+          "span": [
+            10,
+            12
+          ]
+        }
+      },
+      "verdict": "unused",
+      "confidence": "high",
+      "evidence": [
+        {
+          "type": "static-reachability",
+          "detail": "0 inbound references to `siblingUnused` from any production entrypoint in the reference graph.",
+          "source": "reference-graph"
+        }
+      ],
+      "provenance": {
+        "analyzer": "ts-reference-graph",
+        "version": "0.1.0",
+        "generatedAt": "1970-01-01T00:00:00.000Z"
+      }
+    },
+    {
+      "id": "fil_7df105f635544313",
+      "subject": {
+        "kind": "file",
+        "name": "src/app/orphan.ts",
+        "loc": {
+          "file": "src/app/orphan.ts",
+          "span": [
+            1,
+            6
+          ]
+        }
+      },
+      "verdict": "unused",
+      "confidence": "high",
+      "evidence": [
+        {
+          "type": "static-reachability",
+          "detail": "0 inbound references to `src/app/orphan.ts` from any production entrypoint in the reference graph.",
+          "source": "reference-graph"
+        }
+      ],
+      "provenance": {
+        "analyzer": "ts-reference-graph",
+        "version": "0.1.0",
+        "generatedAt": "1970-01-01T00:00:00.000Z"
+      }
+    }
+  ],
+  "summary": {
+    "byKind": {
+      "export": 1,
+      "file": 1,
+      "dependency": 0,
+      "endpoint": 0,
+      "test": 0
+    },
+    "byConfidence": {
+      "high": 2,
+      "medium": 0,
+      "low": 0
+    },
+    "estDeletableLoc": 9
+  },
+  "productionEntrypointCount": 1
+}

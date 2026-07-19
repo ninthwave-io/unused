@@ -1,0 +1,9 @@
+{
+  // Scoped to packages/api ONLY — packages/web's same-shaped src/extra.ts
+  // must NOT be seeded (proves the override doesn't leak across units).
+  "workspaces": {
+    "packages/api": {
+      "entry": ["src/extra.ts"],
+    },
+  },
+}

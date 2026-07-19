@@ -1,0 +1,3 @@
+// A --config target with no entry/project/ignore fields, used by cli/index.test.ts
+// to prove --config overrides auto-discovery of unused.config.jsonc.
+{}

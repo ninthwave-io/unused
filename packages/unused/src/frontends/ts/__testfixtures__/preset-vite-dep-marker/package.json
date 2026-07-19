@@ -1,0 +1,8 @@
+{
+  "name": "fixture-preset-vite-dep-marker",
+  "private": true,
+  "version": "0.0.0",
+  "devDependencies": {
+    "vite": "^5.0.0"
+  }
+}

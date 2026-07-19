@@ -1,0 +1,3 @@
+// An invalid --config target (unknown field), used by cli/index.test.ts to
+// prove a --config-selected error still names the field and exits 3.
+{ "bogusField": [] }

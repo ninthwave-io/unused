@@ -1,0 +1,10 @@
+{
+  "name": "fixture-config-ignore-deps",
+  "private": true,
+  "version": "0.0.0",
+  "main": "src/index.ts",
+  "dependencies": {
+    "left-pad": "^1.0.0",
+    "right-pad": "^1.0.0"
+  }
+}

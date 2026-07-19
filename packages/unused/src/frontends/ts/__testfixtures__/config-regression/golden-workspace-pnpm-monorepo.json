@@ -1,0 +1,87 @@
+{
+  "schemaVersion": "1.0.0",
+  "tool": {
+    "name": "unused",
+    "version": "0.1.0"
+  },
+  "run": {
+    "configHash": "049c5d29ec44",
+    "startedAt": "1970-01-01T00:00:00.000Z"
+  },
+  "claims": [
+    {
+      "id": "exp_0022ccdcc4c95297",
+      "subject": {
+        "kind": "export",
+        "name": "deadHelper",
+        "loc": {
+          "file": "packages/lib/src/helper.ts",
+          "span": [
+            7,
+            9
+          ],
+          "package": "@fix/lib"
+        }
+      },
+      "verdict": "unused",
+      "confidence": "high",
+      "evidence": [
+        {
+          "type": "static-reachability",
+          "detail": "0 inbound references to `deadHelper` from any production entrypoint in the reference graph.",
+          "source": "reference-graph"
+        }
+      ],
+      "provenance": {
+        "analyzer": "ts-reference-graph",
+        "version": "0.1.0",
+        "generatedAt": "1970-01-01T00:00:00.000Z"
+      }
+    },
+    {
+      "id": "fil_bcf4f21929019c8e",
+      "subject": {
+        "kind": "file",
+        "name": "packages/app/src/dead.ts",
+        "loc": {
+          "file": "packages/app/src/dead.ts",
+          "span": [
+            1,
+            6
+          ],
+          "package": "@fix/app"
+        }
+      },
+      "verdict": "unused",
+      "confidence": "high",
+      "evidence": [
+        {
+          "type": "static-reachability",
+          "detail": "0 inbound references to `packages/app/src/dead.ts` from any production entrypoint in the reference graph.",
+          "source": "reference-graph"
+        }
+      ],
+      "provenance": {
+        "analyzer": "ts-reference-graph",
+        "version": "0.1.0",
+        "generatedAt": "1970-01-01T00:00:00.000Z"
+      }
+    }
+  ],
+  "summary": {
+    "byKind": {
+      "export": 1,
+      "file": 1,
+      "dependency": 0,
+      "endpoint": 0,
+      "test": 0
+    },
+    "byConfidence": {
+      "high": 2,
+      "medium": 0,
+      "low": 0
+    },
+    "estDeletableLoc": 9
+  },
+  "productionEntrypointCount": 3
+}

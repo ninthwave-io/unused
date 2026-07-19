@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * `unused` — CLI entrypoint (T2.5, docs/phasing.md M2).
+ * `unused` — CLI entrypoint (T2.5, docs/phasing.md M2; `--config` added T4.3).
  *
- * M2 surface ONLY: `unused [--json] [--cwd <dir>]`. No subcommands yet
- * (`check` / `baseline` / `why` / `mcp` / `report` / `badge` — PRD §3), no
- * config file (M4), no `--filter` / `--min-confidence` / `--sarif` /
- * `--no-color` (M6/M7/M8), no network, no telemetry.
+ * M2 surface plus `--config <path>` (T4.3): `unused [--json] [--cwd <dir>]
+ * [--config <path>]`. No subcommands yet (`check` / `baseline` / `why` /
+ * `mcp` / `report` / `badge` — PRD §3), no `--filter` / `--min-confidence` /
+ * `--sarif` / `--no-color` (M6/M7/M8), no network, no telemetry.
  *
  * The default (non-`--json`) listing in {@link formatPlainListing} is a
  * deliberately minimal placeholder — one claim per line, no colors, no
@@ -22,8 +22,12 @@
  *   0 — successful analysis (findings or none; report mode is informational,
  *       never a gate).
  *   2 — analysis could not proceed (nonexistent/unreadable `--cwd`,
- *       `analyzeProject` threw).
- *   3 — usage error (unknown flag, `--cwd` missing its argument).
+ *       `analyzeProject` threw an analysis error, e.g. Yarn PnP refusal).
+ *   3 — usage error (unknown flag, `--cwd`/`--config` missing its argument,
+ *       or `analyzeProject` threw `ConfigError`: a missing `--config`
+ *       target, malformed JSON/JSONC, or an invalid `unused.config.jsonc`
+ *       field — the error already carries the field name and the fix,
+ *       cli-ux §6).
  * Exit 1 is reserved for `unused check`'s gate failure (PRD §3, M7) and is
  * never emitted by this file.
  */
@@ -32,6 +36,7 @@ import { stat } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 import type { Claim, ClaimRun } from "../core/claims/index.js";
 import { analyzeProject } from "../frontends/ts/analyze.js";
+import { ConfigError } from "../frontends/ts/config.js";
 import { UnsupportedProjectError } from "../frontends/ts/workspaces.js";
 
 const EXIT_OK = 0;
@@ -45,6 +50,7 @@ const NO_ENTRYPOINTS_WARNING =
 interface ParsedArgs {
   readonly json: boolean;
   readonly cwd?: string;
+  readonly config?: string;
 }
 
 type ParseResult =
@@ -55,6 +61,7 @@ type ParseResult =
 function parseArgs(argv: readonly string[]): ParseResult {
   let json = false;
   let cwd: string | undefined;
+  let config: string | undefined;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i] as string;
     if (arg === "--json") {
@@ -66,11 +73,25 @@ function parseArgs(argv: readonly string[]): ParseResult {
       }
       cwd = value;
       i += 1;
+    } else if (arg === "--config") {
+      const value = argv[i + 1];
+      if (value === undefined) {
+        return { ok: false, message: "--config requires a path argument" };
+      }
+      config = value;
+      i += 1;
     } else {
       return { ok: false, message: `unknown argument: ${arg}` };
     }
   }
-  return { ok: true, args: cwd === undefined ? { json } : { json, cwd } };
+  return {
+    ok: true,
+    args: {
+      json,
+      ...(cwd === undefined ? {} : { cwd }),
+      ...(config === undefined ? {} : { config }),
+    },
+  };
 }
 
 /** One line per claim: verdict, kind, name, file:line, confidence. Placeholder until the M6 TTY report. */
@@ -116,8 +137,18 @@ export async function run(argv: readonly string[]): Promise<number> {
 
   let result: Awaited<ReturnType<typeof analyzeProject>>;
   try {
-    result = await analyzeProject(root);
+    result = await analyzeProject(
+      root,
+      parsed.args.config === undefined ? {} : { configPath: parsed.args.config },
+    );
   } catch (err) {
+    // A config/usage problem (T4.3: missing --config target, malformed
+    // JSON/JSONC, invalid field — cli-ux §6) is exit 3, never exit 2: the
+    // tool didn't fail to analyze, the invocation itself is wrong.
+    if (err instanceof ConfigError) {
+      process.stderr.write(`unused: ${err.message}\n`);
+      return EXIT_USAGE_ERROR;
+    }
     const message = err instanceof Error ? err.message : String(err);
     // A deliberate refusal (e.g. Yarn PnP, PRD §6) is not a failure — surface the
     // message plainly rather than as an "analysis failed" error, still exit 2.

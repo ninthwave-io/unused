@@ -34,6 +34,7 @@ import type { Dirent } from "node:fs";
 import { access, readdir, readFile } from "node:fs/promises";
 import { dirname, join, relative, resolve as resolvePath, sep } from "node:path";
 import type { PackageJsonLike } from "./emit.js";
+import { globToRegExp } from "./glob.js";
 
 /** The workspace managers auto-detected in v1 (PRD §6). */
 export type WorkspaceManager = "npm" | "yarn" | "pnpm" | "bun";
@@ -240,36 +241,6 @@ async function findPackageDirs(root: string): Promise<string[]> {
   };
   await walk(root, 1);
   return out;
-}
-
-/**
- * Translate a workspace glob to an anchored regex over root-relative POSIX dir
- * paths. `**` matches any depth (incl. `/`); `*` matches one path segment. A
- * leading `./` and a trailing `/` are stripped. All other regex metacharacters
- * are escaped, so a pattern is a literal path outside its `*`/`**` wildcards.
- */
-function globToRegExp(glob: string): RegExp {
-  const normalized = glob.replace(/^\.\//, "").replace(/\/+$/, "");
-  let re = "";
-  for (let i = 0; i < normalized.length; i += 1) {
-    const ch = normalized[i] as string;
-    if (ch === "*") {
-      if (normalized[i + 1] === "*") {
-        re += "\0DS\0"; // placeholder: `**` → any chars incl. `/`
-        i += 1;
-        // consume a `/` immediately after `**` so `packages/**` also matches `packages`
-        if (normalized[i + 1] === "/") i += 1;
-      } else {
-        re += "[^/]*"; // `*` → one segment
-      }
-    } else if ("\\^$.|?+()[]{}".includes(ch)) {
-      re += `\\${ch}`;
-    } else {
-      re += ch;
-    }
-  }
-  re = re.replace(/\0DS\0/g, ".*");
-  return new RegExp(`^${re}$`);
 }
 
 // ---------------------------------------------------------------------------

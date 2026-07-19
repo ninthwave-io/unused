@@ -1,0 +1,5 @@
+{
+  // "right-pad" is genuinely unused and must still be claimed; "left-pad" is
+  // also genuinely unused but is suppressed here (T4.3).
+  "ignoreDependencies": ["left-pad"],
+}

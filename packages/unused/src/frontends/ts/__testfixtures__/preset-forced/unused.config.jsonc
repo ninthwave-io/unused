@@ -1,0 +1,6 @@
+{
+  // No next.config.* and no "next" dependency anywhere in this fixture —
+  // forcing the preset here is the ONLY thing that can make pages/foo.tsx
+  // alive (T4.4 "config-forced preset" acceptance case).
+  "presets": ["next"],
+}

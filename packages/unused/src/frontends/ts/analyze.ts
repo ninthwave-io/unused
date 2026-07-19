@@ -69,10 +69,20 @@ import {
   SCHEMA_VERSION,
 } from "../../core/claims/index.js";
 import { entrypointId, fileId, type IRGraph, type Site } from "../../core/ir/index.js";
+import {
+  type ConfigUnit,
+  collectConfigEntrypoints,
+  filterFilesByConfig,
+  isClaimable,
+  isIgnoredDependency,
+  loadConfig,
+  warnOnEmptyConfigMatches,
+} from "./config.js";
 import { addConfigTokens, computeUnusedDependencies } from "./dependencies.js";
 import { discover } from "./discover.js";
 import { type EmitPackageUnit, emitIR, type PackageJsonLike } from "./emit.js";
 import { parseSource } from "./parse.js";
+import { activePresetsForUnit, matchPresetEntryPatterns, viteHtmlEntrypoints } from "./presets.js";
 import { packageNameOf, Resolver } from "./resolve.js";
 import { detectWorkspaces, type WorkspaceLayout } from "./workspaces.js";
 
@@ -109,6 +119,13 @@ export interface AnalyzeOptions {
   readonly now?: Date;
   /** Tool/analyzer version stamped into the run and every claim. */
   readonly toolVersion?: string;
+  /**
+   * `--config <path>` (T4.3, PRD §6): load config from this path (resolved
+   * against `rootDir`) instead of auto-discovering `unused.config.jsonc` /
+   * `.json` at the root. A path that doesn't exist is a {@link ConfigError}
+   * (CLI exit 3), never a silent fall-through to the zero-config default.
+   */
+  readonly configPath?: string;
 }
 
 /**
@@ -148,29 +165,17 @@ export async function analyzeProject(
   const version = options.toolVersion ?? DEFAULT_TOOL_VERSION;
   const root = resolvePath(rootDir);
 
+  // T4.3 config (PRD §6, ADR 0010): `unused.config.jsonc`/`.json` at the root,
+  // or `--config <path>`. Throws `ConfigError` on a missing `--config` target,
+  // malformed JSON/JSONC, or a schema violation — the CLI maps it to exit 3.
+  // Absent a config file this is `EMPTY_CONFIG`, under which every config-aware
+  // step below is a documented no-op (the no-config regression contract).
+  const config = await loadConfig(root, options.configPath);
+
   // Workspace auto-detect (T4.2, PRD §6). Throws `UnsupportedProjectError` on a
   // Yarn PnP layout BEFORE any analysis — a refusal, never a silent mis-answer;
   // the CLI maps the throw to exit 2 and surfaces the message.
   const layout = await detectWorkspaces(root);
-
-  // discover → read → parse (single read per file, reused for line counts + scan).
-  // Excluded-member subtrees (a would-be workspace member removed by a negative
-  // glob) are dropped from the analyzable set entirely: they get no entrypoints,
-  // so keeping their sources in scope would flag externally-built files as dead.
-  // Out-of-scope like `node_modules`/`dist` — an import of one resolves
-  // outside-project (keep-alive), never a claim.
-  const excludedPrefixes = layout.excludedDirs.map((dir) => `${dir}/`);
-  const files = (await discover(root)).filter(
-    (file) => !isUnderExcluded(toPosixRel(root, file), excludedPrefixes),
-  );
-  const contents = await Promise.all(files.map((f) => readFile(f, "utf8")));
-  const records = files.map((file, i) => parseSource(file, contents[i] as string));
-  const contentByAbs = new Map(files.map((file, i) => [file, contents[i] as string]));
-
-  const fileLineCounts = new Map<string, number>();
-  files.forEach((file, i) => {
-    fileLineCounts.set(fileId(toPosixRel(root, file)), countLines(contents[i] as string));
-  });
 
   // Package units: the root package plus every workspace member. Each is its own
   // entrypoint set; all share ONE graph so cross-workspace imports resolve.
@@ -180,6 +185,39 @@ export async function analyzeProject(
   // Sibling-name resolution: `package name → member dir`, so a bare import of a
   // workspace member classifies internal (its source), never external (T4.2).
   const workspacePackages = isWorkspace ? buildWorkspaceMap(units) : undefined;
+  const configUnits: ConfigUnit[] = units.map((u) => ({ rootRelDir: u.rootRelDir, name: u.name }));
+
+  // discover → read → parse (single read per file, reused for line counts + scan).
+  // Excluded-member subtrees (a would-be workspace member removed by a negative
+  // glob) are dropped from the analyzable set entirely: they get no entrypoints,
+  // so keeping their sources in scope would flag externally-built files as dead.
+  // Out-of-scope like `node_modules`/`dist` — an import of one resolves
+  // outside-project (keep-alive), never a claim. T4.3's config `ignore`/`project`
+  // narrow the set the exact same way: an ignored/out-of-project file is
+  // undiscovered — never read, never parsed, never an importer or import
+  // target, never claimed, never a root (PRD §6 item 5). A no-op against
+  // `EMPTY_CONFIG` (`filterFilesByConfig` returns its input unchanged, in
+  // order) — the T4.3 no-config regression contract.
+  const excludedPrefixes = layout.excludedDirs.map((dir) => `${dir}/`);
+  const discovered = (await discover(root))
+    .filter((file) => !isUnderExcluded(toPosixRel(root, file), excludedPrefixes))
+    .map((file) => ({ abs: file, rel: toPosixRel(root, file) }));
+  const scopedRel = new Set(
+    filterFilesByConfig(
+      discovered.map((d) => d.rel),
+      config,
+      configUnits,
+    ),
+  );
+  const files = discovered.filter((d) => scopedRel.has(d.rel)).map((d) => d.abs);
+  const contents = await Promise.all(files.map((f) => readFile(f, "utf8")));
+  const records = files.map((file, i) => parseSource(file, contents[i] as string));
+  const contentByAbs = new Map(files.map((file, i) => [file, contents[i] as string]));
+
+  const fileLineCounts = new Map<string, number>();
+  files.forEach((file, i) => {
+    fileLineCounts.set(fileId(toPosixRel(root, file)), countLines(contents[i] as string));
+  });
 
   // resolve → emit IR (per-package production entrypoints from main/module/exports/bin).
   const resolver = new Resolver({
@@ -215,6 +253,57 @@ export async function analyzeProject(
     );
   }
   if (tsconfigOptions.hasReferences) addProjectReferencesHazard(graph);
+
+  // T4.3: config `entry` globs ADDITIVELY seed production entrypoints, on top
+  // of auto-detection (never replacing it). Matched only against the
+  // already-scoped `files` set (post-`ignore` — `project` no longer narrows
+  // this set, see `config.ts`'s "project vs ignore" docs), so an ignored file
+  // can never be resurrected as an entry — "ignore wins over entry" (PRD §6
+  // item 5). No-op against `EMPTY_CONFIG`.
+  const filesRel = files.map((file) => toPosixRel(root, file));
+  for (const hit of collectConfigEntrypoints(filesRel, config, configUnits)) {
+    seedProductionEntrypoint(graph, hit.file, hit.reason);
+  }
+
+  // Reviewer-adopted optional item: warn (stderr) when an entry/project/
+  // ignore glob or a workspaces key matches nothing — typo self-detection,
+  // Knip parity. Diagnostic only; never affects claims. No-op against
+  // `EMPTY_CONFIG`.
+  warnOnEmptyConfigMatches(
+    config,
+    discovered.map((d) => d.rel),
+    filesRel,
+    configUnits,
+  );
+
+  // T4.4: framework presets (vite/next), per package unit — auto-activated on
+  // a marker config file/dependency, or forced uniformly by config `presets`
+  // (see `presets.ts`). A file matched by an active preset's `entryPatterns`
+  // (Next's `pages/**`/`app/**` convention files, middleware, instrumentation)
+  // becomes a production entrypoint the same way a config `entry` glob does —
+  // which is already sufficient to keep the WHOLE file's export surface alive
+  // (T2.4's surface-live rule), satisfying PRD's "kept alive, never claimable"
+  // note for API routes with no separate mechanism. Vite additionally scans
+  // any top-level `index.html` for `<script src>` module references. No-op
+  // when no preset is active for a unit (auto-detect finds no marker and
+  // `config.presets` is unset) — the T4.4 no-config/no-marker regression path.
+  for (const unit of units) {
+    const activePresets = await activePresetsForUnit(config, unit.dir);
+    for (const preset of activePresets) {
+      for (const hit of matchPresetEntryPatterns(preset, filesRel, unit.rootRelDir)) {
+        seedProductionEntrypoint(graph, hit.file, hit.reason);
+      }
+      if (preset.name === "vite") {
+        const unitFilesPkgRel = new Set(
+          filesRel
+            .filter((rel) => unit.rootRelDir === "" || rel.startsWith(`${unit.rootRelDir}/`))
+            .map((rel) => (unit.rootRelDir === "" ? rel : rel.slice(unit.rootRelDir.length + 1))),
+        );
+        const htmlHits = await viteHtmlEntrypoints(unit.dir, unit.rootRelDir, unitFilesPkgRel);
+        for (const hit of htmlHits) seedProductionEntrypoint(graph, hit.file, hit.reason);
+      }
+    }
+  }
 
   // One config-tree walk: JSON config files + the set of package-root directories.
   const jsonFiles: string[] = [];
@@ -276,6 +365,9 @@ export async function analyzeProject(
   // JSX runtime: automatic JSX can live in `.js`/`.mjs` (CRA-style), not only
   // `.tsx`/`.jsx`, so the runtime package is kept alive whenever the automatic
   // runtime is configured and any source file exists (blunt, false-positive-proof).
+  // T4.3: `ignoreDependencies` drops any matching claim before it reaches
+  // core — names or glob patterns (e.g. `"@internal/*"`), same engine as
+  // `entry`/`project`/`ignore`. No-op against `EMPTY_CONFIG`.
   const dependencies = computeUnusedDependencies({
     root,
     units,
@@ -284,7 +376,7 @@ export async function analyzeProject(
     fileContents: contentByAbs,
     jsxRuntimePackages: files.length > 0 ? tsconfigOptions.jsxRuntimePackages : new Set<string>(),
     configTokens: configScan.configTokens,
-  });
+  }).filter((dep) => !isIgnoredDependency(dep.packageName, config));
 
   // reachability → claims.
   const reachability = computeReachability(graph);
@@ -293,7 +385,25 @@ export async function analyzeProject(
     version,
     generatedAt: now.toISOString(),
   };
-  const claims = emitClaims({ graph, reachability, provenance, fileLineCounts, dependencies });
+  // T4.3 (reviewer fix): `project` narrows CLAIMABILITY, not discovery — an
+  // out-of-project file was already parsed above (so it acts as an importer;
+  // see `filterFilesByConfig`'s "ignore vs project" docs), it just can never
+  // itself be claimed. Applied post-`emitClaims` rather than pre-filtering
+  // the graph, since core has no config concept and must not import it
+  // (ADR 0003/dependency-cruiser); dependency claims are exempt (`project` is
+  // a source-file scope, package.json's `dependencies` map is not). No-op
+  // against `EMPTY_CONFIG` (`isClaimable` always returns `true`).
+  const claims = emitClaims({
+    graph,
+    reachability,
+    provenance,
+    fileLineCounts,
+    dependencies,
+  }).filter(
+    (claim) =>
+      claim.subject.kind === "dependency" ||
+      isClaimable(claim.subject.loc.file, config, configUnits),
+  );
 
   // Populate `subject.loc.package` in a monorepo (schema field; each claim tagged
   // with its owning workspace package). The claim `id` excludes package, so this
@@ -313,6 +423,22 @@ export async function analyzeProject(
     summary: computeSummary(claims),
     productionEntrypointCount: reachability.productionEntrypointFiles.size,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Shared: seed a production entrypoint node (T2.3 wildcard exports; T4.3
+// config `entry`; T4.4 presets — every additive-entrypoint mechanism funnels
+// through this one call so the node shape never drifts between them).
+// ---------------------------------------------------------------------------
+
+function seedProductionEntrypoint(graph: IRGraph, rel: string, reason: string): void {
+  graph.addNode({
+    kind: "entrypoint",
+    id: entrypointId("production", rel),
+    entryKind: "production",
+    file: rel,
+    reason,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -343,14 +469,7 @@ function seedWildcardExportEntrypoints(
     if (prefixLit.endsWith("/")) matchPrefix += sep;
     for (const file of files) {
       if (file.startsWith(matchPrefix)) {
-        const rel = toPosixRel(root, file);
-        graph.addNode({
-          kind: "entrypoint",
-          id: entrypointId("production", rel),
-          entryKind: "production",
-          file: rel,
-          reason: "exports:wildcard",
-        });
+        seedProductionEntrypoint(graph, toPosixRel(root, file), "exports:wildcard");
       }
     }
   }

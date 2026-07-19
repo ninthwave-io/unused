@@ -1,0 +1,8 @@
+{
+  "name": "fixture-preset-next-dep-marker",
+  "private": true,
+  "version": "0.0.0",
+  "dependencies": {
+    "next": "^14.0.0"
+  }
+}
