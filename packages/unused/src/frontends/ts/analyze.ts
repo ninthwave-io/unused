@@ -150,10 +150,31 @@ export interface AnalyzeOptions {
  * guards on, plumbed up so the caller doesn't have to re-detect entrypoints
  * independently (which would drift from this file's wildcard-export and
  * config-root handling — see Fix 1/2 above).
+ *
+ * `fileCount`, `workspaceCount`, and `repoName` (T6.1, docs/design/cli-ux.md
+ * §2 header — "acme-web (1,284 files, 3 workspaces) — 4.2s") are likewise
+ * out-of-band: the header needs repo identity and scale figures the claim
+ * schema itself has no field for (PRD §4 fixes the `ClaimRun` shape; these
+ * three are analysis-time facts a reporter needs alongside it, not inside
+ * it). The CLI strips all four non-schema fields before any `--json`/SARIF
+ * output, exactly as it already did for `productionEntrypointCount`.
  */
 export interface AnalyzeResult extends ClaimRun {
   /** Count of production entrypoint files found before claim emission. */
   readonly productionEntrypointCount: number;
+  /**
+   * Number of files discovered and parsed for this run, after config
+   * `ignore` narrows discovery. Config `project` does NOT reduce this count:
+   * per `config.ts`'s "ignore vs project" semantics, `project` narrows
+   * claimability only, not discovery — a file outside `project` (e.g. a
+   * build script that imports analysed source) is still discovered, parsed,
+   * and counted here, even though it can never itself receive a claim.
+   */
+  readonly fileCount: number;
+  /** Number of package units in this run: 1 outside a monorepo, root + members inside one. */
+  readonly workspaceCount: number;
+  /** Root `package.json` `name`, or the root directory's basename when absent. */
+  readonly repoName: string;
 }
 
 /**
@@ -492,6 +513,9 @@ export async function analyzeProject(
     // through to `computeSummary`'s own default.
     summary: computeSummary(claims, { ciSecondsPerTestFile: config.ciSecondsPerTestFile }),
     productionEntrypointCount: reachability.production.productionEntrypointFiles.size,
+    fileCount: files.length,
+    workspaceCount: units.length,
+    repoName: nameOfPackage(rootPkg) ?? basename(root),
   };
 }
 

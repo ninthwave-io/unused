@@ -83,5 +83,8 @@
     },
     "estDeletableLoc": 9
   },
-  "productionEntrypointCount": 3
+  "productionEntrypointCount": 3,
+  "fileCount": 5,
+  "workspaceCount": 3,
+  "repoName": "fixture-workspace-pnpm-monorepo-root"
 }

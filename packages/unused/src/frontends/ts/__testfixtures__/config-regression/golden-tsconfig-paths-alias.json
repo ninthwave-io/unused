@@ -81,5 +81,8 @@
     },
     "estDeletableLoc": 9
   },
-  "productionEntrypointCount": 1
+  "productionEntrypointCount": 1,
+  "fileCount": 3,
+  "workspaceCount": 1,
+  "repoName": "fixture-tsconfig-paths-alias"
 }

@@ -23,6 +23,13 @@
  * `vite.config.*`/`next.config.*`/`index.html` — confirmed by inspection — so
  * T4.4 preset auto-activation is also exercised as a true no-op here, not
  * just T4.3's config loading.
+ *
+ * M6 update: `analyzeProject`'s out-of-band `AnalyzeResult` fields grew
+ * `fileCount`/`workspaceCount`/`repoName` (the TTY report header,
+ * `reporters/tty.ts`) — an additive, legitimate schema change unrelated to
+ * config no-op-ness, so the two golden fixtures were updated to include
+ * them (values taken from this same test's own output, not re-derived)
+ * rather than loosening this test's byte-for-byte assertion.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";

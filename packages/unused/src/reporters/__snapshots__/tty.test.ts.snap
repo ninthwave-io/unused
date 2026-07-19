@@ -1,0 +1,94 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`renderTtyReport — cli-ux §2 mockup shape (four degradation modes) > narrow (<80 cols) 1`] = `
+"unused v0.1.0 — acme-web (1,284 files, 3 workspaces) — 4.2s
+
+  4 unused exports · 0 unused files · 0 unused dependencies
+  ~1,840 deletable LOC · 1 test-only symbol
+
+[1mUNUSED EXPORTS[0m
+  [32m●[0m formatCurrency   src/utils/currency.ts:12
+      no refs from any entrypoint
+  [32m●[0m parseLegacyId   src/utils/ids.ts:44
+      no refs from any entrypoint
+  [33m◐[0m getFlags   src/flags.ts:9
+      unused, but dynamic import nearby
+
+[1mTEST-ONLY (production-dead, kept alive by tests)[0m
+  [32m●[0m OrderMapper   src/orders/mapper.ts:30
+      \`OrderMapper\` is reachable only from test entrypoint…
+  [32m●[0m orders.spec.ts   orders.spec.ts:1
+      exercises only test-only or dead code
+  1 zombie test — ~14s CI per run (estimated).
+
+  ○ 1 low-confidence candidate hidden — \`unused --min-confidence low\` to show
+
+next: \`unused why formatCurrency\` · \`unused --json\` · docs: unused.dev
+"
+`;
+
+exports[`renderTtyReport — cli-ux §2 mockup shape (four degradation modes) > plain (NO_COLOR env — same layout as non-TTY, independently reachable via cli/index.ts's resolveTtyInputs) 1`] = `
+"unused v0.1.0 -- acme-web (1,284 files, 3 workspaces) -- 4.2s
+
+  4 unused exports, 0 unused files, 0 unused dependencies
+  ~1,840 deletable LOC, 1 test-only symbol
+
+UNUSED EXPORTS
+unused  export  formatCurrency  src/utils/currency.ts:12  high  no refs from any entrypoint
+unused  export  parseLegacyId  src/utils/ids.ts:44  high  no refs from any entrypoint
+unused  export  getFlags  src/flags.ts:9  medium  unused, but dynamic import nearby
+
+TEST-ONLY (production-dead, kept alive by tests)
+test-only  export  OrderMapper  src/orders/mapper.ts:30  high  \`OrderMapper\` is reachable only from test entrypoint \`orders.spec.ts\`; no production or config entrypoint references it.
+test-only  test  orders.spec.ts  orders.spec.ts:1  high  exercises only test-only or dead code
+  1 zombie test -- ~14s CI per run (estimated).
+
+  1 low-confidence candidate hidden -- \`unused --min-confidence low\` to show
+
+next: \`unused why formatCurrency\` | \`unused --json\` | docs: unused.dev
+"
+`;
+
+exports[`renderTtyReport — cli-ux §2 mockup shape (four degradation modes) > plain (non-TTY stdout / --no-color) 1`] = `
+"unused v0.1.0 -- acme-web (1,284 files, 3 workspaces) -- 4.2s
+
+  4 unused exports, 0 unused files, 0 unused dependencies
+  ~1,840 deletable LOC, 1 test-only symbol
+
+UNUSED EXPORTS
+unused  export  formatCurrency  src/utils/currency.ts:12  high  no refs from any entrypoint
+unused  export  parseLegacyId  src/utils/ids.ts:44  high  no refs from any entrypoint
+unused  export  getFlags  src/flags.ts:9  medium  unused, but dynamic import nearby
+
+TEST-ONLY (production-dead, kept alive by tests)
+test-only  export  OrderMapper  src/orders/mapper.ts:30  high  \`OrderMapper\` is reachable only from test entrypoint \`orders.spec.ts\`; no production or config entrypoint references it.
+test-only  test  orders.spec.ts  orders.spec.ts:1  high  exercises only test-only or dead code
+  1 zombie test -- ~14s CI per run (estimated).
+
+  1 low-confidence candidate hidden -- \`unused --min-confidence low\` to show
+
+next: \`unused why formatCurrency\` | \`unused --json\` | docs: unused.dev
+"
+`;
+
+exports[`renderTtyReport — cli-ux §2 mockup shape (four degradation modes) > wide (TTY-color, >=80 cols) 1`] = `
+"unused v0.1.0 — acme-web (1,284 files, 3 workspaces) — 4.2s
+
+  4 unused exports · 0 unused files · 0 unused dependencies
+  ~1,840 deletable LOC · 1 test-only symbol
+
+[1mUNUSED EXPORTS[0m                                                        [2mconfidence[0m
+  [32m●[0m formatCurrency  src/utils/currency.ts:12  no refs from any entrypoint
+  [32m●[0m parseLegacyId   src/utils/ids.ts:44       no refs from any entrypoint
+  [33m◐[0m getFlags        src/flags.ts:9            unused, but dynamic import nearby
+
+[1mTEST-ONLY (production-dead, kept alive by tests)[0m                      [2mconfidence[0m
+  [32m●[0m OrderMapper     src/orders/mapper.ts:30  \`OrderMapper\` is reachable only…
+  [32m●[0m orders.spec.ts  orders.spec.ts:1         exercises only test-only or dead…
+  1 zombie test — ~14s CI per run (estimated).
+
+  ○ 1 low-confidence candidate hidden — \`unused --min-confidence low\` to show
+
+next: \`unused why formatCurrency\` · \`unused --json\` · docs: unused.dev
+"
+`;
