@@ -1,0 +1,12 @@
+# This fixture's dependency-claim mechanism needs a real (but hand-authored,
+# never `npm install`ed) node_modules/test-dep/package.json manifest — a
+# declared dependency imported only by a test file must not be swallowed by
+# the bin-only-dependency hazard's pre-install conservatism
+# (assumption-set.md: "pre-install ... every otherwise-unreferenced
+# dependency is kept alive"), which was verified empirically to keep the
+# dependency fully alive (no test-only claim at all) when no node_modules is
+# present. The repo-root .gitignore excludes every "node_modules/"
+# directory; these two negations re-include only this fixture's own
+# hand-authored one (mirrors fixtures/ts/dependency-claims/.gitignore).
+!node_modules/
+!node_modules/**

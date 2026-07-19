@@ -1,0 +1,43 @@
+case: zombie-cluster
+description: >-
+  T5.4 adversarial: two independent test files that both exercise the SAME
+  test-only module and nothing else — a mutual test-only cluster. Locks the
+  reviewer-noted gap that zombie-test detection is per-test-root (T5.2's
+  "reaching ANY alive subject makes it a real test, never a zombie") and must
+  correctly flag BOTH test files as zombies, not just one, when neither
+  reaches production- or config-alive code.
+subjects:
+  - kind: file
+    name: src/util.ts
+    file: src/util.ts
+    expected: alive
+    because: imported directly by src/index.ts, the production entrypoint.
+  - kind: file
+    name: src/shared-fixture.ts
+    file: src/shared-fixture.ts
+    expected: test-only
+    minConfidence: high
+    because: >-
+      reached only by test/a.test.ts and test/b.test.ts, never by
+      src/index.ts or any config root — test-only at high confidence (no
+      hazard applies), independent of how many test files reach it.
+  - kind: test
+    name: test/a.test.ts
+    file: test/a.test.ts
+    expected: test-only
+    minConfidence: high
+    because: >-
+      its entire forward reach is src/shared-fixture.ts, itself test-only —
+      it exercises no production- or config-alive subject, so it is a zombie
+      test, the same as test/b.test.ts (the mutual-cluster case).
+  - kind: test
+    name: test/b.test.ts
+    file: test/b.test.ts
+    expected: test-only
+    minConfidence: high
+    because: >-
+      its entire forward reach is src/shared-fixture.ts, itself test-only —
+      it exercises no production- or config-alive subject, so it is a zombie
+      test too. Both a.test.ts and b.test.ts reaching the same test-only
+      module must each independently surface as a zombie: one being flagged
+      must never suppress or subsume the other.

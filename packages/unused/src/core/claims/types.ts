@@ -10,8 +10,12 @@
  * this file — keep the two in lockstep on any change.
  */
 
-/** ADR 0006 semver policy: bump on a MAJOR/MINOR/PATCH change to this contract. */
-export const SCHEMA_VERSION = "1.0.0";
+/**
+ * ADR 0006 semver policy: bump on a MAJOR/MINOR/PATCH change to this
+ * contract. 1.1.0 (T5.3, docs/phasing.md M5): additive optional
+ * `summary.zombieTests` field — MINOR per ADR 0006.
+ */
+export const SCHEMA_VERSION = "1.1.0";
 
 // ---------------------------------------------------------------------------
 // Enums (PRD §4, ADR 0006 open/closed policy)
@@ -202,6 +206,30 @@ export function isValidKindVerdict(kind: SubjectKind, verdict: Verdict): boolean
 // Top level: the claim run
 // ---------------------------------------------------------------------------
 
+/**
+ * T5.3 CI-seconds estimate (docs/design/report-and-badge.md §3): "v1 uses
+ * test-file count × configurable average when no timing data exists, and
+ * labels the number 'estimated' — the report never presents an estimate as a
+ * measurement." `estimated: true` is a literal, always present, so a
+ * consumer can never mistake this figure for a measured timing. Present on
+ * `ClaimSummary` only when `count > 0` — a zero-zombie run omits the block
+ * entirely rather than reporting a zero (see `summary.ts`'s
+ * `computeZombieTestsSummary`).
+ */
+export interface ZombieTestsSummary {
+  /** Number of zombie `test` claims in this run. */
+  count: number;
+  /** `count * avgSecondsPerTestFile`. */
+  estCiSecondsPerRun: number;
+  /** Always `true` — a labelled estimate, never presented as measured. */
+  estimated: true;
+  /**
+   * The per-test-file average (seconds) used to compute the estimate —
+   * config `ciSecondsPerTestFile`, default 5 (`DEFAULT_CI_SECONDS_PER_TEST_FILE`).
+   */
+  avgSecondsPerTestFile: number;
+}
+
 export interface ClaimSummary {
   byKind: Record<SubjectKind, number>;
   byConfidence: Record<Confidence, number>;
@@ -210,6 +238,8 @@ export interface ClaimSummary {
    * claims (phasing.md T3.4) — see `summary.ts` for the merge rules.
    */
   estDeletableLoc: number;
+  /** T5.3 CI-seconds estimate. Absent on a zero-zombie run. */
+  zombieTests?: ZombieTestsSummary;
 }
 
 export interface ClaimRun {

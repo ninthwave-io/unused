@@ -3,8 +3,8 @@ import type { SubjectKind, Verdict } from "./types.js";
 import { isValidKindVerdict, KIND_VERDICTS, SCHEMA_VERSION } from "./types.js";
 
 describe("SCHEMA_VERSION", () => {
-  it("matches the PRD worked example (ADR 0006 semver policy)", () => {
-    expect(SCHEMA_VERSION).toBe("1.0.0");
+  it("is 1.1.0 — T5.3's additive summary.zombieTests field is a MINOR bump (ADR 0006)", () => {
+    expect(SCHEMA_VERSION).toBe("1.1.0");
   });
 });
 

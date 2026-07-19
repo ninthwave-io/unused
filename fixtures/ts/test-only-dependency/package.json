@@ -1,0 +1,11 @@
+{
+  "name": "fixture-test-only-dependency",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "prod-dep": "1.0.0",
+    "test-dep": "1.0.0"
+  }
+}

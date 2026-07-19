@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { computeClaimId } from "./id.js";
-import { computeSummary, countByConfidence, countByKind, estimateDeletableLoc } from "./summary.js";
+import {
+  computeSummary,
+  computeZombieTestsSummary,
+  countByConfidence,
+  countByKind,
+  DEFAULT_CI_SECONDS_PER_TEST_FILE,
+  estimateDeletableLoc,
+} from "./summary.js";
 import type { Claim, ExportClaim, FileClaim, TestClaim } from "./types.js";
 
 function exportClaim(overrides: Partial<ExportClaim> = {}): ExportClaim {
@@ -231,6 +238,61 @@ describe("estimateDeletableLoc", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// computeZombieTestsSummary (T5.3, docs/design/report-and-badge.md §3)
+// ---------------------------------------------------------------------------
+
+describe("computeZombieTestsSummary", () => {
+  it("is undefined for an empty run — nothing to estimate", () => {
+    expect(computeZombieTestsSummary([])).toBeUndefined();
+  });
+
+  it("is undefined when the run has no zombie `test` claims (a zero-zombie run)", () => {
+    const claims: Claim[] = [exportClaim(), fileClaim()];
+    expect(computeZombieTestsSummary(claims)).toBeUndefined();
+  });
+
+  it("counts one zombie test at the default 5s/file average, estimated: true always", () => {
+    expect(computeZombieTestsSummary([testOnlyClaim()])).toEqual({
+      count: 1,
+      estCiSecondsPerRun: 5,
+      estimated: true,
+      avgSecondsPerTestFile: DEFAULT_CI_SECONDS_PER_TEST_FILE,
+    });
+  });
+
+  it("sums count across multiple zombie test claims (export/file claims don't count)", () => {
+    const secondZombie = testOnlyClaim({
+      subject: {
+        kind: "test",
+        name: "billing.spec.ts",
+        loc: { file: "src/billing.spec.ts", span: [1, 10] },
+      },
+    });
+    const claims: Claim[] = [exportClaim(), testOnlyClaim(), secondZombie];
+    expect(computeZombieTestsSummary(claims)).toEqual({
+      count: 2,
+      estCiSecondsPerRun: 10,
+      estimated: true,
+      avgSecondsPerTestFile: DEFAULT_CI_SECONDS_PER_TEST_FILE,
+    });
+  });
+
+  it("honours a config-supplied avgSecondsPerTestFile override", () => {
+    expect(computeZombieTestsSummary([testOnlyClaim()], 2.5)).toEqual({
+      count: 1,
+      estCiSecondsPerRun: 2.5,
+      estimated: true,
+      avgSecondsPerTestFile: 2.5,
+    });
+  });
+
+  it("counts a suppressed zombie-test claim too, matching byKind/byConfidence (PRD §4/§6)", () => {
+    const suppressed = testOnlyClaim({ suppression: { reason: "kept deliberately for now" } });
+    expect(computeZombieTestsSummary([suppressed])?.count).toBe(1);
+  });
+});
+
 describe("computeSummary", () => {
   it("matches the PRD §4 worked example for a single claim", () => {
     const claims: Claim[] = [exportClaim()];
@@ -249,5 +311,31 @@ describe("computeSummary", () => {
     // The 30-line test-only (zombie) claim is counted in byKind/byConfidence but
     // NOT in estDeletableLoc — only the two `unused` claims (13 + 50) count (T5.2).
     expect(summary.estDeletableLoc).toBe(13 + 50);
+  });
+
+  it("omits zombieTests entirely on a zero-zombie run (never a count: 0 block)", () => {
+    const summary = computeSummary([exportClaim(), fileClaim()]);
+    expect(summary.zombieTests).toBeUndefined();
+    expect(Object.keys(summary)).not.toContain("zombieTests");
+  });
+
+  it("adds a zombieTests block at the default average when the run has a zombie test", () => {
+    const summary = computeSummary([exportClaim(), testOnlyClaim()]);
+    expect(summary.zombieTests).toEqual({
+      count: 1,
+      estCiSecondsPerRun: 5,
+      estimated: true,
+      avgSecondsPerTestFile: DEFAULT_CI_SECONDS_PER_TEST_FILE,
+    });
+  });
+
+  it("threads the ciSecondsPerTestFile option through to the zombieTests block (config override)", () => {
+    const summary = computeSummary([testOnlyClaim()], { ciSecondsPerTestFile: 12 });
+    expect(summary.zombieTests).toEqual({
+      count: 1,
+      estCiSecondsPerRun: 12,
+      estimated: true,
+      avgSecondsPerTestFile: 12,
+    });
   });
 });

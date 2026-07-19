@@ -1,0 +1,32 @@
+case: test-only-dependency
+description: >-
+  T5.4 adversarial exercising T5.2 point 4 (dependency-claim test-only
+  classification): a declared prod dependency ("test-dep") referenced ONLY
+  from a test file, paired with a declared prod dependency ("prod-dep")
+  referenced from production — the same single-package shape as
+  fixtures/ts/dependency-claims, but scoped to the test-only/alive contrast
+  rather than dead/alive. The fixture commits a minimal hand-authored
+  node_modules/test-dep/package.json manifest (no "bin" field, never `npm
+  install`ed — see this directory's .gitignore) for the same pre-install-
+  conservatism reason as dependency-claims: without it, this claim is
+  swallowed entirely (verified empirically).
+subjects:
+  - kind: dependency
+    name: test-dep
+    file: package.json
+    expected: test-only
+    minConfidence: high
+    because: >-
+      declared in "dependencies" but imported only by test/feature.test.ts —
+      no production or config file references it, is not an @types/*
+      package, is not named in any config/scripts string, and its committed
+      node_modules/test-dep/package.json manifest declares no "bin", so
+      bin-only-dependency's pre-install conservatism does not apply.
+      Referenced only from the test partition ⇒ test-only, not unused
+      (assumption-set.md: "A dependency referenced only from test files ...
+      is claimed test-only rather than unused"), at high confidence.
+  - kind: dependency
+    name: prod-dep
+    file: package.json
+    expected: alive
+    because: imported by src/index.ts — a production external-import reference edge.

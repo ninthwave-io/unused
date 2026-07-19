@@ -276,6 +276,35 @@
           "type": "integer",
           "minimum": 0,
           "description": "Overlap/nesting-aware LOC count across non-suppressed dead-verdict claims (phasing.md T3.4; see summary.ts for the merge rules)."
+        },
+        "zombieTests": { "$ref": "#/$defs/zombieTests" }
+      }
+    },
+
+    "zombieTests": {
+      "type": "object",
+      "description": "T5.3 CI-seconds estimate (docs/design/report-and-badge.md §3) — a LABELLED ESTIMATE, never presented as a measurement. Present only when count > 0; a zero-zombie run omits this block entirely rather than reporting a zero.",
+      "required": ["count", "estCiSecondsPerRun", "estimated", "avgSecondsPerTestFile"],
+      "additionalProperties": false,
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of zombie `test` claims in this run."
+        },
+        "estCiSecondsPerRun": {
+          "type": "number",
+          "minimum": 0,
+          "description": "count * avgSecondsPerTestFile."
+        },
+        "estimated": {
+          "const": true,
+          "description": "Always true — a labelled estimate, never presented as measured."
+        },
+        "avgSecondsPerTestFile": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "The per-test-file average (seconds) used to compute the estimate — config `ciSecondsPerTestFile`, default 5."
         }
       }
     }

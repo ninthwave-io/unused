@@ -209,6 +209,46 @@ describe("validateConfig", () => {
       "next",
     ]);
   });
+
+  // -------------------------------------------------------------------------
+  // ciSecondsPerTestFile (T5.3, docs/design/report-and-badge.md §3)
+  // -------------------------------------------------------------------------
+
+  it("ciSecondsPerTestFile is undefined by default", () => {
+    expect(validateConfig({}, "c.jsonc").ciSecondsPerTestFile).toBeUndefined();
+  });
+
+  it("accepts a positive ciSecondsPerTestFile override", () => {
+    expect(validateConfig({ ciSecondsPerTestFile: 12 }, "c.jsonc").ciSecondsPerTestFile).toBe(12);
+  });
+
+  it("accepts a fractional ciSecondsPerTestFile override", () => {
+    expect(validateConfig({ ciSecondsPerTestFile: 2.5 }, "c.jsonc").ciSecondsPerTestFile).toBe(2.5);
+  });
+
+  it("rejects a non-number ciSecondsPerTestFile, naming the field and the fix", () => {
+    expect(() => validateConfig({ ciSecondsPerTestFile: "5" }, "c.jsonc")).toThrow(
+      /ciSecondsPerTestFile.*must be a positive number/,
+    );
+  });
+
+  it("rejects a zero ciSecondsPerTestFile", () => {
+    expect(() => validateConfig({ ciSecondsPerTestFile: 0 }, "c.jsonc")).toThrow(
+      /ciSecondsPerTestFile/,
+    );
+  });
+
+  it("rejects a negative ciSecondsPerTestFile", () => {
+    expect(() => validateConfig({ ciSecondsPerTestFile: -1 }, "c.jsonc")).toThrow(
+      /ciSecondsPerTestFile/,
+    );
+  });
+
+  it("rejects a non-finite ciSecondsPerTestFile", () => {
+    expect(() =>
+      validateConfig({ ciSecondsPerTestFile: Number.POSITIVE_INFINITY }, "c.jsonc"),
+    ).toThrow(/ciSecondsPerTestFile/);
+  });
 });
 
 // ---------------------------------------------------------------------------

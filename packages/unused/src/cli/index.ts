@@ -110,6 +110,20 @@ function formatSummaryLine(run: ClaimRun): string {
 }
 
 /**
+ * T5.3 (docs/design/report-and-badge.md §3): one extra line when the run has
+ * ≥1 zombie test — `summary.zombieTests` is absent entirely on a zero-zombie
+ * run (`computeSummary`), so `undefined` here means "print nothing", never
+ * "print zero". "(estimated)" is load-bearing: the number is a labelled
+ * estimate, never presented as measured.
+ */
+function formatZombieTestsLine(run: ClaimRun): string | undefined {
+  const zombieTests = run.summary.zombieTests;
+  if (zombieTests === undefined) return undefined;
+  const { count, estCiSecondsPerRun } = zombieTests;
+  return `${count} zombie test${count === 1 ? "" : "s"} — ~${estCiSecondsPerRun}s CI per run (estimated).`;
+}
+
+/**
  * Runs the M2 CLI over `argv` and returns the process exit code. Split from
  * `main()` below so the exit-code logic is directly testable without an
  * actual `process.exit` — the spawn-based integration tests exercise the
@@ -171,6 +185,8 @@ export async function run(argv: readonly string[]): Promise<number> {
   } else {
     for (const line of formatPlainListing(claimRun.claims)) process.stdout.write(`${line}\n`);
     process.stdout.write(`${formatSummaryLine(claimRun)}\n`);
+    const zombieTestsLine = formatZombieTestsLine(claimRun);
+    if (zombieTestsLine !== undefined) process.stdout.write(`${zombieTestsLine}\n`);
   }
 
   return EXIT_OK;

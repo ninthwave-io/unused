@@ -1,0 +1,37 @@
+case: non-zombie-test
+description: >-
+  T5.4 adversarial locking the uncovered non-zombie-test path: a test file
+  that imports a production-alive symbol directly must receive no test claim
+  at all (it is a real, useful test, not a zombie), and the production-alive
+  symbol it imports must stay alive regardless of the test also importing it.
+  Paired with a clean, unrelated dead export as a recall baseline so this
+  fixture is not vacuously all-alive.
+subjects:
+  - kind: test
+    name: test/feature.test.ts
+    file: test/feature.test.ts
+    expected: alive
+    because: >-
+      reaches src/lib.ts's `livefn`, which is production-alive (imported by
+      src/index.ts) — it exercises production-alive code, so it is not a
+      zombie. No `test`/`test-only` claim should be emitted for this file at
+      all (fixtures/README.md: an alive label carries no confidence tier —
+      any claim of any confidence here is a false positive).
+  - kind: export
+    name: livefn
+    file: src/lib.ts
+    expected: alive
+    because: >-
+      imported by src/index.ts (the production entrypoint) — alive via the
+      production partition regardless of test/feature.test.ts also importing
+      it.
+  - kind: export
+    name: deadFn
+    file: src/lib.ts
+    expected: dead
+    minConfidence: high
+    because: >-
+      never referenced anywhere, in production or test code; no hazard
+      applies, so this is claimable at high confidence — unrelated to the
+      non-zombie-test mechanism this case targets, included as a recall
+      baseline.

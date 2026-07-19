@@ -133,3 +133,84 @@ describe("claim-run.schema.json", () => {
     expect(validate(mutated)).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// summary.zombieTests (T5.3, 1.1.0 additive field — ADR 0006 MINOR bump)
+// ---------------------------------------------------------------------------
+
+describe("claim-run.schema.json — summary.zombieTests", () => {
+  it("validates without a zombieTests block (absent = zero-zombie run, PRD worked example)", () => {
+    const validate = compileSchema();
+    // The PRD worked example's single claim is a plain export, no zombie
+    // tests — `summary` already omits `zombieTests` and still validates
+    // (covered by the "validates the PRD §4 worked example verbatim" test
+    // above too; this test names the invariant explicitly).
+    expect(validate(prdWorkedExample)).toBe(true);
+  });
+
+  it("validates a well-formed zombieTests block", () => {
+    const validate = compileSchema();
+    const mutated = structuredClone(prdWorkedExample) as {
+      summary: { zombieTests?: unknown };
+    };
+    mutated.summary.zombieTests = {
+      count: 3,
+      estCiSecondsPerRun: 15,
+      estimated: true,
+      avgSecondsPerTestFile: 5,
+    };
+    expect(validate(mutated), JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  it("rejects estimated: false — the field is a literal true, never a real measurement flag", () => {
+    const validate = compileSchema();
+    const mutated = structuredClone(prdWorkedExample) as {
+      summary: { zombieTests?: unknown };
+    };
+    mutated.summary.zombieTests = {
+      count: 1,
+      estCiSecondsPerRun: 5,
+      estimated: false,
+      avgSecondsPerTestFile: 5,
+    };
+    expect(validate(mutated)).toBe(false);
+  });
+
+  it("rejects count: 0 — a zero-zombie run must omit the block entirely, never report a zero", () => {
+    const validate = compileSchema();
+    const mutated = structuredClone(prdWorkedExample) as {
+      summary: { zombieTests?: unknown };
+    };
+    mutated.summary.zombieTests = {
+      count: 0,
+      estCiSecondsPerRun: 0,
+      estimated: true,
+      avgSecondsPerTestFile: 5,
+    };
+    expect(validate(mutated)).toBe(false);
+  });
+
+  it("rejects a zombieTests block missing a required field", () => {
+    const validate = compileSchema();
+    const mutated = structuredClone(prdWorkedExample) as {
+      summary: { zombieTests?: unknown };
+    };
+    mutated.summary.zombieTests = { count: 1, estCiSecondsPerRun: 5, estimated: true };
+    expect(validate(mutated)).toBe(false);
+  });
+
+  it("rejects an unknown property inside zombieTests (additionalProperties: false)", () => {
+    const validate = compileSchema();
+    const mutated = structuredClone(prdWorkedExample) as {
+      summary: { zombieTests?: unknown };
+    };
+    mutated.summary.zombieTests = {
+      count: 1,
+      estCiSecondsPerRun: 5,
+      estimated: true,
+      avgSecondsPerTestFile: 5,
+      extra: "nope",
+    };
+    expect(validate(mutated)).toBe(false);
+  });
+});

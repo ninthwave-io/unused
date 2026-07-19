@@ -32,6 +32,11 @@
       "type": "array",
       "description": "Named framework presets (T4.4). Presence — even an empty array — forces exactly this set, overriding auto-detection.",
       "items": { "$ref": "#/$defs/preset" }
+    },
+    "ciSecondsPerTestFile": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Overrides the T5.3 zombie-test CI-seconds average (default 5) — docs/design/report-and-badge.md §3."
     }
   },
   "$defs": {

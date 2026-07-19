@@ -35,6 +35,7 @@ const TESTFIXTURES = join(PACKAGE_ROOT, "src/frontends/ts/__testfixtures__");
 const PNP_FIXTURE = join(TESTFIXTURES, "workspace-pnp"); // Yarn PnP → refused
 const WORKSPACE_FIXTURE = join(TESTFIXTURES, "workspace-pnpm"); // pnpm monorepo
 const CONFIG_BASIC_FIXTURE = join(TESTFIXTURES, "config-basic"); // T4.3 entry/project/ignore
+const ZOMBIE_TEST_FIXTURE = join(FIXTURES_ROOT, "test-root-recognition"); // T5.3: one zombie test
 
 function readSchema(): object {
   return JSON.parse(
@@ -230,5 +231,57 @@ describe("unused CLI — default (non-JSON) listing", () => {
     const result = runCli(["--cwd", CLEAN_FIXTURE]);
     expect(result.status).toBe(0);
     expect(result.stdout).toBe("0 claims.\n");
+  });
+});
+
+describe("unused CLI — zombie-tests CI-seconds line (T5.3)", () => {
+  it("prints the estimated-CI-seconds line after the summary when the run has a zombie test", () => {
+    const result = runCli(["--cwd", ZOMBIE_TEST_FIXTURE]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe(
+      "unused  export  deadHelper  src/util.ts:7  high\n" +
+        "test-only  file  src/feature.ts  src/feature.ts:1  high\n" +
+        "test-only  test  test/feature.test.ts  test/feature.test.ts:1  high\n" +
+        "3 claims (high: 3, medium: 0, low: 0).\n" +
+        "1 zombie test — ~5s CI per run (estimated).\n",
+    );
+  });
+
+  it("omits the zombie-tests line on a clean fixture (no test claims at all)", () => {
+    const result = runCli(["--cwd", CLEAN_FIXTURE]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toMatch(/zombie test/);
+  });
+
+  it("omits the zombie-tests line on a fixture with findings but no zombie test claims", () => {
+    const result = runCli(["--cwd", DEAD_FIXTURE]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toMatch(/zombie test/);
+  });
+
+  it("--json includes the zombieTests summary block, schema-valid", () => {
+    const result = runCli(["--json", "--cwd", ZOMBIE_TEST_FIXTURE]);
+    expect(result.status).toBe(0);
+    const parsed: unknown = JSON.parse(result.stdout);
+    const validate = compileSchema();
+    expect(validate(parsed), JSON.stringify(validate.errors)).toBe(true);
+    const summary = (
+      parsed as {
+        summary: {
+          zombieTests?: {
+            count: number;
+            estCiSecondsPerRun: number;
+            estimated: true;
+            avgSecondsPerTestFile: number;
+          };
+        };
+      }
+    ).summary;
+    expect(summary.zombieTests).toEqual({
+      count: 1,
+      estCiSecondsPerRun: 5,
+      estimated: true,
+      avgSecondsPerTestFile: 5,
+    });
   });
 });

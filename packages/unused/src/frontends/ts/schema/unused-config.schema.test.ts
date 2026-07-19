@@ -91,4 +91,25 @@ describe("unused-config.schema.json", () => {
     const validate = compileSchema();
     expect(validate({ presets: ["webpack"] })).toBe(false);
   });
+
+  // ---------------------------------------------------------------------------
+  // ciSecondsPerTestFile (T5.3, docs/design/report-and-badge.md §3)
+  // ---------------------------------------------------------------------------
+
+  it("validates a positive ciSecondsPerTestFile override", () => {
+    const validate = compileSchema();
+    expect(validate({ ciSecondsPerTestFile: 12 })).toBe(true);
+    expect(validate({ ciSecondsPerTestFile: 2.5 })).toBe(true);
+  });
+
+  it("rejects a zero or negative ciSecondsPerTestFile", () => {
+    const validate = compileSchema();
+    expect(validate({ ciSecondsPerTestFile: 0 })).toBe(false);
+    expect(validate({ ciSecondsPerTestFile: -1 })).toBe(false);
+  });
+
+  it("rejects a non-number ciSecondsPerTestFile", () => {
+    const validate = compileSchema();
+    expect(validate({ ciSecondsPerTestFile: "5" })).toBe(false);
+  });
 });

@@ -21,7 +21,11 @@
  * `gate: { threshold }` (parsed and validated now; consumed by `unused check`
  * at M7 — this module does not read it), `presets` (an array naming T4.4
  * framework presets; presence — even `[]` — FORCES exactly that preset set,
- * overriding auto-detection; absence leaves auto-detection in charge).
+ * overriding auto-detection; absence leaves auto-detection in charge),
+ * `ciSecondsPerTestFile` (a positive number overriding the T5.3 zombie-test
+ * CI-seconds average — docs/design/report-and-badge.md §3 — default 5,
+ * `core/claims/summary.ts`'s `DEFAULT_CI_SECONDS_PER_TEST_FILE`; consumed by
+ * `analyze.ts`'s `computeSummary` call, this module only parses/validates it).
  *
  * ## `project` vs `ignore` — two different kinds of "out of scope" (reviewer
  * fix, false-positive finding)
@@ -117,6 +121,12 @@ export interface UnusedConfig {
   readonly gate: GateConfig | undefined;
   /** `undefined` ⇒ not specified (auto-detection decides); present (even `[]`) ⇒ forced. */
   readonly presets: readonly PresetName[] | undefined;
+  /**
+   * T5.3 zombie-test CI-seconds average override (a positive number of
+   * seconds; report-and-badge.md §3). `undefined` ⇒
+   * `DEFAULT_CI_SECONDS_PER_TEST_FILE` (`core/claims/summary.ts`).
+   */
+  readonly ciSecondsPerTestFile: number | undefined;
 }
 
 /** The zero-config default — every function in this module is a no-op against it (T4.3 regression contract). */
@@ -128,6 +138,7 @@ export const EMPTY_CONFIG: UnusedConfig = {
   workspaces: {},
   gate: undefined,
   presets: undefined,
+  ciSecondsPerTestFile: undefined,
 };
 
 /**
@@ -219,6 +230,7 @@ const ALLOWED_TOP_LEVEL = new Set([
   "workspaces",
   "gate",
   "presets",
+  "ciSecondsPerTestFile",
 ]);
 const ALLOWED_WORKSPACE_OVERRIDE_KEYS = new Set(["entry", "project", "ignore"]);
 const ALLOWED_GATE_KEYS = new Set(["threshold"]);
@@ -256,8 +268,18 @@ export function validateConfig(parsed: unknown, displayPath: string): UnusedConf
   const workspaces = readWorkspaces(obj, fail);
   const gate = readGate(obj, fail);
   const presets = readPresets(obj, fail);
+  const ciSecondsPerTestFile = readCiSecondsPerTestFile(obj, fail);
 
-  return { entry, project, ignore, ignoreDependencies, workspaces, gate, presets };
+  return {
+    entry,
+    project,
+    ignore,
+    ignoreDependencies,
+    workspaces,
+    gate,
+    presets,
+    ciSecondsPerTestFile,
+  };
 }
 
 type Fail = (field: string, problem: string, fix: string) => never;
@@ -358,6 +380,26 @@ function readPresets(obj: Record<string, unknown>, fail: Fail): readonly PresetN
     }
   });
   return value as PresetName[];
+}
+
+/**
+ * `ciSecondsPerTestFile` (T5.3, report-and-badge.md §3): a positive,
+ * finite number of seconds overriding `DEFAULT_CI_SECONDS_PER_TEST_FILE`
+ * (`core/claims/summary.ts`). `undefined` when absent — the caller (`analyze.ts`)
+ * passes that straight through to `computeSummary`, which then falls back to
+ * the default.
+ */
+function readCiSecondsPerTestFile(obj: Record<string, unknown>, fail: Fail): number | undefined {
+  const value = obj["ciSecondsPerTestFile"];
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return fail(
+      "ciSecondsPerTestFile",
+      "must be a positive number",
+      'use e.g. "ciSecondsPerTestFile": 5',
+    );
+  }
+  return value;
 }
 
 // ---------------------------------------------------------------------------

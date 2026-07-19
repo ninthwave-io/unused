@@ -450,7 +450,10 @@ export async function analyzeProject(
       durationMs: Date.now() - start,
     },
     claims,
-    summary: computeSummary(claims),
+    // T5.3: config `ciSecondsPerTestFile` overrides the zombie-tests
+    // CI-seconds average; `undefined` (no config, or the field unset) falls
+    // through to `computeSummary`'s own default.
+    summary: computeSummary(claims, { ciSecondsPerTestFile: config.ciSecondsPerTestFile }),
     productionEntrypointCount: reachability.production.productionEntrypointFiles.size,
   };
 }

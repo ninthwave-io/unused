@@ -198,6 +198,74 @@ describe("config: --config <path>", () => {
   });
 });
 
+describe("config: ciSecondsPerTestFile (T5.3, end-to-end)", () => {
+  const tmpDirs: string[] = [];
+  async function makeTmpDir(): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "unused-analyze-config-cisec-test-"));
+    tmpDirs.push(dir);
+    return dir;
+  }
+  afterEach(async () => {
+    await Promise.all(tmpDirs.splice(0).map((d) => rm(d, { recursive: true, force: true })));
+  });
+
+  /** A minimal fixture with exactly one zombie test (one test-only file, one zombie test claim). */
+  async function makeZombieTestFixture(root: string): Promise<void> {
+    await writeFile(
+      join(root, "package.json"),
+      JSON.stringify({ name: "x", main: "src/index.ts" }),
+    );
+    await mkdir(join(root, "src"));
+    await writeFile(join(root, "src", "index.ts"), "export const main = 1;\n");
+    await writeFile(
+      join(root, "src", "feature.ts"),
+      "export function computeFeature(x: number): number {\n  return x * 2;\n}\n",
+    );
+    await writeFile(
+      join(root, "src", "feature.test.ts"),
+      'import { computeFeature } from "./feature.js";\n' +
+        'if (computeFeature(2) !== 4) throw new Error("unexpected");\n',
+    );
+  }
+
+  it("uses the DEFAULT_CI_SECONDS_PER_TEST_FILE average (5) with no config", async () => {
+    const root = await makeTmpDir();
+    await makeZombieTestFixture(root);
+    const run = await analyzeProject(root, { now: FIXED_CLOCK });
+    expect(run.summary.zombieTests).toEqual({
+      count: 1,
+      estCiSecondsPerRun: 5,
+      estimated: true,
+      avgSecondsPerTestFile: 5,
+    });
+  });
+
+  it("honours a config ciSecondsPerTestFile override end-to-end", async () => {
+    const root = await makeTmpDir();
+    await makeZombieTestFixture(root);
+    await writeFile(join(root, "unused.config.jsonc"), '{ "ciSecondsPerTestFile": 12 }');
+    const run = await analyzeProject(root, { now: FIXED_CLOCK });
+    expect(run.summary.zombieTests).toEqual({
+      count: 1,
+      estCiSecondsPerRun: 12,
+      estimated: true,
+      avgSecondsPerTestFile: 12,
+    });
+  });
+
+  it("omits zombieTests entirely on a run with no zombie tests", async () => {
+    const root = await makeTmpDir();
+    await writeFile(
+      join(root, "package.json"),
+      JSON.stringify({ name: "x", main: "src/index.ts" }),
+    );
+    await mkdir(join(root, "src"));
+    await writeFile(join(root, "src", "index.ts"), "export const main = 1;\n");
+    const run = await analyzeProject(root, { now: FIXED_CLOCK });
+    expect(run.summary.zombieTests).toBeUndefined();
+  });
+});
+
 describe("config: empty-match warnings (reviewer-adopted optional, end-to-end)", () => {
   const tmpDirs: string[] = [];
   async function makeTmpDir(): Promise<string> {

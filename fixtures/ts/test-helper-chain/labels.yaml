@@ -1,0 +1,61 @@
+case: test-helper-chain
+description: >-
+  T5.4 adversarial: a test -> helper -> "prod-looking" module chain where the
+  deepest module (src/prod-module.ts) is reached ONLY through that chain, so
+  both it and the helper are test-only, and the chain test is itself a zombie
+  (it exercises nothing production-alive). Paired in the same case with the
+  inverse trap: a genuinely-shared util reached from BOTH a production entry
+  and a second, independent test — which must stay alive, never test-only
+  (assumption-set.md's "classic shared-helper false positive").
+subjects:
+  - kind: file
+    name: src/helper.ts
+    file: src/helper.ts
+    expected: test-only
+    minConfidence: high
+    because: >-
+      reached only by test/feature.test.ts; never imported by src/index.ts
+      (the production entrypoint) or any config root. Under the M5 partition
+      rule this is test-only at high confidence (no hazard applies).
+  - kind: file
+    name: src/prod-module.ts
+    file: src/prod-module.ts
+    expected: test-only
+    minConfidence: high
+    because: >-
+      reached only through src/helper.ts, which is itself reached only from
+      test/feature.test.ts — two hops deep in the test partition, never from
+      production or config. Despite its production-sounding name and its
+      src/ location, it is test-only, not alive: the partition rule follows
+      the reference graph, not file naming or directory conventions.
+  - kind: test
+    name: test/feature.test.ts
+    file: test/feature.test.ts
+    expected: test-only
+    minConfidence: high
+    because: >-
+      its entire forward reach (src/helper.ts, src/prod-module.ts) is itself
+      test-only — it exercises no production- or config-reachable subject, so
+      it is a zombie test (T5.2 point 3), deletable together with both files
+      in its chain.
+  - kind: file
+    name: src/shared-util.ts
+    file: src/shared-util.ts
+    expected: alive
+    because: >-
+      imported directly by src/index.ts (the production entrypoint) — alive
+      via the production partition regardless of test/shared-trap.test.ts
+      also reaching it. The trap: a naive "reachable from any test" rule
+      would wrongly mark this test-only; the correct partition rule (a
+      subject reachable from production stays production-alive no matter
+      what else reaches it) does not.
+  - kind: test
+    name: test/shared-trap.test.ts
+    file: test/shared-trap.test.ts
+    expected: alive
+    because: >-
+      reaches src/shared-util.ts, which is production-alive — so this test
+      exercises production-alive code and is not a zombie, even though it
+      looks structurally identical to feature.test.ts (a test importing one
+      helper-ish file). No test-only claim should be emitted for it; this
+      locks in the inverse of the zombie-test mechanism in the same case.

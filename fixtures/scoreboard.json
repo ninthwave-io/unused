@@ -1,19 +1,19 @@
 {
   "analyzer": "ts-reference-graph",
   "corpus": {
-    "cases": 30,
-    "subjects": 81
+    "cases": 34,
+    "subjects": 95
   },
   "precision": 1,
-  "recall": 0.9230769230769231,
+  "recall": 0.9361702127659575,
   "falsePositives": 0,
   "confidenceViolations": 0,
   "misses": 3,
   "unlabelledClaims": 0,
   "byConfidenceTier": {
     "high": {
-      "claims": 26,
-      "truePositives": 26,
+      "claims": 34,
+      "truePositives": 34,
       "falsePositives": 0,
       "confidenceViolations": 0
     },
@@ -230,6 +230,17 @@
       "unlabelledClaims": 0
     },
     {
+      "case": "non-zombie-test",
+      "subjects": 3,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
       "case": "preset-next-app",
       "subjects": 4,
       "deadLabels": 1,
@@ -307,6 +318,28 @@
       "unlabelledClaims": 0
     },
     {
+      "case": "test-helper-chain",
+      "subjects": 5,
+      "deadLabels": 3,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "test-only-dependency",
+      "subjects": 2,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
       "case": "test-root-recognition",
       "subjects": 3,
       "deadLabels": 3,
@@ -354,6 +387,17 @@
       "case": "workspace-pnpm-monorepo",
       "subjects": 4,
       "deadLabels": 2,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "zombie-cluster",
+      "subjects": 4,
+      "deadLabels": 3,
       "precision": 1,
       "recall": 1,
       "falsePositives": 0,
