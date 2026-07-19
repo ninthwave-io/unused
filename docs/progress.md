@@ -1,25 +1,22 @@
 # Progress — unused
 
-Updated: 2026-07-19. **Founder directive (2026-07-19): complete v1 autonomously; gates self-approved under delegation ("review on my behalf, do not stop for approval").**
+Updated: 2026-07-19. **v1 BUILD COMPLETE — M1–M9 all done and tagged (m1..m9).** Gates M5–M9 self-approved under the founder's 2026-07-19 delegation ("review on my behalf, do not stop for approval, complete the implementation").
 
-## Current phase
-Phase 4. M1–M5 complete: m1–m4 tagged; **M5 gate self-approved (delegated) — tag m5 on commit.** Next: M6 reporters.
+## What shipped (v1, private-beta ready)
+`@ninthwave-io/unused` — a liveness oracle for TS/JS. Tiers 1–2 fully implemented:
+- **Analysis**: oxc-based frontend (per-unit resolution incl. member tsconfigs), language-agnostic IR (intra-file symbol edges, provenance spans), partitioned reachability (production/config/test), 18-class hazard registry with scoped confidence caps, dependency claims (conservative-first), test-only verdicts + zombie tests + estimated CI-seconds, workspaces (npm/pnpm/yarn-classic/bun; PnP refused loudly), JSONC config (project=claimability, ignore=invisibility), presets (vite, next incl. metadata routes), generated assumption set (drift-tested).
+- **Surfaces**: TTY report per cli-ux spec; `--json` (schema 1.1.0) + SARIF 2.1.0 (fingerprints); `unused check`/`baseline` CI gate (per-workspace JSONL, version+configHash stamps, honest gate-not-evaluated state); `unused why`; MCP server (find_unused / why_alive / usage_evidence, SDK 1.29.0); `unused report --md|--html` + `unused badge`; full flag surface, exit contract 0/1/2/3.
+- **Quality**: corpus 36 cases / 103 subjects — precision 1.0, recall 0.939, 0 FP/CV/unlabelled; gates A–D with planted proofs, origin/main baseline in CI. 824 tests. Smoke: hono/axios/fastify/zod pinned, 0 high-confidence FPs after three fix rounds (M3: 144 test-file highs; M4: member tsconfig paths; M5: 15 wrong zombies incl. systemic intra-file edge gap). Perf ≤1.23× knip at ~400-file scale; checkpoint verdict: stay TS.
+- **Packaging**: npm pack verified cold from an installed tarball (caught the symlinked-bin silent-noop bug); OIDC provenance workflow tag-gated and ready; README + assumption-set link.
 
-## State (through M5)
-- Analyzer: discovery/parse (oxc), per-unit resolution (member tsconfigs), IR with intra-file symbol edges (M5 fix — was a systemic gap), partitioned reachability (production/config/test), 16+-class hazard registry with scoped caps, dependency claims (conservative-first), test-only verdicts + zombie tests + CI-seconds estimate (schema 1.1.0), workspaces (4 managers, PnP refused), config (JSONC, project=claimability vs ignore=invisibility), presets (vite, next incl. metadata routes), generated assumption set (v1.5+, drift-tested).
-- Corpus: 36 cases / 103 subjects; precision 1.0, recall 0.939, 0 FP/CV/unlabelled; gates A–D + planted proofs. 585 tests.
-- Smoke (docs/smoke/M3–M5.md): pinned hono/axios/fastify/zod; every round found real FP classes (M3: 144 test-file highs; M4: member-tsconfig paths; M5: 15/21 wrong zombies incl. systemic intra-file edge gap) — all fixed, re-verified: 0 high FPs everywhere; remaining zombies 3 TP + 8 shared scope-gaps.
-- Perf: ≤1.23× knip, <1% PRD budget at ~400-file scale; checkpoint verdict: stay TS.
-- CLI: unused [--json|--cwd|--config]; exit 0/2/3 contract; bench wired.
+## FOUNDER ACTIONS (blocking launch, in order)
+1. Register the npm org `ninthwave-io` (first-come) + configure trusted publishing for `@ninthwave-io/unused`.
+2. Create the GitHub repo (github.com/ninthwave-io/unused), push main + tags, enable branch protection with the CI check required (ADR 0009 prerequisite — Gate C's enforcement depends on it).
+3. Tag `v0.1.0` to fire the provenance publish workflow (verify the npm page: provenance badge, README).
+4. Private beta: 5–10 users; feedback channel. Optional: npm dispute letter for unscoped `unused`.
 
-## Remaining (v1)
-- M6 reporters: TTY per cli-ux spec + flags (--filter/--min-confidence/--all/--show-suppressed) + SARIF (fingerprints) + suppression rendering; contract tests.
-- M7 gate: baseline JSONL + check + exit 1; configHash must start reflecting ignore/gate config (recorded debt).
-- M8: unused why + MCP (find_unused/why_alive/usage_evidence; whyReachable provenance exists).
-- M9: packaging (npm pack verified; publish dry-run only — founder must register npm org + publish), README + --help, report/badge artifacts, beta checklist.
+## Post-v1 backlog (ranked, from smoke/review debt)
+Tier-3 endpoint extraction (Next API routes first — schema contract already shipped); tier-4 locally-driven log sources (ADR 0002 free tier); Python then Elixir frontends (ADR 0003; Elixir via mix xref/compiler tracers per research); devDependency claims; YAML/JSONC config-string scan; per-test zombie walk cost at scale; warm-path cache (architecture §5); staleness/error-path MCP test coverage; subsumption-aware label matching; per-symbol checker-only scope.
 
-## Known debt (rolled)
-devDeps out of scope; YAML/JSONC config-string scan; per-test zombie walk cost at scale; external-only-test doc line; configHash under-hashing (M7); Elixir/Python post-v1; warm cache post-v1.
-
-## Founder checklist (cannot be done by the orchestrator)
-Register npm org `ninthwave-io`; npm publish (M9 prepared, dry-run verified); create remote + branch protection with required checks; optional unscoped-`unused` dispute; 5–10 beta users.
+## Resuming a session
+Read CLAUDE.md, this file, docs/adr/ (0001–0010 all Accepted), docs/phasing.md, docs/smoke/M3–M5.md. The corpus + gates are the quality contract; never commit red; labels are truth.
