@@ -9,7 +9,7 @@ import {
 import { type Claim, computeSummary, SCHEMA_VERSION } from "../core/claims/index.js";
 import { entrypointId, IRGraph, type IRNode } from "../core/ir/index.js";
 import { analyzeElixirProjectWithGraph } from "./elixir/index.js";
-import { BUILT_IN_LANGUAGE_PLUGINS, claimAnnotationKey } from "./plugins/builtins.js";
+import { BUILT_IN_PLUGINS, claimAnnotationKey } from "./plugins/builtins.js";
 import { PluginRegistry } from "./plugins/registry.js";
 import {
   executePluginOperation,
@@ -81,7 +81,7 @@ export async function analyzeProjectAutoWithGraph(
     ...(options.configPath === undefined ? {} : { configPath: resolve(root, options.configPath) }),
     ...(options.performance === undefined ? {} : { performance: options.performance }),
   };
-  const registry = new PluginRegistry(BUILT_IN_LANGUAGE_PLUGINS);
+  const registry = new PluginRegistry(BUILT_IN_PLUGINS);
   const discovered = (
     await Promise.all(
       registry.languagePlugins().map(async (plugin) => ({

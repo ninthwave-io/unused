@@ -1,12 +1,18 @@
 export { type BoundaryDescriptor, selectProjectBoundaries } from "./boundaries.js";
 export {
   BUILT_IN_LANGUAGE_PLUGINS,
+  BUILT_IN_PLUGINS,
   elixirLanguagePlugin,
   rustLanguagePlugin,
   typescriptLanguagePlugin,
 } from "./builtins.js";
 export { prefixRepositoryPath, rebaseClaimInputs, rebaseGraph } from "./rebase.js";
 export { PluginRegistry } from "./registry.js";
+export {
+  rustlerBridgePlugin,
+  rustlerElixirConventionPlugin,
+  rustlerRustConventionPlugin,
+} from "./rustler.js";
 export {
   type AnalyzerPlugin,
   type BoundaryAnalysisRecord,

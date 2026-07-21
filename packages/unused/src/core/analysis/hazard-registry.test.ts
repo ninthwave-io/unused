@@ -37,6 +37,7 @@ const ALL_CLASSES: readonly HazardClass[] = [
   "elixir-behaviour-callback",
   "elixir-dynamic-dispatch",
   "elixir-phoenix-runtime",
+  "rustler-ambiguous-registration",
 ];
 
 describe("HAZARD_REGISTRY — vocabulary coverage", () => {
@@ -128,13 +129,15 @@ describe("HAZARD_REGISTRY — scope/cap per class group (T3.1a)", () => {
     expect(HAZARD_REGISTRY["config-named-dependency"].scope).toBe("none");
   });
 
-  it("all non-outgoing hazards remain always active; Elixir dynamic dispatch follows its carrier", () => {
+  it("dynamic runtime hazards follow their carriers; all other hazards remain always active", () => {
     expect(HAZARD_REGISTRY["elixir-dynamic-dispatch"].activation).toBe("carrier-reachable");
+    expect(HAZARD_REGISTRY["rustler-ambiguous-registration"].activation).toBe("carrier-reachable");
     for (const [cls, entry] of Object.entries(HAZARD_REGISTRY)) {
       if (
         cls === "computed-dynamic-import" ||
         cls === "computed-require" ||
-        cls === "elixir-dynamic-dispatch"
+        cls === "elixir-dynamic-dispatch" ||
+        cls === "rustler-ambiguous-registration"
       ) {
         continue;
       }

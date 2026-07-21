@@ -234,6 +234,14 @@ A file the parser could not fully read: its references cannot be enumerated, so 
 
 A tsconfig with `references` composes this project with sibling TypeScript projects that may consume its files across the project boundary — a cross-project use the single-project reference graph cannot see. Until real cross-project analysis lands (post-v1), the whole package that owns the referencing tsconfig is capped at medium rather than claimed dead — scoped to that workspace unit, not the whole monorepo (a member's `references` caps that member, not its siblings). This is deliberately blunt: every claim in a project-referenced package is downgraded, trading recall for the guarantee that no externally-consumed file is confidently flagged.
 
+### rustler-ambiguous-registration
+
+- **Activation:** carrier-reachable
+- **Scope:** symbol-set
+- **Confidence cap:** no-claim
+
+A reachable Rust or Elixir source file uses Rustler registration syntax whose literal module/function/arity identity cannot be proven (for example a computed init module, an unsupported NIF rename, or duplicate loaders). Runtime dispatch may therefore reach any convention-exposed symbol in that file. Its symbol surface is not claimed; unrelated files remain fully analyzable. An unreachable carrier does not activate the hazard.
+
 ### unresolvable-entrypoint-target
 
 - **Activation:** always

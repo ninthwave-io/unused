@@ -6,7 +6,13 @@ import { analyzeRustProjectWithGraph } from "../rust/index.js";
 import { type AnalyzeOptions, analyzeProjectWithGraph } from "../ts/analyze.js";
 import { selectProjectBoundaries } from "./boundaries.js";
 import { prefixRepositoryPath, rebaseClaimInputs, rebaseGraph } from "./rebase.js";
+import {
+  rustlerBridgePlugin,
+  rustlerElixirConventionPlugin,
+  rustlerRustConventionPlugin,
+} from "./rustler.js";
 import type {
+  AnalyzerPlugin,
   FrontendGraphFragment,
   LanguageFrontendPlugin,
   RepositoryAnalysisContext,
@@ -170,3 +176,10 @@ export const BUILT_IN_LANGUAGE_PLUGINS = [
   rustLanguagePlugin,
   typescriptLanguagePlugin,
 ] as const;
+
+export const BUILT_IN_PLUGINS: readonly AnalyzerPlugin[] = [
+  ...BUILT_IN_LANGUAGE_PLUGINS,
+  rustlerElixirConventionPlugin,
+  rustlerRustConventionPlugin,
+  rustlerBridgePlugin,
+];

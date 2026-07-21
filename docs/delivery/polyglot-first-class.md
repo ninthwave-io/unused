@@ -275,11 +275,26 @@ Progress:
   and computed init modules are explicitly ambiguous.
 - Extractor tests use neutral generated-style source, cover nested parameter
   syntax and multiline stubs, and prove commented examples are ignored.
+- Compiled-in `convention:rustler-elixir`, `convention:rustler-rust`, and
+  `bridge:rustler` plugins now use neutral endpoint identities to join exact
+  literal module/function/arity pairs. Adding them required no orchestrator
+  conditionals; dispatch now receives the complete static plugin registry.
+- Exact pairs contribute an Elixir-stub-to-Rust-function `runtime-resolved`
+  edge at the stub site before global reachability. There is no reverse edge:
+  compiling a Rust crate does not make an otherwise uncalled Elixir function
+  live. An unmatched NIF is kept alive as a possible external BEAM surface.
+- Computed init modules, unsupported attribute options, duplicate loaders, and
+  missing traced stub symbols activate the new carrier-reachable,
+  symbol-surface `rustler-ambiguous-registration` no-claim hazard. Its generated
+  assumption-set entry records the precision boundary.
+- Focused verification: 27 plugin/dispatch/Rust/hazard tests pass (2 Mix-skipped
+  under the default shell); typecheck and dependency boundaries pass (907
+  modules / 1,917 dependencies).
 
-Next action: register the Rustler convention and bridge plugins. Add candidate
-NIF graph symbols only for exact extracted functions, join literal
-module/name/arity triples with provenance-bearing `runtime-resolved` edges,
-and add a narrowly scoped no-claim hazard for ambiguous registration.
+Next action: add a neutral, independently constructed bridge corpus fixture and
+scoreboard. Prove the paired live path in `why`, prove removing its caller makes
+both sides claimable, and prove `why --delete` refuses the live Rust NIF and
+Elixir stub without fetching private or consuming-project artifacts.
 
 ### P5 — Convention modularization
 

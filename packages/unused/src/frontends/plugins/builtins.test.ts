@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { fileId } from "../../core/ir/index.js";
-import { BUILT_IN_LANGUAGE_PLUGINS, typescriptLanguagePlugin } from "./builtins.js";
+import {
+  BUILT_IN_LANGUAGE_PLUGINS,
+  BUILT_IN_PLUGINS,
+  typescriptLanguagePlugin,
+} from "./builtins.js";
 import { PluginRegistry } from "./registry.js";
 import type { RepositoryAnalysisContext } from "./types.js";
 
@@ -23,6 +27,15 @@ describe("built-in language plugins", () => {
       "language:rust",
       "language:typescript",
     ]);
+  });
+
+  it("registers conventions and bridges without orchestrator edits", () => {
+    const registry = new PluginRegistry(BUILT_IN_PLUGINS);
+    expect(registry.conventionPlugins().map((plugin) => plugin.id)).toEqual([
+      "convention:rustler-elixir",
+      "convention:rustler-rust",
+    ]);
+    expect(registry.bridgePlugins().map((plugin) => plugin.id)).toEqual(["bridge:rustler"]);
   });
 
   it("discovers, analyzes, and rebases a nested TypeScript boundary", async () => {

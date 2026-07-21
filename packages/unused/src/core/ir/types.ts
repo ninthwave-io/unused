@@ -92,7 +92,8 @@ export type HazardClass =
   // as for the TS classes above.
   | "elixir-behaviour-callback"
   | "elixir-dynamic-dispatch"
-  | "elixir-phoenix-runtime";
+  | "elixir-phoenix-runtime"
+  | "rustler-ambiguous-registration";
 
 // ---------------------------------------------------------------------------
 // Nodes
@@ -213,7 +214,8 @@ export type IRNode = FileNode | SymbolNode | DependencyNode | EndpointNode | Ent
  * `references` — a referencing site to its target.
  * `exports`    — a file to a public export symbol it exposes (the export surface).
  * `contains`   — a file to a symbol **declared** in it (structural membership).
- * `consumes`   — RESERVED for the endpoint→consumer join (tier 3); never emitted.
+ * `consumes`   — convention facts joined by a bridge plugin. The first concrete
+ *                use is Rustler: Elixir stub→endpoint→Rust NIF.
  *
  * In v1 `contains` is the locally-declared subset of `exports` (we model only
  * exported symbols); the split is kept so private declarations can join

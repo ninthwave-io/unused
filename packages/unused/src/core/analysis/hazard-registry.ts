@@ -266,6 +266,14 @@ export const HAZARD_REGISTRY: Readonly<Record<HazardClass, HazardClassEntry>> = 
     rationale:
       "A Phoenix/OTP runtime-dispatch module — a `Phoenix.LiveView`/`Phoenix.LiveComponent`/`Phoenix.Channel`/`Phoenix.Endpoint`/`Phoenix.Router` behaviour implementation, or an Elixir protocol implementation (`defimpl`, detected via the compiled module's `__impl__/1`) or protocol definition (`__protocol__/1`) — exposes functions the framework or the protocol dispatcher calls by convention at runtime (`mount/3`, `handle_event/3`, `render/1`, a `defimpl` body dispatched by `Protocol.impl_for/1`), with no static caller anywhere. HEEx template component references, by contrast, ARE visible to the tracer (empirically confirmed in the ADR 0011 skeleton phase: `~H` and `.heex` component invocations compile to ordinary function calls the tracer records) and need no hazard. Like the behaviour-callback class, the whole module's public-function surface is suppressed (symbol-set, no-claim), because the frontend does not model which functions are the framework-called ones; the module's file liveness is unaffected.",
   },
+  "rustler-ambiguous-registration": {
+    hazardClass: "rustler-ambiguous-registration",
+    scope: "symbol-set",
+    activation: "carrier-reachable",
+    cap: "no-claim",
+    rationale:
+      "A reachable Rust or Elixir source file uses Rustler registration syntax whose literal module/function/arity identity cannot be proven (for example a computed init module, an unsupported NIF rename, or duplicate loaders). Runtime dispatch may therefore reach any convention-exposed symbol in that file. Its symbol surface is not claimed; unrelated files remain fully analyzable. An unreachable carrier does not activate the hazard.",
+  },
 };
 
 /** Strength order — a stronger cap wins when a subject is in multiple hazards' scope. */
