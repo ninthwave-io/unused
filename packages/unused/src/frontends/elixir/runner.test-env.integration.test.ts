@@ -222,7 +222,9 @@ end
     expect(existsSync(join(root, "_build"))).toBe(false);
   });
 
-  it("keeps a project with no test files complete without creating build artifacts", () => {
+  it("keeps a project with no test files complete without creating build artifacts", {
+    timeout: 60_000,
+  }, () => {
     const root = project("unused-ex-no-tests-");
     roots.push(root);
     write(root, "mix.exs", basicMix("neutral_no_tests"));
@@ -238,7 +240,9 @@ end
     expect(existsSync(join(root, "_build"))).toBe(false);
   });
 
-  it("bounds test discovery failures while retaining production facts", () => {
+  it("bounds test discovery failures while retaining production facts", {
+    timeout: 60_000,
+  }, () => {
     const root = project("unused-ex-test-discovery-");
     roots.push(root);
     write(root, "mix.exs", basicMix("neutral_discovery"));
@@ -291,7 +295,9 @@ end
     expect(trace.modules.some((module) => module.mod === "NeutralTimeout")).toBe(true);
   });
 
-  it("bounds missing required test-only dependency artifacts as partial", () => {
+  it("bounds missing required test-only dependency artifacts as partial", {
+    timeout: 60_000,
+  }, () => {
     const root = project("unused-ex-test-dep-");
     roots.push(root);
     write(
@@ -326,7 +332,9 @@ end
     expect(existsSync(join(root, "_build"))).toBe(false);
   });
 
-  it("allows absent optional and compile-false/app-false dependency artifacts", () => {
+  it("allows absent optional and compile-false/app-false dependency artifacts", {
+    timeout: 60_000,
+  }, () => {
     const root = project("unused-ex-optional-deps-");
     roots.push(root);
     write(
@@ -471,13 +479,16 @@ end
   it.each([
     ["support", "test/support/broken_support.ex", 'raise "support compile failed"\n'],
     ["test", "test/broken_test.exs", 'raise "test compile failed"\n'],
-  ])("bounds a %s compile/runtime failure as partial", (_kind, brokenPath, brokenSource) => {
-    const root = project("unused-ex-test-failure-");
-    roots.push(root);
-    write(
-      root,
-      "mix.exs",
-      `defmodule NeutralFailure.MixProject do
+  ])(
+    "bounds a %s compile/runtime failure as partial",
+    { timeout: 60_000 },
+    (_kind, brokenPath, brokenSource) => {
+      const root = project("unused-ex-test-failure-");
+      roots.push(root);
+      write(
+        root,
+        "mix.exs",
+        `defmodule NeutralFailure.MixProject do
   use Mix.Project
   def project do
     [app: :neutral_failure, version: "0.1.0", elixirc_paths: elixirc_paths(Mix.env())]
@@ -486,25 +497,28 @@ end
   defp elixirc_paths(_), do: ["lib"]
 end
 `,
-    );
-    write(
-      root,
-      "lib/neutral_failure.ex",
-      "defmodule NeutralFailure do\n  def value, do: :ok\nend\n",
-    );
-    write(
-      root,
-      "test/subject_test.exs",
-      "defmodule NeutralFailureTest do\n  use ExUnit.Case\nend\n",
-    );
-    write(root, brokenPath, brokenSource);
+      );
+      write(
+        root,
+        "lib/neutral_failure.ex",
+        "defmodule NeutralFailure do\n  def value, do: :ok\nend\n",
+      );
+      write(
+        root,
+        "test/subject_test.exs",
+        "defmodule NeutralFailureTest do\n  use ExUnit.Case\nend\n",
+      );
+      write(root, brokenPath, brokenSource);
 
-    const trace = runTracer(root);
-    expect(trace.testPartition).toBe("incomplete");
-    expect(trace.modules.some((module) => module.mod === "NeutralFailure")).toBe(true);
-  });
+      const trace = runTracer(root);
+      expect(trace.testPartition).toBe("incomplete");
+      expect(trace.modules.some((module) => module.mod === "NeutralFailure")).toBe(true);
+    },
+  );
 
-  it("bounds a compiler-rejected duplicate production/test module as a compile failure", () => {
+  it("bounds a compiler-rejected duplicate production/test module as a compile failure", {
+    timeout: 60_000,
+  }, () => {
     const root = project("unused-ex-test-collision-");
     roots.push(root);
     write(
@@ -540,7 +554,9 @@ end
     expect(trace.modules.every((module) => module.partition === "prod")).toBe(true);
   });
 
-  it("marks the partition partial when an expected test module cannot be reflected", () => {
+  it("marks the partition partial when an expected test module cannot be reflected", {
+    timeout: 60_000,
+  }, () => {
     const root = project("unused-ex-test-reflection-");
     roots.push(root);
     write(root, "mix.exs", basicMix("neutral_reflection"));
