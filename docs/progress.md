@@ -1,9 +1,9 @@
 # Progress — unused
 
-Updated: 2026-07-21. **Pre-v0.1.0 scaling and runtime-reachability blockers corrected; final founder release decision remains.** No semver release tag has been created.
+Updated: 2026-07-21. **Pre-v0.1.0 scaling, runtime reachability, and first-class polyglot delivery are technically accepted; the founder release action remains.** No semver release tag has been created.
 
-Active programme: ADR 0013 first-class TypeScript/Elixir/Rust orchestration and
-Rustler/NIF bridging. Resume and acceptance state lives in
+Completed programme: ADR 0013 first-class TypeScript/Elixir/Rust orchestration
+and Rustler/NIF bridging. The authoritative acceptance and resume state lives in
 `docs/delivery/polyglot-first-class.md`; chat history is not authoritative.
 
 ## What shipped (v1, private-beta ready)
@@ -130,3 +130,45 @@ Founder review of the reference-codebase deletion list (the real-use-case valida
   public repository contains no external project identifiers, paths, source,
   symbols, configuration, artifacts, output, or quoted review prose. No tag,
   publish, push, or external mutation was performed.
+
+## First-class polyglot programme accepted (2026-07-21)
+
+- ADR 0013 is implemented with statically registered, typed language,
+  convention, and bridge plugins. TypeScript, Elixir, and Rust boundaries emit
+  repository-relative fragments; conventions contribute roots/edges/hazards;
+  the Rustler bridge adds exact literal Elixir-to-Rust runtime edges before one
+  global reachability and claim pass. The internal authoring and conservative
+  degradation rules are fixed in `docs/design/plugin-authoring.md`.
+- Rust starts at a deliberately precision-first boundary: Cargo metadata plus
+  matching default/all-features rustc `dead_code` diagnostics for private
+  functions. Public APIs and ambiguous macro/FFI/runtime surfaces remain alive
+  unless a convention or bridge supplies exact semantics. The Rustler plugin
+  covers literal module/function/arity NIF registration with cross-language
+  `why` and safe deletion refusal.
+- Final corpus matrix: TypeScript 52 cases / 237 subjects at precision 1.0,
+  recall 0.826530612244898; Elixir 10 / 26 at precision and recall 1.0; Rust
+  4 / 12 at precision 1.0, recall 0.8333333333333334; Rustler bridge 1 / 4 at
+  precision and recall 1.0. All four have zero false positives, confidence
+  violations, and unlabelled claims.
+- Final gates pass: typecheck; lint with the established 2 warnings and 48
+  informational diagnostics; boundaries over 916 modules / 1,972 dependencies;
+  generated assumptions; 80 test files / 1,056 tests; build; diff check;
+  installed-tarball smoke; and privacy scan. Compiler-backed corpus cases use
+  isolated cold build roots, so parallel workers cannot consume shared
+  Mix/Cargo cache state.
+- A cold tracked-only public Rustler fixture completes in 1.01s wall with 1.41s
+  external user+system CPU and 132.9MB peak RSS. It reports 5 files, 12 symbols,
+  37 edges, 2 claims, 3 workspaces, 9 graph walks, 5 fixed-point iterations,
+  and zero deletion simulations. The 879.456ms compiler/parsing phase dominates;
+  convention, graph, reachability, hazard, and claim work totals under 5ms.
+  Reproduction details are in
+  `docs/bench/2026-07-21-polyglot-acceptance.md`.
+- The Rust decision remains evidence-based: no broad rewrite before v0.1.0.
+  TypeScript's corrected curve is near-linear and native-Oxc-parser dominant;
+  polyglot time is dominated by required Cargo/Mix compiler work. A future
+  native prototype needs a newly profiled bounded JavaScript hot operation and
+  a measured gain after serialization and maintenance costs.
+- A separate validation-only consuming-project rerun met the interactive budget
+  and verified canonical/filtered output, zero ordinary deletion simulations,
+  runtime liveness, and deletion refusal. No raw or identifying evidence entered
+  this repository. No tag, push, publish, or external mutation was performed.

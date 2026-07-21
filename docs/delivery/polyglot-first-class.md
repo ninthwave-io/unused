@@ -386,7 +386,7 @@ and Rust decision notes.
 
 ### P6 — Integrated acceptance and release decision
 
-Status: in progress
+Status: complete
 
 Deliverables:
 
@@ -416,9 +416,54 @@ Progress:
   pass, Rust private-item recall remains intact, and the Elixir scoreboard
   returns to its committed 10-case precision/recall 1.0 state with zero
   unlabelled claims.
+- Parallel full-suite execution exposed a compiler-cache isolation flaw in the
+  bridge corpus: simultaneous Mix/Cargo analyses of one fixture could observe
+  another worker's fresh build and lose diagnostic facts. Every corpus analysis
+  now copies tracked fixture inputs to a unique temporary root and excludes
+  build output. The concurrent bridge/gate reproducer and full suite pass.
+- Polyglot performance output now attributes shared discovery, boundary/config
+  detection, Elixir tracing, Cargo/rustc checks, convention extraction,
+  fragment/bridge graph work, global reachability, hazards, and claims. A
+  regression test requires the applicable phases and final counters to be
+  non-zero; unsupported work such as TS module resolution in the Rustler-only
+  fixture remains an explicit zero.
+- Cold public Rustler fixture evidence (tracked files copied to a fresh
+  directory): 1.01s wall, 1.41s external user+system CPU, 132.9MB external peak
+  RSS, schema-valid JSON, 5 files, 12 symbols, 37 edges, 2 claims, 3 workspaces,
+  9 graph walks, 5 fixed-point iterations, and zero deletion simulations.
+  Compiler/parsing work is 879.456ms; convention extraction is 2.118ms, graph
+  construction 1.012ms, reachability 0.541ms, hazards 0.096ms, and claims
+  1.052ms. The compiler boundary, not the bounded JavaScript graph core,
+  dominates this deliberately small cold polyglot run. Reproduction details
+  are in `docs/bench/2026-07-21-polyglot-acceptance.md`.
+- Final matrix: typecheck; lint with the established 2 warnings and 48
+  informational diagnostics; dependency boundaries (916 modules / 1,972
+  dependencies); generated-assumption sync; all 80 test files / 1,056 tests;
+  build; and diff check pass.
+- Final scoreboards: TypeScript 52 cases / 237 subjects, precision 1.0, recall
+  0.826530612244898; Elixir 10 / 26, precision and recall 1.0; Rust 4 / 12,
+  precision 1.0 and recall 0.8333333333333334; polyglot bridge 1 / 4,
+  precision and recall 1.0. Every scoreboard has zero false positives,
+  confidence violations, and unlabelled claims.
+- The packed package installs in a new npm project under the selected Node 22
+  runtime. Its installed bin renders help and produces diagnostic-free schema
+  1.2.0 JSON; the tarball contains the CLI, claim schema, README, LICENSE, and
+  package metadata. The privacy scan found zero consuming-project identifiers,
+  new absolute user paths, or credential patterns in tracked delivery changes.
+- The separate validation-only consuming-project rerun completed within its
+  interactive budget. Canonical and filtered machine output remained valid,
+  ordinary modes performed zero deletion simulations, the reviewed runtime
+  subjects produced no false claims, and deletion queries refused the live
+  subjects. Only this de-identified conclusion is recorded here.
 
-Next action: rerun the complete gate matrix from the corrected checkpoint, then
-perform package/privacy smokes and capture benchmark/resource evidence.
+P6 decision: ADR 0013 delivery is technically accepted for the founder's
+v0.1.0 release decision. A broad Rust rewrite remains unwarranted: TypeScript's
+algorithmic hot paths are corrected and parser-dominant in native Oxc, while
+the polyglot cold path is dominated by the required external compilers. No tag,
+push, publish, or consuming-project mutation was performed by this programme.
+
+Next action: founder release review. Any semver tag, push, or publication remains
+an explicit founder action.
 
 ## Verification commands
 
@@ -432,12 +477,13 @@ pnpm run test
 pnpm run assumptions
 pnpm run scoreboard
 pnpm run scoreboard:elixir
+pnpm run scoreboard:rust
+pnpm run scoreboard:polyglot
 pnpm run build
 git diff --check
 ```
 
-Add Rust and bridge scoreboards when P3/P4 introduce them. Packaging and privacy
-smokes are mandatory at P6 and before any release recommendation.
+Packaging and privacy smokes remain mandatory before any release recommendation.
 
 ## Decision log
 
@@ -460,3 +506,10 @@ smokes are mandatory at P6 and before any release recommendation.
   the stable Cargo/rustc Rust frontend with its precision corpus.
 - `9d7292a` and `0e37316` — extracted public Rustler conventions and joined
   exact Elixir/Rust endpoints through the typed plugin phases.
+- `6ed8fc8` through `d1f365c` — locked the Rustler bridge and completed
+  TypeScript/Elixir convention modularization plus the authoring contract.
+- `4a7d452` — restored the exported-entrypoint invariant found by the complete
+  matrix.
+- `532352c` — isolated compiler-backed corpus runs for deterministic parallel
+  gates.
+- `9238c77` — completed polyglot phase and resource instrumentation.

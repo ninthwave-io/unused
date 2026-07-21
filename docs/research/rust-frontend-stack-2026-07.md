@@ -1,6 +1,6 @@
 # Rust frontend extraction decision — 2026-07-21
 
-Status: accepted implementation direction for delivery P3
+Status: accepted and validated through delivery P6
 Scope: Rust as an analyzed language, not a rewrite of the TypeScript analyzer
 
 ## Decision
@@ -136,3 +136,31 @@ Prototype a stronger isolated extractor only if all are true:
   path; and
 - the expected recall gain justifies nightly/toolchain/distribution cost.
 
+## P6 validation and rewrite decision
+
+The implemented stable boundary meets its initial precision contract. The Rust
+corpus contains 4 cases / 12 labelled subjects at precision 1.0 and recall
+0.8333333333333334, with one explicit unused-public-API miss. The Rustler bridge
+corpus contains 1 case / 4 subjects at precision and recall 1.0. Neither corpus
+has a false positive, confidence violation, or unlabelled claim.
+
+A cold tracked-only copy of the public Rustler fixture completed in 1.01s wall,
+1.41s external user+system CPU, and 132.9MB external peak RSS. Its phase stream
+reported 879.456ms in compiler/parsing work versus 2.118ms convention extraction,
+1.012ms graph construction, 0.541ms reachability, 0.096ms hazard activation, and
+1.052ms claim generation. It retained 5 files, 12 symbols, 37 edges, 2 claims,
+3 workspaces, 9 graph walks, 5 fixed-point iterations, and zero deletion-plan
+simulations. Canonical JSON remained schema-valid and diagnostic-free.
+
+Decision: neither rewriting the corrected TypeScript graph engine in Rust nor
+replacing the stable Cargo/rustc frontend is required before v0.1.0. The former
+would move a bounded low-millisecond operation across a serialization boundary;
+the latter would duplicate compiler semantics while the required compilers
+already dominate the cold path. The expected gain is small, and the costs are a
+new native distribution matrix, duplicated IR/provenance contracts, cross-boundary
+serialization, and ongoing compiler-integration maintenance.
+
+The next Rust investment should therefore be recall, not implementation
+language: consider a narrowly measured public-API extractor only when consuming
+evidence shows the recorded miss class is materially valuable and the revisit
+triggers above are all satisfied.
