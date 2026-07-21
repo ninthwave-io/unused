@@ -245,7 +245,7 @@ registration must create the narrowest no-claim hazard.
 
 ### P4 — Rustler/NIF bridge
 
-Status: pending
+Status: in progress
 
 Deliverables:
 
@@ -263,6 +263,23 @@ Acceptance:
 - `why --delete` refuses a live bridged subject or models required edits and
   consequence stages correctly.
 - Removing the planted bridge produces the expected dead claims.
+
+Progress:
+
+- Official Rustler 0.38 conventions were re-derived from public docs: an
+  Elixir module uses `Rustler` and declares `:nif_not_loaded` stubs; Rust NIFs
+  use `#[rustler::nif]`; `rustler::init!` names the literal `Elixir.Module`.
+- Isolated, source-only extractors now return exact module, function, arity,
+  file, and line facts for those forms without fetching or compiling Rustler.
+  Scheduling attributes are identity-neutral; renamed/unsupported attributes
+  and computed init modules are explicitly ambiguous.
+- Extractor tests use neutral generated-style source, cover nested parameter
+  syntax and multiline stubs, and prove commented examples are ignored.
+
+Next action: register the Rustler convention and bridge plugins. Add candidate
+NIF graph symbols only for exact extracted functions, join literal
+module/name/arity triples with provenance-bearing `runtime-resolved` edges,
+and add a narrowly scoped no-claim hazard for ambiguous registration.
 
 ### P5 — Convention modularization
 
@@ -334,3 +351,5 @@ smokes are mandatory at P6 and before any release recommendation.
 - `b634c08` — accepted ADR 0013 and established this resumable delivery ledger.
 - `261070a` — added typed language/convention/bridge contracts and deterministic
   plugin registry with attributed execution failures.
+- `0948d91` through `3542cf7` — completed polyglot discovery/orchestration and
+  the stable Cargo/rustc Rust frontend with its precision corpus.
