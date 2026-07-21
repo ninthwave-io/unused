@@ -225,13 +225,20 @@ export type EdgeKind = "references" | "exports" | "contains" | "consumes";
  * The `references`-edge sub-kind (architecture.md §3):
  *  - `static`          — a static import / type import (resolved statically).
  *  - `dynamic-resolved`— a string-literal `import()` / `require()` that resolved.
+ *  - `runtime-resolved`— a literal runtime convention resolved to one symbol.
  *  - `re-export`       — a barrel edge (`export … from`), symbol- or file-level.
  *  - `side-effect`     — `import "./x"`: keeps the file alive, binds no symbol.
  *  - `hazard`          — a keep-alive edge whose target must stay reachable
  *                        because absence could not be proven (`internal-declaration`,
  *                        etc.); carries `hazardClass`.
  */
-export type ReferenceKind = "static" | "dynamic-resolved" | "re-export" | "side-effect" | "hazard";
+export type ReferenceKind =
+  | "static"
+  | "dynamic-resolved"
+  | "runtime-resolved"
+  | "re-export"
+  | "side-effect"
+  | "hazard";
 
 export interface IREdge {
   readonly kind: EdgeKind;

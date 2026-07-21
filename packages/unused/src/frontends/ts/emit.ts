@@ -830,11 +830,13 @@ function entrypointNode(fileRel: string, reason: string): EntrypointNode {
  * Flatten a file's intra-file reference adjacency (top-level local name →
  * top-level local name, exported or private) into export→export `static`
  * reference edges (the aws-lambda cluster fix). For each exported symbol, a DFS
- * over the adjacency collects the exported siblings it can reach *through* any
- * private module-scope bindings on the way (`handle` → `getProcessor` →
- * `const albProcessor = new ALBProcessor()` → `ALBProcessor`), and one edge is
- * emitted to each. Private intermediaries are not IR nodes, so the transitive
- * hop is materialised here rather than walked at reachability time.
+ * over the adjacency collects the first exported siblings it can reach
+ * *through* any private module-scope bindings on the way (`handle` →
+ * `getProcessor` → `const albProcessor = new ALBProcessor()` →
+ * `ALBProcessor`). Traversal stops at an exported sibling because that symbol's
+ * own edge pass carries the chain onward. Private intermediaries are not IR
+ * nodes, so only those private spans are collapsed; exported-to-exported
+ * transitive closure is deliberately not materialised.
  *
  * Edges are anchored at the owning symbol's declaration span (the flattened
  * transitive edge has no single use-site). They only ever *add* reachability
@@ -885,6 +887,10 @@ function emitIntraFileEdges(
         graph.addEdge(
           referencesEdge("static", owner.sym, target.sym, site(fileRel, owner.span), name, false),
         );
+        // The target export owns its own outgoing adjacency. Stopping here
+        // preserves the exact transitive reachability while avoiding materialising
+        // a quadratic export-to-every-descendant closure in the IR.
+        continue;
       }
       for (const next of adj.get(name) ?? []) if (!seen.has(next)) stack.push(next);
     }

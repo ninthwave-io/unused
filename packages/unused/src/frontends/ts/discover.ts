@@ -39,6 +39,17 @@ export interface DiscoverOptions {
   readonly gitignore?: boolean;
 }
 
+/**
+ * Files gathered by the single gitignore-aware project traversal. Config-root
+ * extraction consumes this inventory so it cannot accidentally perform a
+ * second, unbounded walk through ignored dependency and build trees.
+ */
+export interface ProjectInventory {
+  readonly sourceFiles: readonly string[];
+  readonly jsonFiles: readonly string[];
+  readonly packageRootDirs: readonly string[];
+}
+
 interface IgnoreContext {
   readonly dir: string;
   readonly matcher: Ignore;
@@ -46,12 +57,27 @@ interface IgnoreContext {
 
 /** Return all source files under `rootDir`, absolute and lexicographically sorted. */
 export async function discover(rootDir: string, options: DiscoverOptions = {}): Promise<string[]> {
-  const results: string[] = [];
+  return [...(await discoverProjectInventory(rootDir, options)).sourceFiles];
+}
+
+/** Return source/config inventory from one bounded, deterministic tree walk. */
+export async function discoverProjectInventory(
+  rootDir: string,
+  options: DiscoverOptions = {},
+): Promise<ProjectInventory> {
+  const sourceFiles: string[] = [];
+  const jsonFiles: string[] = [];
+  const packageRootDirs = new Set<string>();
   const useGitignore = options.gitignore !== false;
   const inherited = useGitignore ? await ancestorIgnoreContexts(rootDir) : [];
-  await walk(rootDir, results, inherited, useGitignore);
-  results.sort();
-  return results;
+  await walk(rootDir, sourceFiles, jsonFiles, packageRootDirs, inherited, useGitignore);
+  sourceFiles.sort();
+  jsonFiles.sort();
+  return {
+    sourceFiles,
+    jsonFiles,
+    packageRootDirs: [...packageRootDirs].sort(),
+  };
 }
 
 /**
@@ -182,7 +208,9 @@ async function enclosingGitRoot(start: string): Promise<string | null> {
 
 async function walk(
   dir: string,
-  results: string[],
+  sourceFiles: string[],
+  jsonFiles: string[],
+  packageRootDirs: Set<string>,
   inherited: readonly IgnoreContext[],
   useGitignore: boolean,
 ): Promise<void> {
@@ -205,14 +233,12 @@ async function walk(
     if (entry.isDirectory()) {
       if (EXCLUDED_DIRS.has(entry.name)) continue;
       if (useGitignore && isGitIgnored(full, true, contexts)) continue;
-      await walk(full, results, contexts, useGitignore);
+      await walk(full, sourceFiles, jsonFiles, packageRootDirs, contexts, useGitignore);
     } else if (entry.isFile()) {
-      if (
-        hasSourceExtension(entry.name) &&
-        (!useGitignore || !isGitIgnored(full, false, contexts))
-      ) {
-        results.push(full);
-      }
+      if (useGitignore && isGitIgnored(full, false, contexts)) continue;
+      if (hasSourceExtension(entry.name)) sourceFiles.push(full);
+      if (entry.name.toLowerCase().endsWith(".json")) jsonFiles.push(full);
+      if (entry.name === "package.json") packageRootDirs.add(dir);
     }
     // Symlinks (isSymbolicLink()) fall through here and are intentionally
     // neither descended nor collected.

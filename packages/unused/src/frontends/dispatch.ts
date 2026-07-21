@@ -98,7 +98,11 @@ export async function analyzeProjectAutoWithGraph(
       ts.result.productionEntrypointCount + elixir.result.productionEntrypointCount,
     fileCount: ts.result.fileCount + elixir.result.fileCount,
   };
-  return { result, graph, reachability: computePartitionedReachability(graph) };
+  return {
+    result,
+    graph,
+    reachability: computePartitionedReachability(graph, options.performance),
+  };
 }
 
 function mergeGraphs(...graphs: readonly IRGraph[]): IRGraph {

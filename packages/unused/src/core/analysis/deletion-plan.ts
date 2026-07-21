@@ -18,6 +18,7 @@ import {
   SCHEMA_VERSION,
 } from "../claims/types.js";
 import { fileId, type IREdge, IRGraph, type IRNode, symbolId } from "../ir/index.js";
+import type { PerformanceTracker } from "./performance.js";
 import { computePartitionedReachability, type PartitionedReachability } from "./reachability.js";
 
 export type {
@@ -34,49 +35,95 @@ export interface ComputeDeletionPlanInput {
   readonly reachability: PartitionedReachability;
   /** Already-resolved subject; resolution remains the caller's concern. */
   readonly subject: DeletionPlanSubject;
+  /** Optional run-local phase/counter collector. */
+  readonly performance?: PerformanceTracker;
 }
 
 /** Compute a deterministic, language-agnostic counterfactual deletion plan. */
 export function computeDeletionPlan(input: ComputeDeletionPlanInput): DeletionPlan {
   const { graph, reachability, subject } = input;
+  const started = input.performance?.now();
+  input.performance?.increment("deletionPlanSimulations");
+  const finish = (plan: DeletionPlan): DeletionPlan => {
+    if (started !== undefined) input.performance?.finish("deletion-planning", started);
+    return plan;
+  };
   if (subject.kind === "dependency") {
-    return {
+    return finish({
       schemaVersion: SCHEMA_VERSION,
       selected: subject,
       supported: false,
       unsupportedReason: "dependency deletion has no graph cascade model",
       reExportEdits: [],
       stages: [],
-    };
+    });
   }
 
   const selectedNodeIds = resolveSelectedNodeIds(graph, subject);
   if (selectedNodeIds.size === 0) {
-    return {
+    return finish({
       schemaVersion: SCHEMA_VERSION,
       selected: subject,
       supported: false,
       unsupportedReason: "selected subject is not present in the captured graph",
       reExportEdits: [],
       stages: [],
-    };
+    });
+  }
+
+  const liveRuntimeReference = graph
+    .edges()
+    .find(
+      (edge) =>
+        edge.kind === "references" &&
+        edge.referenceKind === "runtime-resolved" &&
+        selectedNodeIds.has(edge.to) &&
+        isReachableNode(graph, reachability, edge.from),
+    );
+  if (liveRuntimeReference !== undefined) {
+    return finish({
+      schemaVersion: SCHEMA_VERSION,
+      selected: subject,
+      supported: false,
+      unsupportedReason: `selected subject has a live runtime reference at ${liveRuntimeReference.site.file}:${liveRuntimeReference.site.span.startLine}`,
+      reExportEdits: [],
+      stages: [],
+    });
   }
 
   const removedNodeIds = new Set(selectedNodeIds);
   const reExportEdits = collectReExportClosure(graph, removedNodeIds);
   const counterfactual = cloneWithout(graph, removedNodeIds);
+  input.performance?.increment("graphWalks", 3);
   const after = computePartitionedReachability(counterfactual);
   const newlyDead = newlyDeadSubjects(graph, reachability, after, removedNodeIds);
   const distance = causalDistances(graph, selectedNodeIds, removedNodeIds);
   const stages = stageSubjects(graph, newlyDead, distance);
 
-  return {
+  return finish({
     schemaVersion: SCHEMA_VERSION,
     selected: subject,
     supported: true,
     reExportEdits,
     stages,
-  };
+  });
+}
+
+function isReachableNode(
+  graph: IRGraph,
+  reachability: PartitionedReachability,
+  nodeId: string,
+): boolean {
+  const node = graph.getNode(nodeId);
+  if (node === undefined) return false;
+  const reaches = [reachability.production, reachability.config, reachability.test];
+  return reaches.some((reach) =>
+    node.kind === "file"
+      ? reach.reachableFiles.has(node.id)
+      : node.kind === "symbol"
+        ? reach.reachableSymbols.has(node.id)
+        : false,
+  );
 }
 
 function resolveSelectedNodeIds(graph: IRGraph, subject: DeletionPlanSubject): Set<string> {

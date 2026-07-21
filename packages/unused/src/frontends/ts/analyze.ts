@@ -55,14 +55,14 @@
  *    config-root set (loaded by a tool by filename convention, not an import).
  */
 
-import type { Dirent } from "node:fs";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve as resolvePath, sep } from "node:path";
 import { getTsconfig } from "get-tsconfig";
 import {
   computePartitionedReachability,
   emitClaims,
   type PartitionedReachability,
+  type PerformanceTracker,
 } from "../../core/analysis/index.js";
 import {
   type Claim,
@@ -103,7 +103,7 @@ import {
   viteVitestConfigReferences,
 } from "./convention-references.js";
 import { addConfigTokens, computeUnusedDependencies } from "./dependencies.js";
-import { discover } from "./discover.js";
+import { discoverProjectInventory } from "./discover.js";
 import { type EmitPackageUnit, emitIR, type PackageJsonLike } from "./emit.js";
 import { parseSource } from "./parse.js";
 import {
@@ -119,7 +119,6 @@ import { detectWorkspaces, type WorkspaceLayout } from "./workspaces.js";
 const ANALYZER_NAME = "ts-reference-graph";
 const DEFAULT_TOOL_VERSION = "0.1.0";
 const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"] as const;
-const CONFIG_SCAN_EXCLUDED_DIRS = new Set(["node_modules", "dist"]);
 /** Lockfiles are large machine-generated JSON and never reference source — skip. */
 const LOCKFILE_NAMES = new Set(["package-lock.json", "npm-shrinkwrap.json"]);
 /** Cap per-config-file read in the string scan (defends against a huge generated JSON). */
@@ -158,6 +157,8 @@ export interface AnalyzeOptions {
   readonly configPath?: string;
   /** Respect nested `.gitignore` rules unless the CLI passed `--no-gitignore`. */
   readonly gitignore?: boolean;
+  /** Opt-in phase timings and work counters; normal runs leave this absent. */
+  readonly performance?: PerformanceTracker;
 }
 
 /** Frontend-composition controls that are intentionally absent from CLI options. */
@@ -281,6 +282,8 @@ export async function analyzeProjectWithGraph(
   const now = options.now ?? new Date();
   const version = options.toolVersion ?? DEFAULT_TOOL_VERSION;
   const root = resolvePath(rootDir);
+  const performance = options.performance;
+  const workspaceStarted = performance?.now();
 
   // T4.3 config (PRD §6, ADR 0010): `unused.config.jsonc`/`.json` at the root,
   // or `--config <path>`. Throws `ConfigError` on a missing `--config` target,
@@ -303,6 +306,10 @@ export async function analyzeProjectWithGraph(
   // workspace member classifies internal (its source), never external (T4.2).
   const workspacePackages = isWorkspace ? buildWorkspaceMap(units) : undefined;
   const configUnits: ConfigUnit[] = units.map((u) => ({ rootRelDir: u.rootRelDir, name: u.name }));
+  performance?.set("workspaces", units.length);
+  if (workspaceStarted !== undefined) {
+    performance?.finish("workspace-config-detection", workspaceStarted);
+  }
 
   // discover → read → parse (single read per file, reused for line counts + scan).
   // Excluded-member subtrees (a would-be workspace member removed by a negative
@@ -315,7 +322,9 @@ export async function analyzeProjectWithGraph(
   // exclusion here and can be disabled with `--no-gitignore`.
   const excludedPrefixes = layout.excludedDirs.map((dir) => `${dir}/`);
   const useGitignore = options.gitignore !== false;
-  const discovered = (await discover(root, { gitignore: useGitignore }))
+  const discoveryStarted = performance?.now();
+  const inventory = await discoverProjectInventory(root, { gitignore: useGitignore });
+  const discovered = inventory.sourceFiles
     .filter((file) => !isUnderExcluded(toPosixRel(root, file), excludedPrefixes))
     .map((file) => ({ abs: file, rel: toPosixRel(root, file) }));
   const scopedRel = new Set(
@@ -326,6 +335,20 @@ export async function analyzeProjectWithGraph(
     ),
   );
   const files = discovered.filter((d) => scopedRel.has(d.rel)).map((d) => d.abs);
+  const jsonFiles = inventory.jsonFiles.filter(
+    (file) =>
+      !isUnderExcluded(toPosixRel(root, file), excludedPrefixes) &&
+      !LOCKFILE_NAMES.has(basename(file)),
+  );
+  const packageRootDirs = new Set(
+    inventory.packageRootDirs.filter((dir) => {
+      const rel = toPosixRel(root, dir);
+      return rel === "" || !isUnderExcluded(`${rel}/`, excludedPrefixes);
+    }),
+  );
+  performance?.set("files", files.length);
+  if (discoveryStarted !== undefined) performance?.finish("discovery-gitignore", discoveryStarted);
+  const parsingStarted = performance?.now();
   const contents = await Promise.all(files.map((f) => readFile(f, "utf8")));
   const records = files.map((file, i) => parseSource(file, contents[i] as string));
   const contentByAbs = new Map(files.map((file, i) => [file, contents[i] as string]));
@@ -334,6 +357,7 @@ export async function analyzeProjectWithGraph(
   files.forEach((file, i) => {
     fileLineCounts.set(fileId(toPosixRel(root, file)), countLines(contents[i] as string));
   });
+  if (parsingStarted !== undefined) performance?.finish("parsing", parsingStarted);
 
   // resolve → emit IR (per-package production entrypoints from main/module/exports/bin).
   const discoveredSet = new Set(files);
@@ -341,6 +365,7 @@ export async function analyzeProjectWithGraph(
     projectRoot: root,
     discoveredFiles: discoveredSet,
     ...(workspacePackages !== undefined ? { workspacePackages } : {}),
+    ...(performance === undefined ? {} : { performance }),
   });
   // T4.6 (M4 smoke "worst finding"): resolution must honour the OWNING workspace
   // member's tsconfig (`paths`/`baseUrl`/`extends`) for files under that member,
@@ -362,6 +387,7 @@ export async function analyzeProjectWithGraph(
           discoveredFiles: discoveredSet,
           tsconfigDir: unit.dir,
           ...(workspacePackages !== undefined ? { workspacePackages } : {}),
+          ...(performance === undefined ? {} : { performance }),
         }),
       );
     }
@@ -369,6 +395,8 @@ export async function analyzeProjectWithGraph(
   // emitDecoratorMetadata / project `references`: any package's tsconfig triggers
   // it (over-approximating the keep-alive only costs recall, never precision).
   const tsconfigOptions = readTsconfigOptionsForUnits(units);
+  const graphStarted = performance?.now();
+  const resolutionBefore = performance?.phaseTotal("module-resolution") ?? 0;
   const graph = emitIR({
     projectRoot: root,
     records,
@@ -378,10 +406,17 @@ export async function analyzeProjectWithGraph(
     // byte-identical one-unit path (every file resolved with `rootResolver`).
     ...(isWorkspace ? { packages: units, resolversByUnitDir } : {}),
   });
+  if (graphStarted !== undefined && performance !== undefined) {
+    const total = performance.elapsedSince(graphStarted);
+    const resolution = performance.phaseTotal("module-resolution") - resolutionBefore;
+    performance.emitAccumulated("module-resolution", resolution);
+    performance.addDuration("graph-construction", Math.max(0, total - resolution), true);
+  }
 
   // Fix 2 + T3.1b, per package: expand each unit's wildcard `exports` subpaths into
   // production entrypoints, and keep-alive files reachable only under a non-selected
   // package.json condition/browser branch.
+  const conventionStarted = performance?.now();
   for (const unit of units) {
     const unresolvedWildcardSubpaths = seedWildcardExportEntrypoints(
       graph,
@@ -563,11 +598,6 @@ export async function analyzeProjectWithGraph(
     seedProductionEntrypoint(graph, hit.file, hit.reason);
   }
 
-  // One config-tree walk: JSON config files + the set of package-root directories.
-  const jsonFiles: string[] = [];
-  const packageRootDirs = new Set<string>();
-  await walkConfigTree(root, jsonFiles, packageRootDirs);
-
   // Fix 1: config roots become `config` reachability seeds (never claimed).
   // A `.storybook/*` config file (non-test) is also a config root: Storybook
   // loads main/preview/decorators/handlers/etc., which import real app code that
@@ -646,9 +676,14 @@ export async function analyzeProjectWithGraph(
     configTokens: configScan.configTokens,
     testFiles: testFileRels,
   }).filter((dep) => !isIgnoredDependency(dep.packageName, config));
+  if (conventionStarted !== undefined) {
+    performance?.finish("convention-config-roots", conventionStarted);
+  }
+  performance?.set("symbols", graph.nodes().filter((node) => node.kind === "symbol").length);
+  performance?.set("edges", graph.edges().length);
 
   // partitioned reachability → claims (T5.1: production/config/test partitions).
-  const reachability = computePartitionedReachability(graph);
+  const reachability = computePartitionedReachability(graph, performance);
   const provenance: Provenance = {
     analyzer: ANALYZER_NAME,
     version,
@@ -682,6 +717,7 @@ export async function analyzeProjectWithGraph(
     // tsconfig `references`) scopes to the OWNING unit, not the whole run (T4/
     // reference-codebase smoke §4.3). Single-package: one root unit ⇒ whole-run, as before.
     units: units.map((u) => ({ rootRelDir: u.rootRelDir })),
+    ...(performance === undefined ? {} : { performance }),
   }).filter(
     (claim) =>
       claim.subject.kind === "dependency" ||
@@ -1111,33 +1147,6 @@ function isTestFilePath(rel: string, packageRootRels: ReadonlySet<string>): bool
   return false;
 }
 
-/** Walk the project tree once: collect `*.json` config files and package-root dirs. */
-async function walkConfigTree(
-  dir: string,
-  jsonOut: string[],
-  packageRootDirs: Set<string>,
-): Promise<void> {
-  let entries: Dirent[];
-  try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    if (entry.name.startsWith(".")) continue;
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (CONFIG_SCAN_EXCLUDED_DIRS.has(entry.name)) continue;
-      await walkConfigTree(full, jsonOut, packageRootDirs);
-    } else if (entry.isFile()) {
-      if (entry.name === "package.json") packageRootDirs.add(dir);
-      if (entry.name.toLowerCase().endsWith(".json") && !LOCKFILE_NAMES.has(entry.name)) {
-        jsonOut.push(full);
-      }
-    }
-  }
-}
-
 /**
  * Scans every JSON config and config-root source once, returning both:
  *  - `referenced` — absolute paths of discovered source files named as a string,
@@ -1300,12 +1309,18 @@ interface LocatedStringLiteral {
 function locatedStringLiteralsOf(source: string): LocatedStringLiteral[] {
   const out: LocatedStringLiteral[] = [];
   STRING_LITERAL_RE.lastIndex = 0;
+  let nextNewline = source.indexOf("\n");
+  let line = 1;
   let match: RegExpExecArray | null = STRING_LITERAL_RE.exec(source);
   while (match !== null) {
     if (match[2] !== undefined) {
       const start = match.index;
       const end = STRING_LITERAL_RE.lastIndex;
-      const startLine = 1 + countNewlines(source, start);
+      while (nextNewline >= 0 && nextNewline < start) {
+        line += 1;
+        nextNewline = source.indexOf("\n", nextNewline + 1);
+      }
+      const startLine = line;
       let value = match[2];
       if (match[1] === '"') {
         try {
@@ -1319,14 +1334,6 @@ function locatedStringLiteralsOf(source: string): LocatedStringLiteral[] {
     match = STRING_LITERAL_RE.exec(source);
   }
   return out;
-}
-
-function countNewlines(source: string, end: number): number {
-  let lines = 0;
-  for (let index = 0; index < end; index += 1) {
-    if (source.charCodeAt(index) === 10) lines += 1;
-  }
-  return lines;
 }
 
 /**

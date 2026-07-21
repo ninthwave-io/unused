@@ -26,6 +26,31 @@ One command reproduces the whole run: `node bench/bench.mjs [--out <path>]`.
 No other setup beyond `npm install` in `bench/` (a one-time step, same as
 any pinned dev dependency).
 
+### Generated scaling corpus
+
+The independently generated TypeScript scaling corpus exercises several
+workspaces, 32 exports per ordinary module, import fan-out, tests, literal and
+computed dynamic imports, config roots, and a fixed dead-code fraction. It does
+not contain or derive from any consuming repository. Generated projects default
+to the operating-system temporary directory and are not committed.
+
+```sh
+pnpm build
+node bench/generate-scaling-fixtures.mjs --out /tmp/unused-scaling-fixtures
+node packages/unused/dist/cli/index.js --performance --json \
+  --cwd /tmp/unused-scaling-fixtures/files-2000 > /tmp/unused.json
+```
+
+To exercise ignored-tree scaling without changing the tracked source count,
+add `--ignored-json 5000`. This creates a neutral generated-cache tree covered
+by the fixture's `.gitignore`; it regression-tests that config extraction reuses
+the bounded discovery inventory instead of traversing ignored artifacts.
+
+On macOS, prefix the analyzer command with `/usr/bin/time -lp` for wall/CPU/RSS
+evidence. Add `--cpu-prof --enable-source-maps` to Node for a CPU profile. The
+`--performance` stream is newline-delimited JSON on stderr; canonical JSON
+stdout remains diagnostic-free.
+
 ## What it measures
 
 For every target in `bench/targets.json` (currently: each

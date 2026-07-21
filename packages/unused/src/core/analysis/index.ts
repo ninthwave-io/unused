@@ -35,6 +35,14 @@ export {
   lookupHazard,
 } from "./hazard-registry.js";
 export {
+  PERFORMANCE_PHASES,
+  type PerformanceCounters,
+  type PerformancePhase,
+  type PerformancePhaseEvent,
+  type PerformanceSnapshot,
+  PerformanceTracker,
+} from "./performance.js";
+export {
   type ComputeReachabilityOptions,
   computePartitionedReachability,
   computeReachability,

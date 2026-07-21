@@ -49,6 +49,8 @@ const ZOMBIE_TEST_FIXTURE = join(FIXTURES_ROOT, "test-root-recognition"); // T5.
 const MIXED_CONFIDENCE_FIXTURE = join(FIXTURES_ROOT, "string-computed-import"); // 1 high + 2 medium
 const SUPPRESSION_FIXTURE = join(FIXTURES_ROOT, "suppression-comment"); // 2 high, both suppressed
 const ELIXIR_FIXTURE = join(REPO_ROOT, "fixtures/elixir/basic-dead-function");
+const ELIXIR_MFA_FIXTURE = join(REPO_ROOT, "fixtures/elixir/runtime-mfa-callback");
+const ELIXIR_USE_FIXTURE = join(REPO_ROOT, "fixtures/elixir/dynamic-use-helpers");
 
 function readSchema(): object {
   return JSON.parse(
@@ -238,6 +240,19 @@ describe("unused CLI — --json is schema-valid and stdout-clean", () => {
     // Exactly one JSON.parse-able line (plus the trailing newline).
     expect(result.stdout.trim().split("\n").length).toBe(1);
     expect(() => JSON.parse(result.stdout)).not.toThrow();
+  });
+
+  it("keeps performance diagnostics on stderr and JSON stdout schema-valid", () => {
+    const result = runCli(["--performance", "--json", "--cwd", DEAD_FIXTURE]);
+    expect(result.status).toBe(0);
+    expect(() => JSON.parse(result.stdout)).not.toThrow();
+    const diagnostics = result.stderr
+      .trim()
+      .split("\n")
+      .filter((line) => line.startsWith("unused performance "))
+      .map((line) => JSON.parse(line.slice("unused performance ".length)) as { event: string });
+    expect(diagnostics.some((diagnostic) => diagnostic.event === "phase")).toBe(true);
+    expect(diagnostics.at(-1)?.event).toBe("summary");
   });
 });
 
@@ -1936,6 +1951,46 @@ describe("unused CLI — why (T8.2, cli-ux §4)", () => {
         name: "BasicDead.Core.unused_helper/1",
       });
       expect(plan.supported).toBe(true);
+    },
+  );
+
+  it.skipIf(!MIX_AVAILABLE)(
+    "explains an MFA callback edge and refuses to model it as safely removable",
+    () => {
+      const subject = "NeutralMfa.Callback.callback_name/1";
+      const why = runCli(["why", subject, "--cwd", ELIXIR_MFA_FIXTURE]);
+      expect(why.status).toBe(0);
+      expect(why.stdout).toContain("-- alive");
+      expect(why.stdout).toContain("NeutralMfa.RuntimeConfig.callback/0");
+
+      const deletion = runCli(["why", "--delete", "--json", subject, "--cwd", ELIXIR_MFA_FIXTURE]);
+      expect(deletion.status).toBe(0);
+      expect(deletion.stderr).toBe("");
+      expect(JSON.parse(deletion.stdout)).toMatchObject({
+        supported: false,
+        unsupportedReason:
+          "selected subject has a live runtime reference at lib/neutral_mfa/runtime_config.ex:4",
+      });
+    },
+  );
+
+  it.skipIf(!MIX_AVAILABLE)(
+    "explains a literal use-helper edge and refuses to model it as safely removable",
+    () => {
+      const subject = "NeutralUse.Web.router/0";
+      const why = runCli(["why", subject, "--cwd", ELIXIR_USE_FIXTURE]);
+      expect(why.status).toBe(0);
+      expect(why.stdout).toContain("-- alive");
+      expect(why.stdout).toContain("lib/neutral_use/router.ex:2 NeutralUse.Router");
+
+      const deletion = runCli(["why", "--delete", "--json", subject, "--cwd", ELIXIR_USE_FIXTURE]);
+      expect(deletion.status).toBe(0);
+      expect(deletion.stderr).toBe("");
+      expect(JSON.parse(deletion.stdout)).toMatchObject({
+        supported: false,
+        unsupportedReason:
+          "selected subject has a live runtime reference at lib/neutral_use/router.ex:2",
+      });
     },
   );
 

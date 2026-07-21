@@ -13,6 +13,7 @@ describe("renderHelp", () => {
       "--all",
       "--show-suppressed",
       "--no-color",
+      "--performance",
       "--config <path>",
       "--cwd <dir>",
       "--help, -h",

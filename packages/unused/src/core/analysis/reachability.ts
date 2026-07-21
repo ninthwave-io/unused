@@ -36,6 +36,7 @@ import {
   type IRGraph,
   symbolId,
 } from "../ir/index.js";
+import type { PerformanceTracker } from "./performance.js";
 
 // ---------------------------------------------------------------------------
 // Result shapes
@@ -70,6 +71,8 @@ export interface Reachability {
   readonly productionEntrypointFiles: ReadonlySet<string>;
   /** node id → the predecessor that first reached it (why-path provenance). */
   readonly predecessor: ReadonlyMap<string, Predecessor>;
+  /** Present only for a predicate-bounded walk that terminated early. */
+  readonly stoppedAt?: string;
 }
 
 /**
@@ -86,6 +89,10 @@ export interface ComputeReachabilityOptions {
    * Absent ⇒ seed all production/config/test roots (the pre-M5 behaviour).
    */
   readonly seedFilter?: (entry: EntrypointNode) => boolean;
+  /** Optional run-local work counter/timer collector. */
+  readonly performance?: PerformanceTracker;
+  /** Stop after first reaching a matching node (used by bounded existence queries). */
+  readonly stopWhen?: (nodeId: string) => boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -102,6 +109,7 @@ export function computeReachability(
   graph: IRGraph,
   options?: ComputeReachabilityOptions,
 ): Reachability {
+  options?.performance?.increment("graphWalks");
   const reachableFiles = new Set<string>();
   const surfaceLiveFiles = new Set<string>();
   const reachableSymbols = new Set<string>();
@@ -109,6 +117,7 @@ export function computeReachability(
   const productionEntrypointFiles = new Set<string>();
   const predecessor = new Map<string, Predecessor>();
   const queue: string[] = [];
+  let stoppedAt: string | undefined;
 
   const setPredIfAbsent = (id: string, pred: Predecessor): void => {
     if (!predecessor.has(id)) predecessor.set(id, pred);
@@ -120,6 +129,7 @@ export function computeReachability(
       reachableFiles.add(id);
       setPredIfAbsent(id, pred);
       queue.push(id);
+      if (stoppedAt === undefined && options?.stopWhen?.(id) === true) stoppedAt = id;
     }
   };
 
@@ -139,6 +149,7 @@ export function computeReachability(
       reachableSymbols.add(symId);
       setPredIfAbsent(symId, pred);
       queue.push(symId);
+      if (stoppedAt === undefined && options?.stopWhen?.(symId) === true) stoppedAt = symId;
     }
     const node = graph.getNode(symId);
     if (node?.kind === "symbol") markFile(node.file, pred);
@@ -205,6 +216,7 @@ export function computeReachability(
         // A whole-module require/import — the whole surface is consumed (rule 2).
         markSurfaceLive(fileRel, pred);
         return;
+      case "runtime-resolved":
       case "static": {
         if (edge.name === undefined || edge.name === "*") {
           markSurfaceLive(fileRel, pred); // namespace / bare type-import
@@ -260,8 +272,9 @@ export function computeReachability(
       if (edge.kind !== "references") continue;
       const target = graph.getNode(edge.to);
       const pred: Predecessor = { via: "edge", edge };
-      if (edge.referenceKind === "static") {
-        // Intra-file sibling edge: always symbol→symbol, keep that export alive.
+      if (edge.referenceKind === "static" || edge.referenceKind === "runtime-resolved") {
+        // A statically proven or literal-runtime symbol edge keeps that exact
+        // target alive (including cross-file Elixir runtime conventions).
         if (target?.kind === "symbol") markSymbol(target.id, pred);
         continue;
       }
@@ -307,8 +320,10 @@ export function computeReachability(
   }
 
   // --- drain -----------------------------------------------------------------
-  while (queue.length > 0) {
-    const id = queue.shift() as string;
+  let queueIndex = 0;
+  while (queueIndex < queue.length && stoppedAt === undefined) {
+    const id = queue[queueIndex] as string;
+    queueIndex += 1;
     const node = graph.getNode(id);
     if (node === undefined) continue;
     if (node.kind === "file") processFile(id);
@@ -322,6 +337,7 @@ export function computeReachability(
     entrypointFiles,
     productionEntrypointFiles,
     predecessor,
+    ...(stoppedAt === undefined ? {} : { stoppedAt }),
   };
 }
 
@@ -352,12 +368,29 @@ export interface PartitionedReachability {
 }
 
 /** Compute the three per-partition reachability walks (T5.1). */
-export function computePartitionedReachability(graph: IRGraph): PartitionedReachability {
-  return {
-    production: computeReachability(graph, { seedFilter: (e) => e.entryKind === "production" }),
-    config: computeReachability(graph, { seedFilter: (e) => e.entryKind === "config" }),
-    test: computeReachability(graph, { seedFilter: (e) => e.entryKind === "test" }),
+export function computePartitionedReachability(
+  graph: IRGraph,
+  performance?: PerformanceTracker,
+): PartitionedReachability {
+  const started = performance?.now();
+  const result = {
+    production: computeReachability(graph, {
+      seedFilter: (e) => e.entryKind === "production",
+      ...(performance === undefined ? {} : { performance }),
+    }),
+    config: computeReachability(graph, {
+      seedFilter: (e) => e.entryKind === "config",
+      ...(performance === undefined ? {} : { performance }),
+    }),
+    test: computeReachability(graph, {
+      seedFilter: (e) => e.entryKind === "test",
+      ...(performance === undefined ? {} : { performance }),
+    }),
   };
+  if (started !== undefined && performance !== undefined) {
+    performance.finish("reachability-partitioning", started);
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -386,9 +419,19 @@ export interface WhyReachable {
  * re-analysis). Cycle-guarded. Returns `{ reachable: false }` for a node the
  * walk never reached.
  */
-export function whyReachable(reach: Reachability, nodeId: string): WhyReachable {
+export function whyReachable(
+  reach: Reachability,
+  nodeId: string,
+  performance?: PerformanceTracker,
+): WhyReachable {
+  const started = performance?.now();
   const first = reach.predecessor.get(nodeId);
-  if (first === undefined) return { reachable: false, edges: [] };
+  if (first === undefined) {
+    if (started !== undefined && performance !== undefined) {
+      performance.addDuration("shortest-path-evidence", performance.elapsedSince(started));
+    }
+    return { reachable: false, edges: [] };
+  }
 
   const edges: IREdge[] = [];
   const guard = new Set<string>([nodeId]);
@@ -396,7 +439,7 @@ export function whyReachable(reach: Reachability, nodeId: string): WhyReachable 
 
   while (pred !== undefined) {
     if (pred.via === "entrypoint") {
-      return {
+      const result: WhyReachable = {
         reachable: true,
         entrypoint: {
           id: pred.entrypointId,
@@ -406,6 +449,10 @@ export function whyReachable(reach: Reachability, nodeId: string): WhyReachable 
         },
         edges,
       };
+      if (started !== undefined && performance !== undefined) {
+        performance.addDuration("shortest-path-evidence", performance.elapsedSince(started));
+      }
+      return result;
     }
     edges.unshift(pred.edge);
     const from = pred.edge.from;
@@ -416,5 +463,8 @@ export function whyReachable(reach: Reachability, nodeId: string): WhyReachable 
 
   // Reached a node with a predecessor edge but no entrypoint terminal (should
   // not happen for a well-formed seed, but degrade gracefully rather than lie).
+  if (started !== undefined && performance !== undefined) {
+    performance.addDuration("shortest-path-evidence", performance.elapsedSince(started));
+  }
   return { reachable: true, edges };
 }

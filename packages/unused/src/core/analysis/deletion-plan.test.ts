@@ -75,7 +75,7 @@ function reference(
   from: string,
   to: string,
   line = 1,
-  referenceKind: "static" | "re-export" | "side-effect" = "static",
+  referenceKind: "static" | "runtime-resolved" | "re-export" | "side-effect" = "static",
   name?: string,
 ): void {
   graph.addEdge({
@@ -93,6 +93,42 @@ function subjectFile(id: string): string {
 }
 
 describe("computeDeletionPlan", () => {
+  it("refuses a subject selected by a reachable literal runtime convention", () => {
+    const graph = new IRGraph();
+    addEntry(graph, "lib/application.ex");
+    addSymbol(graph, "lib/application.ex", "Application.start/2");
+    addSymbol(graph, "lib/config.ex", "Config.callback/1");
+    addSymbol(graph, "lib/callback.ex", "Callback.handle/0");
+    reference(
+      graph,
+      symbolId("lib/application.ex", "Application.start/2"),
+      symbolId("lib/config.ex", "Config.callback/1"),
+    );
+    reference(
+      graph,
+      symbolId("lib/config.ex", "Config.callback/1"),
+      symbolId("lib/callback.ex", "Callback.handle/0"),
+      7,
+      "runtime-resolved",
+      "Callback.handle/0",
+    );
+
+    const plan = computeDeletionPlan({
+      graph,
+      reachability: computePartitionedReachability(graph),
+      subject: { kind: "export", file: "lib/callback.ex", name: "Callback.handle/0" },
+    });
+
+    expect(plan).toEqual({
+      schemaVersion: "1.2.0",
+      selected: { kind: "export", file: "lib/callback.ex", name: "Callback.handle/0" },
+      supported: false,
+      unsupportedReason: "selected subject has a live runtime reference at lib/config.ex:7",
+      reExportEdits: [],
+      stages: [],
+    });
+  });
+
   it("groups a newly-dead reference chain into deterministic causal stages", () => {
     const graph = new IRGraph();
     addEntry(graph, "src/index.ts");

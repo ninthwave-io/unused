@@ -12,6 +12,7 @@ import {
   renderReportConfirmation,
   renderReportHtml,
   renderReportMarkdown,
+  reportDeletionPlanClaimIds,
 } from "./report.js";
 
 function claim(overrides: Partial<Claim> & Pick<Claim, "subject" | "verdict">): Claim {
@@ -172,6 +173,7 @@ describe("renderReportMarkdown", () => {
     });
     const rows = text.split("\n").filter((l) => l.startsWith("| high |"));
     expect(rows).toHaveLength(10);
+    expect(reportDeletionPlanClaimIds(makeRun(many)).size).toBe(10);
   });
 
   it("omits the zombie-tests headline line on a run with none", () => {

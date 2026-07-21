@@ -39,6 +39,7 @@ export {
   renderReportConfirmation,
   renderReportHtml,
   renderReportMarkdown,
+  reportDeletionPlanClaimIds,
 } from "./report.js";
 export {
   buildSarifLog,

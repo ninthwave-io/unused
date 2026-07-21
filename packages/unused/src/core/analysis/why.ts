@@ -34,6 +34,7 @@
 
 import type { Claim, Confidence, DeletionPlanSubject, Evidence, Verdict } from "../claims/types.js";
 import { type EntrypointKind, fileId, type IRGraph, symbolId } from "../ir/index.js";
+import type { PerformanceTracker } from "./performance.js";
 import { type PartitionedReachability, type Reachability, whyReachable } from "./reachability.js";
 
 // ---------------------------------------------------------------------------
@@ -120,6 +121,7 @@ export interface WhyAliveInput {
   readonly claims: readonly Claim[];
   /** The user-named subject: a bare export name, `file:name`, or a file path. */
   readonly query: string;
+  readonly performance?: PerformanceTracker;
 }
 
 /** Partition scan order — mirrors the claim engine's liveness priority. */
@@ -174,7 +176,7 @@ export function whyAlive(input: WhyAliveInput): WhyAliveResult {
   const paths: WhyPath[] = [];
   for (const p of alivePartitions) {
     if (paths.length >= MAX_PATHS) break;
-    const path = buildPath(reachability[p], nodeId, graph, PARTITION_KIND[p]);
+    const path = buildPath(reachability[p], nodeId, graph, PARTITION_KIND[p], input.performance);
     if (path !== undefined) paths.push(path);
   }
 
@@ -378,13 +380,23 @@ function buildPath(
   nodeId: string,
   graph: IRGraph,
   _kind: EntrypointKind,
+  performance?: PerformanceTracker,
 ): WhyPath | undefined {
-  const wr = whyReachable(reach, nodeId);
+  const wr = whyReachable(reach, nodeId, performance);
   if (!wr.reachable || wr.entrypoint === undefined) return undefined;
   const ep = wr.entrypoint;
 
   const hops: WhyHop[] = [{ file: ep.file, entrypoint: { kind: ep.entryKind, reason: ep.reason } }];
   for (const edge of wr.edges) {
+    if (edge.referenceKind === "runtime-resolved") {
+      const previous = hops.at(-1);
+      if (previous?.file === edge.site.file) {
+        hops[hops.length - 1] = {
+          ...previous,
+          line: edge.site.span.startLine,
+        };
+      }
+    }
     const to = graph.getNode(edge.to);
     if (to === undefined) continue;
     if (to.kind === "file") hops.push({ file: to.path });

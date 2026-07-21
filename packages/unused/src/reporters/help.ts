@@ -54,6 +54,10 @@ const OPTIONS: ReadonlyArray<{ flag: string; lines: readonly string[] }> = [
     lines: ["Analyse files matched by .gitignore rules too."],
   },
   {
+    flag: "--performance",
+    lines: ["Default/why/report: write structured phase timings and counters to stderr."],
+  },
+  {
     flag: "--config <path>",
     lines: [
       "Load config from <path> instead of auto-discovering",
@@ -86,9 +90,9 @@ USAGE
   unused [options]
   unused check [--cwd <dir>] [--config <path>]
   unused baseline [--cwd <dir>] [--config <path>]
-  unused why [--delete] <symbol|file|dependency> [--cwd <dir>] [--config <path>]
+  unused why [--delete] [--performance] <symbol|file|dependency> [--cwd <dir>] [--config <path>]
   unused mcp [--cwd <dir>] [--config <path>]
-  unused report [--md|--html] [--cwd <dir>] [--config <path>]
+  unused report [--md|--html] [--performance] [--cwd <dir>] [--config <path>]
   unused badge [--cwd <dir>] [--config <path>]
 
 COMMANDS

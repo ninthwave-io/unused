@@ -4,6 +4,7 @@ build/
 packages/unused/schemas/
 coverage/
 .cache/
+.bench-tmp/
 *.tsbuildinfo
 *.log
 .DS_Store

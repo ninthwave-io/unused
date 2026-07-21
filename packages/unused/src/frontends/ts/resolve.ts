@@ -93,6 +93,7 @@ import { builtinModules } from "node:module";
 import { dirname, resolve as resolvePath, sep } from "node:path";
 import { createPathsMatcher, getTsconfig, type PathsMatcher } from "get-tsconfig";
 import { type NapiResolveOptions, ResolverFactory } from "oxc-resolver";
+import type { PerformanceTracker } from "../../core/analysis/performance.js";
 import type { HazardMarker, ModuleRecord, Span } from "./module-record.js";
 
 // ---------------------------------------------------------------------------
@@ -278,6 +279,8 @@ export interface ResolverOptions {
    * byte-identical to pre-T4.2.
    */
   readonly workspacePackages?: ReadonlyMap<string, string>;
+  /** Optional run-local module-resolution timer/counter. */
+  readonly performance?: PerformanceTracker;
 }
 
 const BUILTIN_SET: ReadonlySet<string> = new Set(builtinModules);
@@ -309,11 +312,13 @@ export class Resolver {
   private readonly discovered: ReadonlySet<string> | null;
   /** Workspace member `package name → absolute dir` (T4.2), or `null` outside a monorepo. */
   private readonly workspacePackages: ReadonlyMap<string, string> | null;
+  private readonly performance: PerformanceTracker | undefined;
 
   constructor(options: ResolverOptions) {
     this.projectRoot = resolvePath(options.projectRoot);
     this.discovered = options.discoveredFiles ?? null;
     this.workspacePackages = options.workspacePackages ?? null;
+    this.performance = options.performance;
 
     // Discover the tsconfig via get-tsconfig (walks up from `tsconfigDir`,
     // resolving `extends`). In a monorepo this is the owning member's directory,
@@ -359,7 +364,15 @@ export class Resolver {
     span: Span,
     origin: SpecifierOrigin,
   ): ResolvedSpecifier {
-    return { specifier, importer, origin, span, outcome: this.classify(specifier, importer) };
+    const started = this.performance?.now();
+    this.performance?.increment("resolutionAttempts");
+    try {
+      return { specifier, importer, origin, span, outcome: this.classify(specifier, importer) };
+    } finally {
+      if (started !== undefined && this.performance !== undefined) {
+        this.performance.addDuration("module-resolution", this.performance.elapsedSince(started));
+      }
+    }
   }
 
   private classify(specifier: string, importer: string): Resolution {

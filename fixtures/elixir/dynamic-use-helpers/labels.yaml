@@ -1,0 +1,34 @@
+case: dynamic-use-helpers
+description: >-
+  A conventional web module selects literal use helpers through
+  apply(__MODULE__, which, []). Each selected helper is a live compile-time
+  dependency and unrelated functions remain independently claimable.
+subjects:
+  - kind: export
+    name: NeutralUse.Web.router/0
+    file: lib/neutral_use/web.ex
+    expected: alive
+    because: This original live helper is selected by use NeutralUse.Web, :router.
+  - kind: export
+    name: NeutralUse.Web.controller/0
+    file: lib/neutral_use/web.ex
+    expected: alive
+    because: This original live helper is selected by use NeutralUse.Web, :controller.
+  - kind: export
+    name: NeutralUse.Web.channel/0
+    file: lib/neutral_use/web.ex
+    expected: alive
+    because: This original live helper is selected by use NeutralUse.Web, :channel.
+  - kind: export
+    name: NeutralUse.Web.html/0
+    file: lib/neutral_use/web.ex
+    expected: alive
+    because: This original live helper is selected by use NeutralUse.Web, :html.
+  - kind: export
+    name: NeutralUse.Web.genuinely_unused/0
+    file: lib/neutral_use/web.ex
+    expected: dead
+    minConfidence: medium
+    because: >-
+      No use site selects genuinely_unused, so the literal helper edges do not
+      hide this true positive; the local dynamic-dispatch hazard caps confidence.

@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { discover, filterGitignoredRelativePaths } from "./discover.js";
+import { discover, discoverProjectInventory, filterGitignoredRelativePaths } from "./discover.js";
 
 const created: string[] = [];
 
@@ -121,6 +121,41 @@ describe("discover", () => {
       relative(root, p).split(sep).join("/"),
     );
     expect(found).toEqual(["src/ignored.ts"]);
+  });
+
+  it("bounds config inventory by the same gitignore and build-output rules", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unused-config-inventory-"));
+    created.push(root);
+    await mkdir(join(root, "src"), { recursive: true });
+    await mkdir(join(root, "generated", "member"), { recursive: true });
+    await mkdir(join(root, "node_modules", "dependency"), { recursive: true });
+    await mkdir(join(root, "cdk.out"), { recursive: true });
+    await writeFile(join(root, ".gitignore"), "generated/\n");
+    await writeFile(join(root, "package.json"), "{}\n");
+    await writeFile(join(root, "src", "config.json"), "{}\n");
+    await writeFile(join(root, "generated", "member", "package.json"), "{}\n");
+    await writeFile(join(root, "node_modules", "dependency", "package.json"), "{}\n");
+    await writeFile(join(root, "cdk.out", "manifest.json"), "{}\n");
+
+    const inventory = await discoverProjectInventory(root);
+    expect(inventory.jsonFiles.map((path) => relative(root, path).split(sep).join("/"))).toEqual([
+      "package.json",
+      "src/config.json",
+    ]);
+    expect(
+      inventory.packageRootDirs.map((path) => relative(root, path).split(sep).join("/")),
+    ).toEqual([""]);
+
+    const audit = await discoverProjectInventory(root, { gitignore: false });
+    expect(audit.jsonFiles.map((path) => relative(root, path).split(sep).join("/"))).toEqual([
+      "generated/member/package.json",
+      "package.json",
+      "src/config.json",
+    ]);
+    expect(audit.packageRootDirs.map((path) => relative(root, path).split(sep).join("/"))).toEqual([
+      "",
+      "generated/member",
+    ]);
   });
 
   it("applies ancestor .gitignore rules when the analysis root is below the Git root", async () => {

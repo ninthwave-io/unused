@@ -89,6 +89,7 @@ import type {
 } from "../claims/types.js";
 import { fileId, type HazardAnnotation, type IRGraph } from "../ir/index.js";
 import { type ConfidenceCap, capIsStrongerOrEqual, lookupHazard } from "./hazard-registry.js";
+import type { PerformanceTracker } from "./performance.js";
 import {
   computeReachability,
   type PartitionedReachability,
@@ -195,6 +196,8 @@ export interface EmitClaimsInput {
    * analysis, where there is only ever one unit).
    */
   readonly units?: readonly { readonly rootRelDir: string }[];
+  /** Optional run-local phase/counter collector. */
+  readonly performance?: PerformanceTracker;
 }
 
 /**
@@ -221,6 +224,9 @@ type FileClass = "alive" | "test-only" | "unused";
  * before. The hazard-cap machinery is applied identically to every verdict.
  */
 export function emitClaims(input: EmitClaimsInput): Claim[] {
+  const claimStarted = input.performance?.now();
+  const hazardBefore = input.performance?.phaseTotal("hazard-activation") ?? 0;
+  const evidenceBefore = input.performance?.phaseTotal("shortest-path-evidence") ?? 0;
   const { graph, reachability } = input;
   const { production, config, test } = reachability;
 
@@ -238,8 +244,17 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
   // `fileCap[F]`   caps F's file claim AND F's export claims (directory-subtree,
   //                file scopes). `exportCap[F]` caps only F's export claims
   //                (symbol-set scope). An unregistered class ⇒ project no-claim.
-  const caps = buildHazardCaps(graph, reachability, input.units ?? DEFAULT_UNITS);
-  if (caps.projectNoClaim) return [];
+  const caps = buildHazardCaps(
+    graph,
+    reachability,
+    input.units ?? DEFAULT_UNITS,
+    input.performance,
+  );
+  if (caps.projectNoClaim) {
+    input.performance?.set("claims", 0);
+    finishClaimPerformance(input.performance, claimStarted, hazardBefore, evidenceBefore);
+    return [];
+  }
   const { fileCap, exportCap, unitCap, ownerRootRelDir } = caps;
 
   // Every root file (production, config, or test) — never itself flagged as a
@@ -285,7 +300,7 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
             confidence,
             noteForCap(applied),
             "test-only",
-            testEntrypointFor(test, node.id),
+            testEntrypointFor(test, node.id, input.performance),
           ),
         );
       } else {
@@ -322,7 +337,7 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
             confidence,
             noteForCap(applied),
             "test-only",
-            testEntrypointFor(test, node.id),
+            testEntrypointFor(test, node.id, input.performance),
           ),
         );
       } else {
@@ -366,7 +381,30 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
   }
 
   claims.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  input.performance?.set("claims", claims.length);
+  finishClaimPerformance(input.performance, claimStarted, hazardBefore, evidenceBefore);
   return claims;
+}
+
+function finishClaimPerformance(
+  performance: PerformanceTracker | undefined,
+  started: number | undefined,
+  hazardBefore: number,
+  evidenceBefore: number,
+): void {
+  if (started !== undefined && performance !== undefined) {
+    const total = performance.elapsedSince(started);
+    const nestedHazard = performance.phaseTotal("hazard-activation") - hazardBefore;
+    const nestedEvidence = performance.phaseTotal("shortest-path-evidence") - evidenceBefore;
+    performance.addDuration(
+      "claim-generation",
+      Math.max(0, total - nestedHazard - nestedEvidence),
+      true,
+    );
+    if (nestedEvidence > 0) {
+      performance.emitAccumulated("shortest-path-evidence", nestedEvidence);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -415,7 +453,9 @@ function buildHazardCaps(
   graph: IRGraph,
   reachability: PartitionedReachability,
   units: readonly { readonly rootRelDir: string }[],
+  performance?: PerformanceTracker,
 ): HazardCaps {
+  const started = performance?.now();
   const fileCap = new Map<string, AppliedCap>();
   const exportCap = new Map<string, AppliedCap>();
   let projectNoClaim = false;
@@ -487,6 +527,7 @@ function buildHazardCaps(
   const activeHazards = new Set<HazardAnnotation>();
   let activationChanged = true;
   while (activationChanged) {
+    performance?.increment("fixedPointIterations");
     activationChanged = false;
     for (const { hazard, entry } of registeredHazards) {
       if (activeHazards.has(hazard)) continue;
@@ -561,7 +602,11 @@ function buildHazardCaps(
     }
   }
 
-  return { projectNoClaim, fileCap, exportCap, unitCap, ownerRootRelDir };
+  const result = { projectNoClaim, fileCap, exportCap, unitCap, ownerRootRelDir };
+  if (started !== undefined && performance !== undefined) {
+    performance.finish("hazard-activation", started);
+  }
+  return result;
 }
 
 /** Files a carrier-activated hazard may load, used only for activation closure. */
@@ -637,8 +682,12 @@ function noteForCap(applied: AppliedCap | undefined): string | undefined {
  * analysis, PRD §8). `undefined` if the node is not test-reachable (should not
  * happen for a `test-only` subject, but degrade gracefully rather than lie).
  */
-function testEntrypointFor(test: Reachability, nodeId: string): string | undefined {
-  return whyReachable(test, nodeId).entrypoint?.file;
+function testEntrypointFor(
+  test: Reachability,
+  nodeId: string,
+  performance?: PerformanceTracker,
+): string | undefined {
+  return whyReachable(test, nodeId, performance).entrypoint?.file;
 }
 
 /**
@@ -698,10 +747,26 @@ function emitZombieTestClaims(
     if (entry.entryKind !== "test") continue;
     const testFileId = fileId(entry.file);
     if (graph.outEdges(testFileId).length === 0) continue; // imports nothing ⇒ not a zombie
+    if (filesWithUnresolvableImport.has(testFileId) || referencesSelfPackage(testFileId)) continue;
 
-    // Walk from this one test root; a zombie reaches ≥1 subject beyond itself,
-    // none of them alive.
-    const reach = computeReachability(graph, { seedFilter: (e) => e.id === entry.id });
+    // Walk only until this test proves non-zombie or uncertain. The previous
+    // implementation completed a whole-graph walk for every test root, making
+    // claim generation O(test roots × graph) even though a normal test usually
+    // reaches production-alive code in its first few hops.
+    const reach = computeReachability(graph, {
+      seedFilter: (e) => e.id === entry.id,
+      ...(input.performance === undefined ? {} : { performance: input.performance }),
+      stopWhen: (nodeId) => {
+        if (nodeId === testFileId) return false;
+        if (aliveNodes.has(nodeId)) return true;
+        const node = graph.getNode(nodeId);
+        return (
+          node?.kind === "file" &&
+          (filesWithUnresolvableImport.has(nodeId) || referencesSelfPackage(nodeId))
+        );
+      },
+    });
+    if (reach.stoppedAt !== undefined) continue;
     if (reachIsUncertain(testFileId, reach.reachableFiles)) continue; // can't see the real reach
     let reachedOther = false;
     let reachesAlive = false;

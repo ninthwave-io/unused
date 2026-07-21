@@ -1,0 +1,22 @@
+case: runtime-mfa-callback
+description: >-
+  A reachable framework-style configuration passes a callback as an MFA tuple.
+  The literal module and function identify the callback even when the argument
+  list contains initialization data and the runtime adds request arguments.
+subjects:
+  - kind: export
+    name: NeutralMfa.Callback.callback_name/1
+    file: lib/neutral_mfa/callback.ex
+    expected: alive
+    because: >-
+      This is the original live runtime callback named by the reachable
+      {module, function, init} configuration value; the runtime supplies its
+      request argument separately.
+  - kind: export
+    name: NeutralMfa.Callback.genuinely_unused/0
+    file: lib/neutral_mfa/callback.ex
+    expected: dead
+    minConfidence: medium
+    because: >-
+      The runtime tuple names callback_name only; an unrelated function in the
+      same module remains claimable under the scoped dynamic-dispatch cap.

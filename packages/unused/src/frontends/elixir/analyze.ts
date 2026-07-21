@@ -43,6 +43,7 @@ import { filterGitignoredRelativePaths } from "../ts/discover.js";
 import { detectElixirProject } from "./detect.js";
 import { emitElixirIR } from "./emit.js";
 import { ElixirFrontendError, runTracer } from "./runner.js";
+import { extractElixirRuntimeReferences } from "./runtime-references.js";
 
 /** Analyzer name stamped into provenance (distinct from the TS `ts-reference-graph`). */
 const ANALYZER_NAME = "elixir-reference-graph";
@@ -94,7 +95,8 @@ export async function analyzeElixirProjectWithGraph(
   const projectModules = new Set(traceResult.modules.map((m) => m.mod));
   const configReferencedModules = scanConfigModuleReferences(project.projectDir, projectModules);
 
-  const graph = emitElixirIR({ traceResult, configReferencedModules });
+  const runtimeReferences = extractElixirRuntimeReferences(project.projectDir, traceResult);
+  const graph = emitElixirIR({ traceResult, configReferencedModules, runtimeReferences });
 
   // Per-file line counts for `file`-claim spans (core does no file I/O).
   const fileLineCounts = new Map<string, number>();

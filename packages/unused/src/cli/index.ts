@@ -69,6 +69,8 @@ import { join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   computeDeletionPlan,
+  type PerformancePhaseEvent,
+  PerformanceTracker,
   surfaceNameHasUniqueOrigin,
   whyAlive,
 } from "../core/analysis/index.js";
@@ -119,6 +121,7 @@ import {
   renderSarif,
   renderTtyReport,
   renderWhy,
+  reportDeletionPlanClaimIds,
   type TtyLayout,
 } from "../reporters/index.js";
 import { applyFixes, type BlockedFix, type FixType, type RequiredReExportFix } from "./fix.js";
@@ -173,6 +176,7 @@ interface ParsedArgs {
   readonly allowRemoveFiles: boolean;
   readonly noGitignore: boolean;
   readonly noColor: boolean;
+  readonly performance: boolean;
 }
 
 type ParseResult =
@@ -190,6 +194,7 @@ const HELP_ARGS: ParsedArgs = {
   allowRemoveFiles: false,
   noGitignore: false,
   noColor: false,
+  performance: false,
 };
 
 /** Parses argv into flags. Any unrecognised token is a usage error — flags are never silently ignored. */
@@ -212,6 +217,7 @@ function parseArgs(argv: readonly string[]): ParseResult {
   let allowRemoveFiles = false;
   let noGitignore = false;
   let noColor = false;
+  let performance = false;
   let minConfidence: Confidence | undefined;
   const filterKinds: SubjectKind[] = [];
   const fixTypes: FixType[] = [];
@@ -262,6 +268,8 @@ function parseArgs(argv: readonly string[]): ParseResult {
       noGitignore = true;
     } else if (arg === "--no-color") {
       noColor = true;
+    } else if (arg === "--performance") {
+      performance = true;
     } else if (arg === "--cwd") {
       const value = argv[i + 1];
       if (value === undefined) return { ok: false, message: "--cwd requires a directory argument" };
@@ -330,6 +338,7 @@ function parseArgs(argv: readonly string[]): ParseResult {
       allowRemoveFiles,
       noGitignore,
       noColor,
+      performance,
       filterKinds,
       ...(cwd === undefined ? {} : { cwd }),
       ...(config === undefined ? {} : { config }),
@@ -358,6 +367,39 @@ function shouldUseAscii(): boolean {
   return !isTTY || noColorEnv;
 }
 
+function roundPerformanceEvent(event: PerformancePhaseEvent): PerformancePhaseEvent {
+  return { ...event, durationMs: Number(event.durationMs.toFixed(3)) };
+}
+
+/** Opt-in diagnostics always use stderr, preserving canonical JSON stdout. */
+function createPerformanceTracker(enabled: boolean): PerformanceTracker | undefined {
+  if (!enabled) return undefined;
+  return new PerformanceTracker((event) => {
+    process.stderr.write(`unused performance ${JSON.stringify(roundPerformanceEvent(event))}\n`);
+  });
+}
+
+function finishPerformance(performance: PerformanceTracker | undefined): void {
+  if (performance === undefined) return;
+  const snapshot = performance.snapshot();
+  const phasesMs = Object.fromEntries(
+    Object.entries(snapshot.phasesMs).map(([phase, duration]) => [
+      phase,
+      Number(duration.toFixed(3)),
+    ]),
+  );
+  const usage = process.resourceUsage();
+  process.stderr.write(
+    `unused performance ${JSON.stringify({
+      event: "summary",
+      phasesMs,
+      counters: snapshot.counters,
+      cpu: { userMicros: usage.userCPUTime, systemMicros: usage.systemCPUTime },
+      maxRssKiB: usage.maxRSS,
+    })}\n`,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Shared: resolve --cwd, stat it, run analyzeProject, map every failure mode
 // to the PRD §3 exit contract. Used by the default report and both
@@ -372,6 +414,7 @@ async function runAnalysis(
   cwdArg: string | undefined,
   configArg: string | undefined,
   noGitignore = false,
+  performance?: PerformanceTracker,
 ): Promise<AnalysisOutcome> {
   const root = resolvePath(process.cwd(), cwdArg ?? ".");
 
@@ -390,6 +433,7 @@ async function runAnalysis(
     const result = await analyzeProjectAuto(root, {
       ...(configArg === undefined ? {} : { configPath: configArg }),
       ...(noGitignore ? { gitignore: false } : {}),
+      ...(performance === undefined ? {} : { performance }),
     });
     return { ok: true, root, result };
   } catch (err) {
@@ -653,6 +697,7 @@ async function runAnalysisWithGraph(
   cwdArg: string | undefined,
   configArg: string | undefined,
   noGitignore = false,
+  performance?: PerformanceTracker,
 ): Promise<GraphAnalysisOutcome> {
   const root = resolvePath(process.cwd(), cwdArg ?? ".");
   try {
@@ -669,6 +714,7 @@ async function runAnalysisWithGraph(
     const analysis = await analyzeProjectAutoWithGraph(root, {
       ...(configArg === undefined ? {} : { configPath: configArg }),
       ...(noGitignore ? { gitignore: false } : {}),
+      ...(performance === undefined ? {} : { performance }),
     });
     return { ok: true, root, analysis };
   } catch (err) {
@@ -697,6 +743,7 @@ interface WhyArgs {
   readonly delete: boolean;
   readonly json: boolean;
   readonly noGitignore: boolean;
+  readonly performance: boolean;
 }
 
 type WhyParseResult =
@@ -706,7 +753,16 @@ type WhyParseResult =
 /** Parse `unused why` argv: one positional `<symbol|file>` plus `--cwd`/`--config`/`--help`. */
 function parseWhyArgs(argv: readonly string[]): WhyParseResult {
   if (argv.includes("--help") || argv.includes("-h")) {
-    return { ok: true, args: { help: true, delete: false, json: false, noGitignore: false } };
+    return {
+      ok: true,
+      args: {
+        help: true,
+        delete: false,
+        json: false,
+        noGitignore: false,
+        performance: false,
+      },
+    };
   }
 
   let subject: string | undefined;
@@ -715,6 +771,7 @@ function parseWhyArgs(argv: readonly string[]): WhyParseResult {
   let deletePlan = false;
   let json = false;
   let noGitignore = false;
+  let performance = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i] as string;
     if (arg === "--cwd") {
@@ -729,6 +786,8 @@ function parseWhyArgs(argv: readonly string[]): WhyParseResult {
       i += 1;
     } else if (arg === "--no-gitignore") {
       noGitignore = true;
+    } else if (arg === "--performance") {
+      performance = true;
     } else if (arg === "--delete") {
       deletePlan = true;
     } else if (arg === "--json") {
@@ -752,6 +811,7 @@ function parseWhyArgs(argv: readonly string[]): WhyParseResult {
       delete: deletePlan,
       json,
       noGitignore,
+      performance,
       ...(subject === undefined ? {} : { subject }),
       ...(cwd === undefined ? {} : { cwd }),
       ...(config === undefined ? {} : { config }),
@@ -788,20 +848,30 @@ async function runWhyCommand(argv: readonly string[]): Promise<number> {
     return EXIT_USAGE_ERROR;
   }
 
+  const performance = createPerformanceTracker(parsed.args.performance);
   const outcome = await runAnalysisWithGraph(
     parsed.args.cwd,
     parsed.args.config,
     parsed.args.noGitignore,
+    performance,
   );
   if (!outcome.ok) return outcome.exitCode;
   const { analysis } = outcome;
 
+  const evidenceBefore = performance?.phaseTotal("shortest-path-evidence") ?? 0;
   const result = whyAlive({
     graph: analysis.graph,
     reachability: analysis.reachability,
     claims: analysis.result.claims,
     query: parsed.args.subject,
+    ...(performance === undefined ? {} : { performance }),
   });
+  if (performance !== undefined) {
+    const evidenceDuration = performance.phaseTotal("shortest-path-evidence") - evidenceBefore;
+    if (evidenceDuration > 0) {
+      performance.emitAccumulated("shortest-path-evidence", evidenceDuration);
+    }
+  }
 
   const ascii = shouldUseAscii();
   if (result.outcome === "not-found") {
@@ -825,13 +895,22 @@ async function runWhyCommand(argv: readonly string[]): Promise<number> {
       graph: analysis.graph,
       reachability: analysis.reachability,
       subject: result.subject,
+      ...(performance === undefined ? {} : { performance }),
     });
+    const assemblyStarted = performance?.now();
     process.stdout.write(
       parsed.args.json ? `${JSON.stringify(plan)}\n` : renderDeletionPlan(plan, ascii),
     );
+    if (assemblyStarted !== undefined) {
+      performance?.finish("report-json-assembly", assemblyStarted);
+    }
+    finishPerformance(performance);
     return EXIT_OK;
   }
+  const assemblyStarted = performance?.now();
   process.stdout.write(renderWhy(result, ascii));
+  if (assemblyStarted !== undefined) performance?.finish("report-json-assembly", assemblyStarted);
+  finishPerformance(performance);
   return EXIT_OK;
 }
 
@@ -866,6 +945,7 @@ interface ReportArgs {
   readonly cwd?: string;
   readonly config?: string;
   readonly noGitignore: boolean;
+  readonly performance: boolean;
 }
 
 type ReportParseResult =
@@ -875,13 +955,14 @@ type ReportParseResult =
 /** Parse `unused report` argv: `--md`/`--html` (mutually exclusive, default `md`) plus `--cwd`/`--config`/`--help`. */
 function parseReportArgs(argv: readonly string[]): ReportParseResult {
   if (argv.includes("--help") || argv.includes("-h")) {
-    return { ok: true, args: { help: true, noGitignore: false } };
+    return { ok: true, args: { help: true, noGitignore: false, performance: false } };
   }
 
   let format: ReportFormat | undefined;
   let cwd: string | undefined;
   let config: string | undefined;
   let noGitignore = false;
+  let performance = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i] as string;
     if (arg === "--md" || arg === "--html") {
@@ -902,6 +983,8 @@ function parseReportArgs(argv: readonly string[]): ReportParseResult {
       i += 1;
     } else if (arg === "--no-gitignore") {
       noGitignore = true;
+    } else if (arg === "--performance") {
+      performance = true;
     } else {
       return { ok: false, message: `unknown argument: ${arg}` };
     }
@@ -912,6 +995,7 @@ function parseReportArgs(argv: readonly string[]): ReportParseResult {
     args: {
       help: false,
       noGitignore,
+      performance,
       ...(format === undefined ? {} : { format }),
       ...(cwd === undefined ? {} : { cwd }),
       ...(config === undefined ? {} : { config }),
@@ -939,10 +1023,12 @@ async function runReportCommand(argv: readonly string[]): Promise<number> {
     return EXIT_OK;
   }
 
+  const performance = createPerformanceTracker(parsed.args.performance);
   const outcome = await runAnalysisWithGraph(
     parsed.args.cwd,
     parsed.args.config,
     parsed.args.noGitignore,
+    performance,
   );
   if (!outcome.ok) return outcome.exitCode;
   const { root, analysis } = outcome;
@@ -964,7 +1050,9 @@ async function runReportCommand(argv: readonly string[]): Promise<number> {
   } = result;
 
   const deletionPlans: Record<string, DeletionPlan> = {};
+  const plannedClaimIds = reportDeletionPlanClaimIds(claimRun);
   for (const claim of result.claims) {
+    if (!plannedClaimIds.has(claim.id)) continue;
     if (
       claim.verdict !== "unused" ||
       claim.suppression !== undefined ||
@@ -997,9 +1085,11 @@ async function runReportCommand(argv: readonly string[]): Promise<number> {
                 name: claim.subject.name,
               }
             : { kind: "file", file: claim.subject.loc.file },
+      ...(performance === undefined ? {} : { performance }),
     });
   }
 
+  const assemblyStarted = performance?.now();
   const content =
     format === "html"
       ? renderReportHtml({
@@ -1016,6 +1106,7 @@ async function runReportCommand(argv: readonly string[]): Promise<number> {
           workspaceCount,
           deletionPlans,
         });
+  if (assemblyStarted !== undefined) performance?.finish("report-json-assembly", assemblyStarted);
   const unusedDir = resolvePath(root, ".unused");
   const outPath = join(unusedDir, `report.${format}`);
 
@@ -1029,6 +1120,7 @@ async function runReportCommand(argv: readonly string[]): Promise<number> {
   }
 
   process.stdout.write(renderReportConfirmation(claimRun, outPath, shouldUseAscii()));
+  finishPerformance(performance);
   return EXIT_OK;
 }
 
@@ -1310,7 +1402,13 @@ export async function run(argv: readonly string[]): Promise<number> {
     return EXIT_USAGE_ERROR;
   }
 
-  const outcome = await runAnalysis(parsed.args.cwd, parsed.args.config, parsed.args.noGitignore);
+  const performance = createPerformanceTracker(parsed.args.performance);
+  const outcome = await runAnalysis(
+    parsed.args.cwd,
+    parsed.args.config,
+    parsed.args.noGitignore,
+    performance,
+  );
   if (!outcome.ok) return outcome.exitCode;
   let { result } = outcome;
 
@@ -1323,6 +1421,7 @@ export async function run(argv: readonly string[]): Promise<number> {
         parsed.args.cwd,
         parsed.args.config,
         parsed.args.noGitignore,
+        performance,
       );
       if (!graphOutcome.ok) return graphOutcome.exitCode;
       result = graphOutcome.analysis.result;
@@ -1363,6 +1462,7 @@ export async function run(argv: readonly string[]): Promise<number> {
                   line: claim.subject.loc.span[0],
                 }
               : { kind: "file", file: claim.subject.loc.file },
+          ...(performance === undefined ? {} : { performance }),
         });
         if (!plan.supported) {
           blockedClaims.push({
@@ -1399,7 +1499,12 @@ export async function run(argv: readonly string[]): Promise<number> {
         process.stdout.write(`skipped ${item.type}: ${item.file} — ${item.reason}\n`);
       }
 
-      const after = await runAnalysis(parsed.args.cwd, parsed.args.config, parsed.args.noGitignore);
+      const after = await runAnalysis(
+        parsed.args.cwd,
+        parsed.args.config,
+        parsed.args.noGitignore,
+        performance,
+      );
       if (!after.ok) {
         process.stderr.write(
           "unused: fixes were written, but post-fix analysis failed; review the working-tree diff\n",
@@ -1414,6 +1519,7 @@ export async function run(argv: readonly string[]): Promise<number> {
       process.stdout.write(
         `unused --fix: ${fixed.applied.length} applied, ${fixed.skipped.length} skipped, ${remainingEligible.length} eligible claim${remainingEligible.length === 1 ? "" : "s"} remain, ${newlyExposed} newly exposed.\n`,
       );
+      finishPerformance(performance);
       return EXIT_OK;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1463,9 +1569,14 @@ export async function run(argv: readonly string[]): Promise<number> {
   }
 
   if (parsed.args.json) {
+    const assemblyStarted = performance?.now();
     process.stdout.write(`${JSON.stringify(filteredRun)}\n`);
+    if (assemblyStarted !== undefined) {
+      performance?.finish("report-json-assembly", assemblyStarted);
+    }
   } else {
     const { layout, columns } = resolveTtyInputs(parsed.args.noColor);
+    const assemblyStarted = performance?.now();
     process.stdout.write(
       renderTtyReport(
         { run: filteredRun, repoName, fileCount, workspaceCount },
@@ -1480,8 +1591,12 @@ export async function run(argv: readonly string[]): Promise<number> {
         },
       ),
     );
+    if (assemblyStarted !== undefined) {
+      performance?.finish("report-json-assembly", assemblyStarted);
+    }
   }
 
+  finishPerformance(performance);
   return EXIT_OK;
 }
 

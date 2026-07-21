@@ -1,6 +1,6 @@
 # Progress — unused
 
-Updated: 2026-07-19 (late evening). **v1 BUILD COMPLETE + pre-release precision round accepted for the next consuming-project review.** Gates M5–M9 and the pre-release corrections were self-approved under the founder's 2026-07-19 delegation ("review on my behalf, do not stop for approval, complete the implementation"). No semver release tag has been created.
+Updated: 2026-07-21. **Pre-v0.1.0 scaling and runtime-reachability blockers corrected; final founder release decision remains.** No semver release tag has been created.
 
 ## What shipped (v1, private-beta ready)
 `@ninthwave-io/unused` — a liveness oracle for TS/JS. Tiers 1–2 fully implemented:
@@ -75,3 +75,54 @@ Founder review of the reference-codebase deletion list (the real-use-case valida
 - Release assessment: technical **GO for the next consuming-project interactive review**, with no semver tag yet. Final v0.1.0 tag/publish remains founder-only after that review. The principal accepted limitation is TS corpus recall 0.8265 from precision-first native-config handling; precision remains the blocking invariant at 1.0.
 - Future Python work should use Vulture as a named comparator for AST traversal, confidence, and suppression ergonomics; Python remains outside this release round.
 - GitHub CI portability follow-up: Elixir integration cases use the same `mix` availability gate as the Elixir corpus, while compiler-free configuration validation remains unconditional. The Node-only run passes 991 tests / skips 9 toolchain-dependent tests; an Elixir-equipped run passes all 1000. This lets the standard runner exercise the full portable suite without weakening Elixir coverage on toolchain-equipped runners.
+
+## Pre-v0.1.0 scalability and Elixir runtime-reference round (2026-07-21)
+
+- A neutral generated scaling corpus now covers exactly 250, 500, 1,000,
+  2,000, and 3,000 TS source files with multiple workspaces, dense export
+  surfaces, import fan-out, tests, dynamic imports, config roots, and dead code.
+  Opt-in `--performance` diagnostics report every analysis phase and required
+  work counter to stderr without contaminating JSON stdout.
+- The exact scaling causes were repeated graph work and an unbounded secondary
+  filesystem traversal: quadratic materialization of intra-file export
+  transitive closure, a whole-graph reachability walk per test root, and config
+  extraction reopening ignored dependency/build trees instead of consuming
+  discovery's bounded inventory. Emission now stops at the first exported
+  boundary, test walks stop once non-zombie/uncertain status is established,
+  reachability uses an indexed queue, and source/JSON/package-root discovery is
+  one gitignore-aware pass. At 3,000 files wall time fell from 6.65s to 1.78s
+  and peak RSS from 723MB to 403MB; claims stayed exactly 21,172. A separate
+  neutral ignored-tree stress case cuts config extraction from 823ms to 16ms
+  with all analyzed counters unchanged. The corrected curve is near-linear.
+  Full evidence is in
+  `docs/bench/2026-07-21-scaling-investigation.md`.
+- Ordinary terminal/JSON/filtered output performs zero deletion simulations.
+  Shareable reports previously planned every eligible claim despite rendering
+  ten; report planning is now bounded to those ten. `why --delete` plans one.
+- Neutral Elixir corpus cases cover reachable MFA callback tuples and literal
+  helpers selected through the conventional `apply(__MODULE__, which, [])`
+  `use` dispatcher. Literal MFA module+name pairs conservatively connect every
+  compiler-known same-name arity because framework runtimes may add request
+  arguments to the tuple's initialization data; helper selection remains exact
+  to the literal helper/0. Both become provenance-bearing runtime edges.
+  `why` shows the real path/site and deletion planning refuses a subject with a
+  reachable runtime edge. Unrelated functions remain claimable; no blanket
+  suppression was added.
+- Post-correction profiling is parser-dominant in the already native Oxc parser;
+  a broad Rust rewrite is unwarranted before v0.1.0. The benchmark note records
+  complexity, boundary/serialization, and maintenance reasoning.
+- Final public gates: typecheck, lint (the same two existing warnings and 48
+  informational diagnostics), boundaries (880 modules / 1,792 dependencies),
+  64 test files / 1,007 tests, generated-assumption sync, build, packaging
+  smoke, diff check, README parity, and privacy scan pass. TS corpus remains 52
+  cases / 237 subjects at precision 1.0 and recall 0.826530612244898. Elixir
+  corpus is now 10 cases / 26 subjects at precision 1.0 and recall 1.0.
+- A fresh, separately performed consuming-project rerun completed within the
+  interactive budget, with canonical and filtered machine output schema-valid,
+  ordinary modes performing zero deletion simulations, both runtime mechanisms
+  free of the reviewed false claims, and both deletion queries refusing the
+  live subjects. Raw evidence stayed outside this repository.
+- Release posture is **technical GO for the founder's v0.1.0 decision**. This
+  public repository contains no external project identifiers, paths, source,
+  symbols, configuration, artifacts, output, or quoted review prose. No tag,
+  publish, push, or external mutation was performed.

@@ -133,6 +133,11 @@ function topDeletions(run: ClaimRun, limit = 10): Claim[] {
     .slice(0, limit);
 }
 
+/** Claim ids whose deletion consequences the bounded top-10 report can render. */
+export function reportDeletionPlanClaimIds(run: ClaimRun, limit = 10): ReadonlySet<string> {
+  return new Set(topDeletions(run, limit).map((claim) => claim.id));
+}
+
 function formatDate(iso: string): string {
   return iso.slice(0, 10);
 }
