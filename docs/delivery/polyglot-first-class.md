@@ -98,7 +98,7 @@ single-language behavior while replacing root-manifest dispatch incrementally.
 
 ### P2 — Unified TS + Elixir orchestration
 
-Status: in progress
+Status: complete
 
 Deliverables:
 
@@ -136,15 +136,30 @@ Progress:
   contract, declare auditable capabilities, select nested boundaries from one
   shared manifest inventory, suppress duplicate per-boundary diagnostics, and
   return repository-relative fragments with frontend-neutral metadata.
-- Focused verification: typecheck; 53 core claim tests, 48 TS/Elixir/rebase
-  tests (2 skipped), and 8 plugin tests; dependency boundaries (890 modules /
-  1,830 deps); lint with the existing 2 warnings and 48 informational
-  diagnostics.
+- Root dispatch now discovers nested boundaries through the registry, merges
+  collision-checked graph fragments, applies convention/bridge contribution
+  phases, computes partitioned reachability once, and emits fragment-scoped
+  claims from that repository-wide result. Claim concatenation is gone.
+- Root config entry, project, dependency-ignore, suppression, warning, summary,
+  and gate behavior applies to the complete file union. Stable claim
+  coordinates retain local frontend suppression/package annotations.
+- Internal boundary metadata records plugin, language, status, file count, and
+  workspace count without entering canonical JSON. Single-root and no-manifest
+  paths retain their historical frontend output.
+- Acceptance evidence: a neutral nested TS+Mix repository is analyzed in one
+  graph; core tests prove a planted cross-fragment edge changes claim liveness;
+  the 166-test CLI/TS/Elixir regression selection passes (6 toolchain/fixture
+  skips under the default environment); all 3 dispatch tests pass when run with
+  the installed Elixir/Erlang versions selected explicitly.
+- Focused verification: typecheck; 58 scoped/plugin/dispatch tests; dependency
+  boundaries (890 modules / 1,834 deps); lint with the existing 2 warnings and
+  48 informational diagnostics.
 
-Next action: replace root-manifest dispatch with the built-in registry and
-nested-boundary orchestration using one merged graph and one partitioned-
-reachability computation. Preserve the no-manifest TypeScript fallback and
-single-root output compatibility.
+Next action: begin P3 with an evidence-backed Rust frontend design: inventory
+the installed Cargo/rustc capabilities and current IR needs, choose the narrowest
+compiler-supported extraction boundary, document refusal/feature/build-script
+hazards, then add Cargo boundary discovery and neutral fixtures before item
+reachability claims.
 
 ### P3 — Rust frontend foundation
 

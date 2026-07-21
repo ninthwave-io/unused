@@ -1,47 +1,51 @@
-/**
- * Language dispatch for the CLI (ADR 0003/0011): pick the frontend(s) for a
- * project from its manifests and merge their claims into one {@link
- * AnalyzeResult}.
- *
- *  - `package.json` present, no `mix.exs`  ⇒ the TypeScript frontend.
- *  - `mix.exs` present, no `package.json`  ⇒ the Elixir frontend.
- *  - both present                          ⇒ run both, concatenate claims,
- *    recompute the summary over the union. The TS result is the base for the
- *    out-of-band header/baseline fields (`units`, `gateThreshold`, `repoName`);
- *    Elixir claims fall under the root unit for baseline purposes (mixed-language
- *    per-unit baselines are post-v1).
- *  - neither                               ⇒ the TS frontend (which reports "no
- *    entrypoints"), preserving today's behaviour.
- *
- * Living in `frontends/` keeps it on the correct side of the boundary rules
- * (a frontend may compose frontends; only cli/reporters/mcp are off-limits).
- */
+/** Repository-level polyglot orchestration (ADR 0013). */
 
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { basename, resolve } from "node:path";
 import {
   computePartitionedReachability,
+  emitClaims,
   type PartitionedReachability,
 } from "../core/analysis/index.js";
-import { computeSummary } from "../core/claims/index.js";
-import { IRGraph } from "../core/ir/index.js";
+import { type Claim, computeSummary, SCHEMA_VERSION } from "../core/claims/index.js";
+import { entrypointId, IRGraph, type IRNode } from "../core/ir/index.js";
 import { analyzeElixirProjectWithGraph } from "./elixir/index.js";
+import { BUILT_IN_LANGUAGE_PLUGINS, claimAnnotationKey } from "./plugins/builtins.js";
+import { PluginRegistry } from "./plugins/registry.js";
+import {
+  executePluginOperation,
+  type FrontendGraphFragment,
+  type GraphContribution,
+  type RepositoryAnalysisContext,
+} from "./plugins/types.js";
 import { type AnalyzeOptions, type AnalyzeResult, analyzeProjectWithGraph } from "./ts/analyze.js";
-import { applyConfigSuppressions, loadConfig, warnOnEmptyConfigMatches } from "./ts/config.js";
-import { filterGitignoredRelativePaths } from "./ts/discover.js";
+import {
+  applyConfigSuppressions,
+  collectConfigEntrypoints,
+  computeConfigHash,
+  isClaimable,
+  isIgnoredDependency,
+  loadConfig,
+  warnOnEmptyConfigMatches,
+} from "./ts/config.js";
+import { discoverProjectInventory } from "./ts/discover.js";
 
 export interface AnalyzeAutoWithGraph {
   readonly result: AnalyzeResult;
   readonly graph: IRGraph;
   readonly reachability: PartitionedReachability;
+  /** Internal completeness/counter metadata; never included in canonical JSON. */
+  readonly boundaries: readonly BoundaryRunMetadata[];
 }
 
-/**
- * Analyze `rootDir`, auto-selecting the language frontend(s). Elixir refusals
- * (`ElixirFrontendError`) propagate to the CLI, which maps them to exit 2 with a
- * clear message. A TS-and-Elixir repo where Elixir refuses is a hard error (we
- * do not silently drop half the analysis).
- */
+export interface BoundaryRunMetadata {
+  readonly status: "complete";
+  readonly pluginId: string;
+  readonly boundaryId: string;
+  readonly language: string;
+  readonly fileCount: number;
+  readonly workspaceCount: number;
+}
+
 export async function analyzeProjectAuto(
   rootDir: string,
   options: AnalyzeOptions = {},
@@ -49,68 +53,275 @@ export async function analyzeProjectAuto(
   return (await analyzeProjectAutoWithGraph(rootDir, options)).result;
 }
 
-/** Analyze the auto-detected language set and retain the merged graph for why/planning. */
+/**
+ * Analyze every supported boundary visible from `rootDir`. Single-root runs use
+ * their existing composition entry to preserve pre-plugin output exactly;
+ * nested or mixed runs merge graph fragments before one reachability pass.
+ */
 export async function analyzeProjectAutoWithGraph(
   rootDir: string,
   options: AnalyzeOptions = {},
 ): Promise<AnalyzeAutoWithGraph> {
-  const hasPackageJson = existsSync(join(rootDir, "package.json"));
-  const hasMixExs = existsSync(join(rootDir, "mix.exs"));
+  const started = Date.now();
+  const root = resolve(rootDir);
+  const inventory = await discoverProjectInventory(root, {
+    ...(options.gitignore === undefined ? {} : { gitignore: options.gitignore }),
+  });
+  const context: RepositoryAnalysisContext = {
+    rootDir: root,
+    gitignore: options.gitignore !== false,
+    manifests: {
+      packageJsonDirs: inventory.packageRootDirs,
+      mixExsDirs: inventory.mixProjectDirs,
+      cargoTomlDirs: inventory.cargoProjectDirs,
+    },
+    now: options.now ?? new Date(),
+    toolVersion: options.toolVersion ?? "0.1.0",
+    ...(options.configPath === undefined ? {} : { configPath: resolve(root, options.configPath) }),
+    ...(options.performance === undefined ? {} : { performance: options.performance }),
+  };
+  const registry = new PluginRegistry(BUILT_IN_LANGUAGE_PLUGINS);
+  const discovered = (
+    await Promise.all(
+      registry.languagePlugins().map(async (plugin) => ({
+        plugin,
+        boundaries: await executePluginOperation(plugin.id, undefined, () =>
+          plugin.discover(context),
+        ),
+      })),
+    )
+  ).flatMap(({ plugin, boundaries }) => boundaries.map((boundary) => ({ plugin, boundary })));
+  discovered.sort((a, b) =>
+    a.boundary.id < b.boundary.id ? -1 : a.boundary.id > b.boundary.id ? 1 : 0,
+  );
 
-  if (hasMixExs && !hasPackageJson) {
-    return analyzeElixirProjectWithGraph(rootDir, options);
+  // The historical no-manifest fallback and root-only paths stay byte-compatible.
+  if (discovered.length === 0) {
+    const analysis = await analyzeProjectWithGraph(root, options);
+    return {
+      ...analysis,
+      boundaries: [
+        {
+          status: "complete",
+          pluginId: "language:typescript",
+          boundaryId: "ts:fallback",
+          language: "ts",
+          fileCount: analysis.result.fileCount,
+          workspaceCount: analysis.result.workspaceCount,
+        },
+      ],
+    };
   }
-  if (!hasMixExs) {
-    return analyzeProjectWithGraph(rootDir, options);
+  if (discovered.length === 1 && discovered[0]?.boundary.rootRelDir === "") {
+    const selected = discovered[0];
+    const analysis = await (selected.plugin.language === "ex"
+      ? analyzeElixirProjectWithGraph(root, options)
+      : analyzeProjectWithGraph(root, options));
+    return {
+      ...analysis,
+      boundaries: [
+        {
+          status: "complete",
+          pluginId: selected.plugin.id,
+          boundaryId: selected.boundary.id,
+          language: selected.plugin.language,
+          fileCount: analysis.result.fileCount,
+          workspaceCount: analysis.result.workspaceCount,
+        },
+      ],
+    };
   }
 
-  // Both manifests present: run both, merge.
-  const internal = { emitConfigMatchWarnings: false } as const;
-  const [ts, elixir] = await Promise.all([
-    analyzeProjectWithGraph(rootDir, options, internal),
-    analyzeElixirProjectWithGraph(rootDir, options, internal),
-  ]);
-  const config = await loadConfig(rootDir, options.configPath);
-  const graph = mergeGraphs(ts.graph, elixir.graph);
-  const graphFiles = [...graph.nodes()]
-    .filter((node) => node.kind === "file")
-    .map((node) => node.path)
-    .sort();
-  const analyzedFiles =
-    options.gitignore === false
-      ? graphFiles
-      : await filterGitignoredRelativePaths(rootDir, graphFiles);
+  const fragments: FrontendGraphFragment[] = [];
+  for (const { plugin, boundary } of discovered) {
+    fragments.push(
+      await executePluginOperation(plugin.id, boundary.id, () => plugin.analyze(context, boundary)),
+    );
+  }
+  const graph = mergeFragments(fragments);
 
-  // A mixed run has one config contract, so diagnostics evaluate the complete
-  // language union once rather than warning over two partial inventories.
-  warnOnEmptyConfigMatches(config, analyzedFiles, analyzedFiles, ts.result.units);
-  const claims = applyConfigSuppressions(
-    [...ts.result.claims, ...elixir.result.claims],
-    config,
-    ts.result.units,
-    analyzedFiles,
-  ).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  for (const plugin of registry.conventionPlugins()) {
+    for (const fragment of fragments) {
+      if (!plugin.languages.includes(fragment.language)) continue;
+      const pluginContext = { repository: context, fragment };
+      if (!(await plugin.applies(pluginContext))) continue;
+      addContribution(
+        graph,
+        await executePluginOperation(plugin.id, fragment.boundary.id, () =>
+          plugin.analyze(pluginContext),
+        ),
+        plugin.id,
+      );
+    }
+  }
+  for (const plugin of registry.bridgePlugins()) {
+    const languages = new Set(fragments.map((fragment) => fragment.language));
+    if (!plugin.requiredLanguages.every((language) => languages.has(language))) continue;
+    const pluginContext = { repository: context, fragments, graph };
+    if (!(await plugin.applies(pluginContext))) continue;
+    addContribution(
+      graph,
+      await executePluginOperation(plugin.id, undefined, () => plugin.analyze(pluginContext)),
+      plugin.id,
+    );
+  }
+
+  const config = await loadConfig(root, context.configPath);
+  const units = repositoryUnits(fragments);
+  const analyzedFiles = [
+    ...new Set(fragments.flatMap((f) => [...f.claimInputs.analysisFiles])),
+  ].sort();
+  for (const hit of collectConfigEntrypoints(analyzedFiles, config, units)) {
+    graph.addNode({
+      kind: "entrypoint",
+      id: entrypointId("production", hit.file),
+      entryKind: "production",
+      file: hit.file,
+      reason: hit.reason,
+    });
+  }
+  warnOnEmptyConfigMatches(config, analyzedFiles, analyzedFiles, units);
+
+  const reachability = computePartitionedReachability(graph, options.performance);
+  let claims = fragments.flatMap((fragment) =>
+    emitClaims({
+      graph,
+      reachability,
+      provenance: fragment.provenance,
+      language: fragment.language,
+      ...fragment.claimInputs,
+      ...(options.performance === undefined ? {} : { performance: options.performance }),
+    }).map((claim) => applyClaimAnnotation(claim, fragment)),
+  );
+  claims = claims.filter((claim) =>
+    claim.subject.kind === "dependency"
+      ? !isIgnoredDependency(claim.subject.name, config)
+      : isClaimable(claim.subject.loc.file, config, units),
+  );
+  claims = applyConfigSuppressions(claims, config, units, analyzedFiles).sort(byClaimId);
+
+  const now = context.now;
+  const rootTypeScript = fragments.find(
+    (fragment) => fragment.language === "ts" && fragment.boundary.rootRelDir === "",
+  );
+  options.performance?.set("files", analyzedFiles.length);
+  options.performance?.set(
+    "symbols",
+    graph.nodes().filter((node) => node.kind === "symbol").length,
+  );
+  options.performance?.set("edges", graph.edges().length);
+  options.performance?.set("claims", claims.length);
+  options.performance?.set("workspaces", units.length);
   const result: AnalyzeResult = {
-    ...ts.result,
+    schemaVersion: SCHEMA_VERSION,
+    tool: { name: "unused", version: context.toolVersion },
+    run: {
+      root,
+      configHash: computeConfigHash(config),
+      startedAt: now.toISOString(),
+      durationMs: Date.now() - started,
+    },
     claims,
     summary: computeSummary(claims, { ciSecondsPerTestFile: config.ciSecondsPerTestFile }),
-    productionEntrypointCount:
-      ts.result.productionEntrypointCount + elixir.result.productionEntrypointCount,
-    fileCount: ts.result.fileCount + elixir.result.fileCount,
+    productionEntrypointCount: reachability.production.productionEntrypointFiles.size,
+    fileCount: analyzedFiles.length,
+    workspaceCount: units.length,
+    repoName: rootTypeScript?.metadata.projectName ?? basename(root),
+    units,
+    gateThreshold: config.gate?.threshold ?? "high",
   };
   return {
     result,
     graph,
-    reachability: computePartitionedReachability(graph, options.performance),
+    reachability,
+    boundaries: fragments.map((fragment) => ({
+      status: "complete",
+      pluginId: fragment.pluginId,
+      boundaryId: fragment.boundary.id,
+      language: fragment.language,
+      fileCount: fragment.metadata.fileCount,
+      workspaceCount: fragment.metadata.workspaceCount,
+    })),
   };
 }
 
-function mergeGraphs(...graphs: readonly IRGraph[]): IRGraph {
-  const merged = new IRGraph();
-  for (const graph of graphs) {
-    for (const node of graph.nodes()) merged.addNode(node);
-    for (const edge of graph.edges()) merged.addEdge(edge);
-    for (const hazard of graph.hazards()) merged.addHazard(hazard);
+function mergeFragments(fragments: readonly FrontendGraphFragment[]): IRGraph {
+  const graph = new IRGraph();
+  for (const fragment of fragments) {
+    addContribution(
+      graph,
+      {
+        nodes: fragment.graph.nodes(),
+        edges: fragment.graph.edges(),
+        hazards: fragment.graph.hazards(),
+      },
+      fragment.pluginId,
+    );
   }
-  return merged;
+  return graph;
+}
+
+function addContribution(graph: IRGraph, contribution: GraphContribution, pluginId: string): void {
+  for (const node of contribution.nodes ?? []) addNodeChecked(graph, node, pluginId);
+  for (const edge of contribution.edges ?? []) graph.addEdge(edge);
+  for (const hazard of contribution.hazards ?? []) graph.addHazard(hazard);
+}
+
+function addNodeChecked(graph: IRGraph, node: IRNode, pluginId: string): void {
+  const existing = graph.getNode(node.id);
+  if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(node)) {
+    throw new Error(`plugin ${pluginId} produced conflicting graph node id ${node.id}`);
+  }
+  graph.addNode(node);
+}
+
+function repositoryUnits(
+  fragments: readonly FrontendGraphFragment[],
+): Array<{ readonly rootRelDir: string; readonly name: string | null }> {
+  const byRoot = new Map<string, { readonly rootRelDir: string; readonly name: string | null }>();
+  for (const fragment of fragments) {
+    for (const unit of fragment.claimInputs.units) {
+      const existing = byRoot.get(unit.rootRelDir);
+      if (existing === undefined || (existing.name === null && unit.name !== null)) {
+        byRoot.set(unit.rootRelDir, unit);
+      }
+    }
+  }
+  return [...byRoot.values()].sort((a, b) =>
+    a.rootRelDir === ""
+      ? -1
+      : b.rootRelDir === ""
+        ? 1
+        : a.rootRelDir < b.rootRelDir
+          ? -1
+          : a.rootRelDir > b.rootRelDir
+            ? 1
+            : 0,
+  );
+}
+
+function applyClaimAnnotation(claim: Claim, fragment: FrontendGraphFragment): Claim {
+  const annotation = fragment.claimAnnotations.get(
+    claimAnnotationKey(
+      claim.subject.kind,
+      claim.subject.loc.file,
+      "name" in claim.subject ? claim.subject.name : undefined,
+    ),
+  );
+  if (annotation === undefined) return claim;
+  return {
+    ...claim,
+    ...(annotation.suppression === undefined ? {} : { suppression: annotation.suppression }),
+    subject: {
+      ...claim.subject,
+      loc: {
+        ...claim.subject.loc,
+        ...(annotation.package === undefined ? {} : { package: annotation.package }),
+      },
+    },
+  } as Claim;
+}
+
+function byClaimId(a: Claim, b: Claim): number {
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }

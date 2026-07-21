@@ -419,8 +419,9 @@ function hasProductionAnchor(
   analysisFiles: ReadonlySet<string> | undefined,
 ): boolean {
   if (analysisFiles === undefined) return production.productionEntrypointFiles.size > 0;
-  for (const file of production.productionEntrypointFiles) {
-    if (analysisFiles.has(file)) return true;
+  for (const id of production.productionEntrypointFiles) {
+    const node = graph.getNode(id);
+    if (node?.kind === "file" && analysisFiles.has(node.path)) return true;
   }
   for (const id of production.reachableFiles) {
     const node = graph.getNode(id);

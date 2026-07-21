@@ -1,9 +1,10 @@
 /** Built-in language adapters proving ADR 0013's internal plugin contracts. */
 
+import type { Suppression } from "../../core/claims/index.js";
 import { analyzeElixirProjectWithGraph } from "../elixir/index.js";
 import { type AnalyzeOptions, analyzeProjectWithGraph } from "../ts/analyze.js";
 import { selectProjectBoundaries } from "./boundaries.js";
-import { rebaseClaimInputs, rebaseGraph } from "./rebase.js";
+import { prefixRepositoryPath, rebaseClaimInputs, rebaseGraph } from "./rebase.js";
 import type {
   FrontendGraphFragment,
   LanguageFrontendPlugin,
@@ -28,6 +29,26 @@ function fragment(
   boundary: Parameters<LanguageFrontendPlugin["analyze"]>[1],
   analysis: Awaited<ReturnType<typeof analyzeProjectWithGraph>>,
 ): FrontendGraphFragment {
+  const claimAnnotations = new Map<
+    string,
+    {
+      readonly suppression?: Suppression;
+      readonly package?: string;
+    }
+  >();
+  for (const claim of analysis.result.claims) {
+    claimAnnotations.set(
+      claimAnnotationKey(
+        claim.subject.kind,
+        prefixRepositoryPath(boundary.rootRelDir, claim.subject.loc.file),
+        "name" in claim.subject ? claim.subject.name : undefined,
+      ),
+      {
+        ...(claim.suppression === undefined ? {} : { suppression: claim.suppression }),
+        ...(claim.subject.loc.package === undefined ? {} : { package: claim.subject.loc.package }),
+      },
+    );
+  }
   return {
     pluginId,
     language,
@@ -42,8 +63,13 @@ function fragment(
       gateThreshold: analysis.result.gateThreshold,
     },
     claimInputs: rebaseClaimInputs(analysis.claimInputs, boundary.rootRelDir),
+    claimAnnotations,
     diagnostics: [],
   };
+}
+
+export function claimAnnotationKey(kind: string, file: string, name?: string): string {
+  return `${kind}\0${file}\0${name ?? ""}`;
 }
 
 export const typescriptLanguagePlugin: LanguageFrontendPlugin = {

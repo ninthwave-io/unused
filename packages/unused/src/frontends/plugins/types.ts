@@ -10,7 +10,7 @@
 
 import type { DependencyClaimInput } from "../../core/analysis/claims.js";
 import type { PerformanceTracker } from "../../core/analysis/index.js";
-import type { Provenance } from "../../core/claims/index.js";
+import type { Provenance, Suppression } from "../../core/claims/index.js";
 import type { HazardAnnotation, IREdge, IRGraph, IRNode, Site } from "../../core/ir/index.js";
 
 /** Stable, open language id used in graph/claim identity (`ts`, `ex`, `rs`). */
@@ -108,6 +108,14 @@ export interface FrontendGraphFragment {
     readonly gateThreshold: "high" | "medium" | "low";
   };
   readonly claimInputs: FrontendClaimInputs;
+  /** Stable-id metadata reapplied after repository-wide claim emission. */
+  readonly claimAnnotations: ReadonlyMap<
+    string,
+    {
+      readonly suppression?: Suppression;
+      readonly package?: string;
+    }
+  >;
   readonly diagnostics: readonly PluginDiagnostic[];
 }
 
