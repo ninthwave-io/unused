@@ -386,7 +386,7 @@ and Rust decision notes.
 
 ### P6 — Integrated acceptance and release decision
 
-Status: pending
+Status: in progress
 
 Deliverables:
 
@@ -401,6 +401,24 @@ Acceptance:
 - Every ADR 0013 acceptance item is evidenced.
 - Private artifacts remain outside the public repository.
 - No tag, push, or publish occurs without founder approval.
+
+Progress:
+
+- The first complete matrix pass reached the full suite after typecheck, lint,
+  boundaries, assumption sync, and all four scoreboard generators passed. It
+  exposed one deterministic T3.6 smoke regression rather than being waived.
+- Root cause: the P3 entrypoint exception intended for Rust contains-only
+  private symbols did not explicitly exclude exported symbols. Production
+  roots masked this through production surface reachability; a TypeScript test
+  root incorrectly surfaced its exported setup function as `test-only`.
+- Core now pre-indexes exported symbol ids once and permits only contains-only
+  symbols through the entrypoint exception. The 60 focused TS/core/Rust tests
+  pass, Rust private-item recall remains intact, and the Elixir scoreboard
+  returns to its committed 10-case precision/recall 1.0 state with zero
+  unlabelled claims.
+
+Next action: rerun the complete gate matrix from the corrected checkpoint, then
+perform package/privacy smokes and capture benchmark/resource evidence.
 
 ## Verification commands
 
