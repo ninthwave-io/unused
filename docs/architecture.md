@@ -21,6 +21,8 @@ bridge plugins add cross-language edges, and only then does core compute one
 global reachability and claim set. TypeScript, Elixir, Rust, and Rustler/NIF are
 the proving set. The resumable delivery ledger is
 `docs/delivery/polyglot-first-class.md`.
+Implementation and fixture rules for these internal contracts live in
+`docs/design/plugin-authoring.md`.
 The measured Rust compiler/tooling boundary is
 `docs/research/rust-frontend-stack-2026-07.md`.
 

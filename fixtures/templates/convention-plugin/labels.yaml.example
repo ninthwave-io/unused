@@ -1,0 +1,19 @@
+case: neutral-convention
+description: >-
+  A neutral public convention keeps one subject alive while a similar inverse
+  remains dead.
+subjects:
+  - kind: export
+    name: live_subject
+    file: src/live.ext
+    expected: alive
+    because: >-
+      A reachable literal convention carrier names this exact subject.
+  - kind: export
+    name: dead_subject
+    file: src/dead.ext
+    expected: dead
+    minConfidence: high
+    because: >-
+      No root, ordinary reference, convention edge, or active hazard reaches
+      this inverse subject.

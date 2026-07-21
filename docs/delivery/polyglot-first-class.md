@@ -349,11 +349,18 @@ Progress:
 - Focused verification: 37 convention/plugin/dispatch tests pass (2 Mix-skipped
   under the default shell); typecheck and dependency boundaries pass (913
   modules / 1,955 dependencies).
+- `docs/design/plugin-authoring.md` now fixes plugin selection, repository-path
+  identity, phase ordering, precision degradation, migration ownership,
+  registration, testing, and verification rules. Architecture links to it.
+- `fixtures/templates/convention-plugin/` provides a neutral, unscored fixture
+  shape and labels starter with mandatory live/dead inverse coverage, bridge
+  mutation guidance, local-toolchain expectations, and the public/private
+  derivation boundary. The corpus README now documents active language and
+  polyglot scoreboards instead of its obsolete pre-analyzer state.
 
-Next action: document plugin authoring and add a neutral fixture template, then
-migrate the remaining external TypeScript carrier roots as one family before
-moving Elixir literal runtime references and OTP/Phoenix hazards behind their
-own convention plugins.
+Next action: migrate the remaining external TypeScript carrier roots as one
+family before moving Elixir literal runtime references and OTP/Phoenix hazards
+behind their own convention plugins.
 
 ### P6 — Integrated acceptance and release decision
 

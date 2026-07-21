@@ -5,11 +5,10 @@ and `docs/architecture.md` §1/§4. It is the enforcement mechanism for the
 top quality metric in `CLAUDE.md`: **false-positive rate**. A false-positive
 regression against this corpus blocks merge, no exceptions.
 
-No analyzer exists yet (M1). This directory holds hand-labelled ground
-truth that the fixture harness (T1.3, `docs/phasing.md` M1) will load,
-run the analyzer against, and score for precision/recall by confidence
-tier. Nothing here is wired to a test runner yet — that harness is a
-separate task.
+The fixture harness loads this hand-labelled ground truth, runs the applicable
+TypeScript, Elixir, Rust, or polyglot analyzer, and scores precision/recall by
+confidence tier. Committed scoreboards and non-vacuous corpus gates make these
+cases release evidence rather than illustrative samples.
 
 ## Layout
 
@@ -20,6 +19,10 @@ fixtures/<language>/<case>/
   src/               # the fixture's source files
   labels.yaml        # ground truth for every labelled subject
 ```
+
+Polyglot cases use `fixtures/polyglot/<case>/` with one manifest/source tree per
+language. Copy `fixtures/templates/convention-plugin/` for a neutral starting
+shape; templates are not corpus cases and are never scored.
 
 Each case is a **minimal mini-repo** exercising **one mechanism**. Cases are
 never deleted, only added or corrected via reviewed label changes (ADR 0009).
