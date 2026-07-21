@@ -128,12 +128,15 @@ Progress:
   subject emission, and zombie-test analysis to the owning fragment.
 - A fragment cannot emit claims merely because another language has a root: it
   needs its own production entrypoint or an inbound production-reachable bridge.
-- Focused verification: typecheck; 53 core claim tests (including three scoped
-  polyglot cases); dependency boundaries (888 modules / 1,813 deps); lint with
+- Both existing frontends now return the complete claim-emission inputs needed
+  after graph merge: line counts, dependencies, self-package ids, units,
+  analysis files, and claimable files. The rebasing layer translates all
+  path-bearing inputs together with the graph.
+- Focused verification: typecheck; 53 core claim tests plus 48 TS/Elixir/rebase
+  tests (2 skipped); dependency boundaries (888 modules / 1,816 deps); lint with
   the existing 2 warnings and 48 informational diagnostics.
 
-Next action: expose claim inputs from the TypeScript and Elixir frontends and
-rebase them with each graph fragment. Then register both adapters and replace
+Next action: register TypeScript and Elixir language adapters, then replace
 root-manifest dispatch with nested-boundary orchestration using one merged graph
 and one partitioned-reachability computation.
 

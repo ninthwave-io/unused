@@ -78,6 +78,7 @@ import {
   type IRGraph,
   type Site,
 } from "../../core/ir/index.js";
+import type { FrontendClaimInputs } from "../plugins/types.js";
 import {
   applyConfigSuppressions,
   type ConfigUnit,
@@ -247,6 +248,8 @@ export interface AnalyzeWithGraph {
   readonly graph: IRGraph;
   /** The three per-partition reachability walks (production/config/test), with predecessor maps. */
   readonly reachability: PartitionedReachability;
+  /** Inputs needed to re-emit this frontend's claims after repository graph merge. */
+  readonly claimInputs: FrontendClaimInputs;
 }
 
 /**
@@ -704,6 +707,14 @@ export async function analyzeProjectWithGraph(
   for (const unit of units) {
     if (unit.name !== null) selfDependencyIds.add(dependencyId(unit.name));
   }
+  const claimInputs: FrontendClaimInputs = {
+    fileLineCounts,
+    dependencies,
+    selfDependencyIds,
+    units: units.map((unit) => ({ rootRelDir: unit.rootRelDir, name: unit.name })),
+    analysisFiles: new Set(filesRel),
+    claimableFiles: new Set(filesRel.filter((file) => isClaimable(file, config, configUnits))),
+  };
 
   const emittedClaims = emitClaims({
     graph,
@@ -758,7 +769,7 @@ export async function analyzeProjectWithGraph(
     units: units.map((u) => ({ rootRelDir: u.rootRelDir, name: u.name })),
     gateThreshold: config.gate?.threshold ?? "high",
   };
-  return { result, graph, reachability };
+  return { result, graph, reachability, claimInputs };
 }
 
 // ---------------------------------------------------------------------------

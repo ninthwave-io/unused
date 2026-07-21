@@ -12,6 +12,7 @@ import {
   type Site,
   symbolId,
 } from "../../core/ir/index.js";
+import type { FrontendClaimInputs } from "./types.js";
 
 /** Return a new graph whose file identities and provenance are repository-relative. */
 export function rebaseGraph(graph: IRGraph, rootRelDir: string): IRGraph {
@@ -27,6 +28,41 @@ export function rebaseGraph(graph: IRGraph, rootRelDir: string): IRGraph {
   for (const edge of graph.edges()) rebased.addEdge(rebaseEdge(edge, prefix, ids));
   for (const hazard of graph.hazards()) rebased.addHazard(rebaseHazard(hazard, prefix, ids));
   return rebased;
+}
+
+/** Rebase claim metadata alongside its graph fragment. */
+export function rebaseClaimInputs(
+  input: FrontendClaimInputs,
+  rootRelDir: string,
+): FrontendClaimInputs {
+  const prefix = normalizePrefix(rootRelDir);
+  if (prefix === "") return input;
+  const rebasePath = (path: string): string => prefixRepositoryPath(prefix, path);
+  const fileLineCounts = new Map<string, number>();
+  for (const [id, lines] of input.fileLineCounts) {
+    if (!id.startsWith("file:")) throw new Error(`expected file id, received: ${id}`);
+    fileLineCounts.set(fileId(rebasePath(id.slice("file:".length))), lines);
+  }
+  return {
+    fileLineCounts,
+    ...(input.dependencies === undefined
+      ? {}
+      : {
+          dependencies: input.dependencies.map((dependency) => ({
+            ...dependency,
+            loc: { ...dependency.loc, file: rebasePath(dependency.loc.file) },
+          })),
+        }),
+    ...(input.selfDependencyIds === undefined
+      ? {}
+      : { selfDependencyIds: input.selfDependencyIds }),
+    units: input.units.map((unit) => ({
+      ...unit,
+      rootRelDir: rebasePath(unit.rootRelDir),
+    })),
+    analysisFiles: new Set([...input.analysisFiles].map(rebasePath)),
+    claimableFiles: new Set([...input.claimableFiles].map(rebasePath)),
+  };
 }
 
 export function prefixRepositoryPath(rootRelDir: string, path: string): string {

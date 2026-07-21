@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { dependencyId, entrypointId, fileId, IRGraph, symbolId } from "../../core/ir/index.js";
-import { prefixRepositoryPath, rebaseGraph } from "./rebase.js";
+import { prefixRepositoryPath, rebaseClaimInputs, rebaseGraph } from "./rebase.js";
 
 const SITE = { file: "lib/callback.ex", span: { start: 0, end: 1, startLine: 2, endLine: 2 } };
 
@@ -83,5 +83,27 @@ describe("rebaseGraph", () => {
     expect(() => prefixRepositoryPath("../outside", "lib/a.ex")).toThrow(
       "path must be repository-relative",
     );
+  });
+
+  it("rebases line counts, dependency sites, units, and file scopes", () => {
+    const rebased = rebaseClaimInputs(
+      {
+        fileLineCounts: new Map([[fileId("lib/callback.ex"), 12]]),
+        dependencies: [{ packageName: "neutral", loc: { file: "mix.exs", span: [4, 4] } }],
+        units: [{ rootRelDir: "", name: "neutral" }],
+        analysisFiles: new Set(["lib/callback.ex", "lib/generated.ex"]),
+        claimableFiles: new Set(["lib/callback.ex"]),
+      },
+      "apps/backend",
+    );
+
+    expect([...rebased.fileLineCounts]).toEqual([[fileId("apps/backend/lib/callback.ex"), 12]]);
+    expect(rebased.dependencies?.[0]?.loc.file).toBe("apps/backend/mix.exs");
+    expect(rebased.units).toEqual([{ rootRelDir: "apps/backend", name: "neutral" }]);
+    expect([...rebased.analysisFiles]).toEqual([
+      "apps/backend/lib/callback.ex",
+      "apps/backend/lib/generated.ex",
+    ]);
+    expect([...rebased.claimableFiles]).toEqual(["apps/backend/lib/callback.ex"]);
   });
 });

@@ -30,6 +30,7 @@ import {
   SCHEMA_VERSION,
 } from "../../core/claims/index.js";
 import { entrypointId, fileId, type IRGraph } from "../../core/ir/index.js";
+import type { FrontendClaimInputs } from "../plugins/types.js";
 import type { AnalyzeInternalOptions, AnalyzeOptions, AnalyzeResult } from "../ts/analyze.js";
 import {
   applyConfigSuppressions,
@@ -57,6 +58,7 @@ export interface AnalyzeElixirWithGraph {
   readonly result: AnalyzeResult;
   readonly graph: IRGraph;
   readonly reachability: PartitionedReachability;
+  readonly claimInputs: FrontendClaimInputs;
 }
 
 /**
@@ -133,6 +135,12 @@ export async function analyzeElixirProjectWithGraph(
     version,
     generatedAt: now.toISOString(),
   };
+  const claimInputs: FrontendClaimInputs = {
+    fileLineCounts,
+    units: configUnits,
+    analysisFiles: analyzedFileSet,
+    claimableFiles: new Set(analyzedFiles.filter((file) => isClaimable(file, config, configUnits))),
+  };
 
   const emittedClaims = emitClaims({
     graph,
@@ -176,7 +184,7 @@ export async function analyzeElixirProjectWithGraph(
     units: [{ rootRelDir: "", name: appName }],
     gateThreshold: config.gate?.threshold ?? "high",
   };
-  return { result, graph, reachability };
+  return { result, graph, reachability, claimInputs };
 }
 
 /**
