@@ -15,6 +15,13 @@ Status: APPROVED at the Phase 2 gate (2026-07-18). Build contract, kept delibera
 ## 2. Data flow (one pass)
 discover (workspaces, tsconfig, package.json, presets) → parse + bind → extract references + hazards → **IR graph** → partition entrypoints (production | test | config) → reachability per partition → claims (verdict + confidence via hazard rules) → reporters / MCP; file-level results cached (§5).
 
+ADR 0013 extends this into a repository-level polyglot pass: language plugins
+emit repository-relative graph fragments, convention plugins enrich them,
+bridge plugins add cross-language edges, and only then does core compute one
+global reachability and claim set. TypeScript, Elixir, Rust, and Rustler/NIF are
+the proving set. The resumable delivery ledger is
+`docs/delivery/polyglot-first-class.md`.
+
 ## 3. Reference-graph IR (the language-agnostic contract)
 - Nodes: `symbol`, `file`, `dependency`, `endpoint`, `entrypoint(kind: production|test|config)`.
 - Edges: `references` (kind: `static` | `dynamic-resolved` | `runtime-resolved` | `re-export` | `side-effect` | `hazard`), `exports`, `contains`, plus a reserved `consumes` edge for the endpoint→consumer join (tier 3). `runtime-resolved` is a literal runtime convention resolved to one exact symbol; `side-effect` keeps a file alive while binding no symbol — exports inside a side-effect-only module stay individually flaggable; `re-export` makes barrel chains (`export * from`) explicitly traversable by reachability and `why_alive`.

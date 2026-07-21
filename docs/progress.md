@@ -2,6 +2,10 @@
 
 Updated: 2026-07-21. **Pre-v0.1.0 scaling and runtime-reachability blockers corrected; final founder release decision remains.** No semver release tag has been created.
 
+Active programme: ADR 0013 first-class TypeScript/Elixir/Rust orchestration and
+Rustler/NIF bridging. Resume and acceptance state lives in
+`docs/delivery/polyglot-first-class.md`; chat history is not authoritative.
+
 ## What shipped (v1, private-beta ready)
 `@ninthwave-io/unused` — a liveness oracle for TS/JS. Tiers 1–2 fully implemented:
 - **Analysis**: oxc-based frontend (per-unit resolution incl. member tsconfigs), language-agnostic IR (intra-file symbol edges, provenance spans), partitioned reachability (production/config/test), 18-class hazard registry with scoped confidence caps, dependency claims (conservative-first), test-only verdicts + zombie tests + estimated CI-seconds, workspaces (npm/pnpm/yarn-classic/bun; PnP refused loudly), JSONC config (project=claimability, ignore=invisibility), presets (vite, next incl. metadata routes), generated assumption set (drift-tested).
