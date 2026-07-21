@@ -75,6 +75,8 @@ export interface FrontendClaimInputs {
   readonly dependencies?: readonly DependencyClaimInput[];
   readonly selfDependencyIds?: ReadonlySet<string>;
   readonly units: readonly { readonly rootRelDir: string; readonly name: string | null }[];
+  /** Every repository-relative file whose graph facts belong to this boundary. */
+  readonly analysisFiles: ReadonlySet<string>;
   /** Repository-relative files eligible to receive claims from this boundary. */
   readonly claimableFiles: ReadonlySet<string>;
 }

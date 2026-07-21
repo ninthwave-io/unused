@@ -1002,3 +1002,65 @@ describe("determinism", () => {
     expect([...ids].sort()).toEqual(ids);
   });
 });
+
+describe("repository fragment scoping", () => {
+  const scopedRun = (
+    graph: IRGraph,
+    analysisFiles: ReadonlySet<string>,
+    claimableFiles: ReadonlySet<string> = analysisFiles,
+  ): Claim[] =>
+    emitClaims({
+      graph,
+      reachability: computePartitionedReachability(graph),
+      provenance: PROVENANCE,
+      analysisFiles,
+      claimableFiles,
+    });
+
+  it("emits only subjects owned by the selected fragment", () => {
+    const g = new IRGraph();
+    addEntry(g, "web/src/index.ts");
+    addFile(g, "web/src/dead.ts");
+    addEntry(g, "server/lib/app.ex");
+    addFile(g, "server/lib/dead.ex");
+
+    const claims = scopedRun(g, new Set(["web/src/index.ts", "web/src/dead.ts"]));
+
+    expect(claims.map((claim) => claim.subject.loc.file)).toEqual(["web/src/dead.ts"]);
+  });
+
+  it("isolates unknown hazards and claim exclusions in another fragment", () => {
+    const g = new IRGraph();
+    addEntry(g, "web/src/index.ts");
+    addFile(g, "web/src/claimable.ts");
+    addFile(g, "web/generated/excluded.ts");
+    addEntry(g, "server/lib/app.ex");
+    hazard(g, "server/lib/app.ex", "unknown-elixir-hazard" as HazardClass);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const claims = scopedRun(
+      g,
+      new Set(["web/src/index.ts", "web/src/claimable.ts", "web/generated/excluded.ts"]),
+      new Set(["web/src/index.ts", "web/src/claimable.ts"]),
+    );
+
+    expect(claims.map((claim) => claim.subject.loc.file)).toEqual(["web/src/claimable.ts"]);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("requires a fragment-local root or an inbound production bridge", () => {
+    const g = new IRGraph();
+    addEntry(g, "web/src/index.ts");
+    addFile(g, "native/src/callback.rs");
+    addFile(g, "native/src/dead.rs");
+    const rustFiles = new Set(["native/src/callback.rs", "native/src/dead.rs"]);
+
+    expect(scopedRun(g, rustFiles)).toEqual([]);
+
+    ref(g, "web/src/index.ts", fileId("native/src/callback.rs"), "static");
+    expect(scopedRun(g, rustFiles).map((claim) => claim.subject.loc.file)).toEqual([
+      "native/src/dead.rs",
+    ]);
+  });
+});

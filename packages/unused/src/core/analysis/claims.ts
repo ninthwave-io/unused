@@ -163,6 +163,19 @@ export interface EmitClaimsInput {
   /** Claim-id language slot (empty/absent ⇒ `ts`, ADR 0006). */
   readonly language?: string;
   /**
+   * Repository-relative files analyzed by this frontend fragment. When set,
+   * claim emission and hazard activation are isolated to this scope while
+   * liveness still comes from the shared repository reachability result.
+   * Absent preserves the historical single-graph behaviour.
+   */
+  readonly analysisFiles?: ReadonlySet<string>;
+  /**
+   * Subset of `analysisFiles` eligible to receive file, export, and test
+   * claims. Frontends use this for generated/vendor/config exclusions without
+   * removing those files from the graph or weakening reachability precision.
+   */
+  readonly claimableFiles?: ReadonlySet<string>;
+  /**
    * Declared dependencies the frontend judged unused (T4.1). Each becomes a
    * `dependency`/`unused` claim, at `high` unless a **project-scope** hazard
    * caps the workspace project-wide (the existing cap plumbing —
@@ -238,7 +251,7 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
   // root" case. This also gates `test-only`: without a production baseline we
   // cannot tell "reachable only from tests" from "the whole project". Emit
   // nothing; the caller surfaces "no entrypoints detected".
-  if (production.productionEntrypointFiles.size === 0) return [];
+  if (!hasProductionAnchor(graph, production, input.analysisFiles)) return [];
 
   // --- registry-driven hazard caps ------------------------------------------
   // `fileCap[F]`   caps F's file claim AND F's export claims (directory-subtree,
@@ -248,6 +261,7 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
     graph,
     reachability,
     input.units ?? DEFAULT_UNITS,
+    input.analysisFiles,
     input.performance,
   );
   if (caps.projectNoClaim) {
@@ -272,6 +286,7 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
   const fileClass = new Map<string, FileClass>();
   for (const node of graph.nodes()) {
     if (node.kind !== "file") continue;
+    if (!isInScope(node.path, input.analysisFiles)) continue;
     if (isDeclarationFile(node.path)) continue; // ambient/declaration — never classified/claimed
     if (entrypointFiles.has(node.id)) continue; // a root — never a file/export claim
     if (aliveFile(node.id)) fileClass.set(node.id, "alive");
@@ -283,6 +298,7 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
 
   for (const node of graph.nodes()) {
     if (node.kind === "file") {
+      if (!isInScope(node.path, input.claimableFiles)) continue;
       const cls = fileClass.get(node.id);
       if (cls === undefined || cls === "alive") continue;
       // A symbol-set (export-only) cap never applies to a file claim (file
@@ -309,6 +325,7 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
         );
       }
     } else if (node.kind === "symbol") {
+      if (!isInScope(node.file, input.claimableFiles)) continue;
       if (!node.local) continue; // forwarded (re-export) symbols are not declarations
       if (isDeclarationFile(node.file)) continue;
       const fileNodeId = fileId(node.file);
@@ -386,6 +403,32 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
   return claims;
 }
 
+function isInScope(file: string, scope: ReadonlySet<string> | undefined): boolean {
+  return scope === undefined || scope.has(file);
+}
+
+/**
+ * A scoped fragment needs evidence that production can enter it. Its own
+ * production root is sufficient; so is any file made production-reachable by
+ * an inbound cross-language bridge. An unrelated root elsewhere in the merged
+ * graph is deliberately insufficient.
+ */
+function hasProductionAnchor(
+  graph: IRGraph,
+  production: Reachability,
+  analysisFiles: ReadonlySet<string> | undefined,
+): boolean {
+  if (analysisFiles === undefined) return production.productionEntrypointFiles.size > 0;
+  for (const file of production.productionEntrypointFiles) {
+    if (analysisFiles.has(file)) return true;
+  }
+  for (const id of production.reachableFiles) {
+    const node = graph.getNode(id);
+    if (node?.kind === "file" && analysisFiles.has(node.path)) return true;
+  }
+  return false;
+}
+
 function finishClaimPerformance(
   performance: PerformanceTracker | undefined,
   started: number | undefined,
@@ -453,6 +496,7 @@ function buildHazardCaps(
   graph: IRGraph,
   reachability: PartitionedReachability,
   units: readonly { readonly rootRelDir: string }[],
+  analysisFiles?: ReadonlySet<string>,
   performance?: PerformanceTracker,
 ): HazardCaps {
   const started = performance?.now();
@@ -489,7 +533,9 @@ function buildHazardCaps(
   // O(hazards × files) with a `getNode` per file per hazard.
   const fileNodes: Array<{ readonly id: string; readonly path: string }> = [];
   for (const node of graph.nodes()) {
-    if (node.kind === "file") fileNodes.push({ id: node.id, path: node.path });
+    if (node.kind === "file" && isInScope(node.path, analysisFiles)) {
+      fileNodes.push({ id: node.id, path: node.path });
+    }
   }
 
   const registeredHazards: Array<{
@@ -497,6 +543,7 @@ function buildHazardCaps(
     readonly entry: NonNullable<ReturnType<typeof lookupHazard>>;
   }> = [];
   for (const hazard of graph.hazards()) {
+    if (!isInScope(hazard.site.file, analysisFiles)) continue;
     const entry = lookupHazard(hazard.hazardClass);
     if (entry === undefined) {
       projectNoClaim = true;
@@ -723,7 +770,9 @@ function emitZombieTestClaims(
   //     NOT a confident zombie — no wrong zombie survives these shapes.
   const filesWithUnresolvableImport = new Set<string>();
   for (const hz of graph.hazards()) {
-    if (hz.hazardClass === "unresolvable-import") filesWithUnresolvableImport.add(hz.file);
+    if (hz.hazardClass === "unresolvable-import" && isInScope(hz.site.file, input.analysisFiles)) {
+      filesWithUnresolvableImport.add(hz.file);
+    }
   }
   const selfDeps = input.selfDependencyIds ?? EMPTY_ID_SET;
   const referencesSelfPackage = (fileNodeId: string): boolean => {
@@ -745,6 +794,8 @@ function emitZombieTestClaims(
   const claims: TestClaim[] = [];
   for (const entry of graph.entrypoints()) {
     if (entry.entryKind !== "test") continue;
+    if (!isInScope(entry.file, input.analysisFiles)) continue;
+    if (!isInScope(entry.file, input.claimableFiles)) continue;
     const testFileId = fileId(entry.file);
     if (graph.outEdges(testFileId).length === 0) continue; // imports nothing ⇒ not a zombie
     if (filesWithUnresolvableImport.has(testFileId) || referencesSelfPackage(testFileId)) continue;

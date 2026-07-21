@@ -123,12 +123,19 @@ Progress:
   same-ecosystem manifests while retaining sibling nested projects.
 - Graph rebasing translates file/symbol/entrypoint ids, edges, hazard sites,
   and subtree prefixes into repository-relative coordinates.
-- Focused verification: typecheck; 17 tests across discovery, registry,
-  boundaries, and rebasing; dependency boundaries (888 modules / 1,813 deps).
+- Core claim emission now accepts explicit analysis and claimable file scopes.
+  It consumes repository-wide reachability while isolating hazard activation,
+  subject emission, and zombie-test analysis to the owning fragment.
+- A fragment cannot emit claims merely because another language has a root: it
+  needs its own production entrypoint or an inbound production-reachable bridge.
+- Focused verification: typecheck; 53 core claim tests (including three scoped
+  polyglot cases); dependency boundaries (888 modules / 1,813 deps); lint with
+  the existing 2 warnings and 48 informational diagnostics.
 
-Next action: expose frontend claim inputs, register TS/Elixir adapters, and make
-root dispatch discover nested boundaries. This remains a transitional merged-
-claim step until scoped global claim emission replaces concatenation.
+Next action: expose claim inputs from the TypeScript and Elixir frontends and
+rebase them with each graph fragment. Then register both adapters and replace
+root-manifest dispatch with nested-boundary orchestration using one merged graph
+and one partitioned-reachability computation.
 
 ### P3 — Rust frontend foundation
 
