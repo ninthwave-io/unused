@@ -631,7 +631,7 @@ Implementation and verification:
 
 #### Load-free BEAM reflection follow-up
 
-Status: implementation verified; independent review pending
+Status: complete and independently approved in `76dc36b`
 
 Objective: retain compiler-backed Elixir precision when a compiled module has
 an unavailable native `@on_load` hook, without loading or executing that module
@@ -671,8 +671,10 @@ Full verification passes 83 files / 1,141 tests, typecheck, lint (the establishe
 assumption-set 1.10 sync, all four corpus gates, build, installed-tarball JSON,
 build-tree non-mutation, diff, and privacy checks.
 
-Next exact action: run the complete public gate matrix, freeze the diff and
-evidence, and obtain independent approval before committing.
+Next exact action: rerun the consuming project separately with the committed
+schema-1.4 CLI, require complete TypeScript, Elixir production/test, and Rust
+partitions, then resume deletion only from that complete graph. Keep all
+consumer output and identifiers outside this public repository.
 
 ## Verification commands
 
@@ -705,6 +707,9 @@ Packaging and privacy smokes remain mandatory before any release recommendation.
   of public fixtures.
 - 2026-07-21: bounded partition incompleteness is explicit `partial` metadata,
   never an unqualified complete boundary or a confidence-only downgrade.
+- 2026-07-22: BEAM reflection reads validated file metadata without loading
+  project modules; compiler-proven runtime carriers provide conditional,
+  evidence-bearing callback reachability without rooting dead carrier files.
 
 ## Checkpoint history
 
@@ -724,3 +729,5 @@ Packaging and privacy smokes remain mandatory before any release recommendation.
 - `532352c` — isolated compiler-backed corpus runs for deterministic parallel
   gates.
 - `9238c77` — completed polyglot phase and resource instrumentation.
+- `76dc36b` — made BEAM reflection load-free and aligned runtime callback
+  reachability, `why`, and deletion refusal with compiler-proven carriers.
