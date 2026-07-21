@@ -13,10 +13,10 @@
 
 /**
  * ADR 0006 semver policy: bump on a MAJOR/MINOR/PATCH change to this
- * contract. 1.3.0: additive claim-language and completed-boundary
- * observability — MINOR per ADR 0006.
+ * contract. 1.4.0: additive boundary/partition completeness observability —
+ * MINOR per ADR 0006.
  */
-export const SCHEMA_VERSION = "1.3.0";
+export const SCHEMA_VERSION = "1.4.0";
 
 // ---------------------------------------------------------------------------
 // Enums (PRD §4, ADR 0006 open/closed policy)
@@ -313,9 +313,15 @@ export interface ClaimSummary {
   zombieTests?: ZombieTestsSummary;
 }
 
-/** A language boundary that completed and contributed to this claim run. */
-export interface CompletedAnalysisBoundary {
-  status: "complete";
+export interface AnalysisPartitionCompletion {
+  production: "complete";
+  config: "complete";
+  test: "complete" | "incomplete";
+}
+
+/** A language boundary that contributed complete or conservatively bounded facts. */
+export interface AnalysisBoundary {
+  status: "complete" | "partial";
   /** Stable language-plugin id, e.g. `language:typescript`. */
   pluginId: string;
   /** Stable repository-analysis boundary id, e.g. `ts:.` or `ex:services/api`. */
@@ -326,7 +332,22 @@ export interface CompletedAnalysisBoundary {
   fileCount: number;
   /** Package/application/crate units owned by this boundary. */
   workspaceCount: number;
+  /** Per-partition proof completeness; `partial` iff any partition is incomplete. */
+  partitions: AnalysisPartitionCompletion;
 }
+
+/**
+ * @deprecated Use {@link AnalysisBoundary}; retained as the source-compatible
+ * complete-boundary shape exported before schema 1.4 required partition metadata.
+ */
+export type CompletedAnalysisBoundary = Omit<AnalysisBoundary, "status" | "partitions"> & {
+  status: "complete";
+  partitions?: {
+    production: "complete";
+    config: "complete";
+    test: "complete";
+  };
+};
 
 export interface ClaimRun {
   schemaVersion: string;
@@ -342,8 +363,8 @@ export interface ClaimRun {
     /** ISO 8601. */
     startedAt: string;
     durationMs: number;
-    /** Deterministic, boundary-id-sorted record of every completed language analysis. */
-    boundaries: readonly CompletedAnalysisBoundary[];
+    /** Deterministic, boundary-id-sorted record of every analyzed language boundary. */
+    boundaries: readonly AnalysisBoundary[];
   };
   claims: readonly Claim[];
   summary: ClaimSummary;

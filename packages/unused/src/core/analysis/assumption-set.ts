@@ -28,7 +28,7 @@ import { HAZARD_REGISTRY, type HazardClassEntry } from "./hazard-registry.js";
  * wording or the set of globals (a behaviour-affecting change), so a consumer
  * pinning a version can detect it. Independent of the analyzer/tool version.
  */
-export const ASSUMPTION_SET_VERSION = "1.7.0";
+export const ASSUMPTION_SET_VERSION = "1.8.0";
 
 /** One global analysis assumption (independent of any single hazard class). */
 export interface GlobalAssumption {
@@ -109,6 +109,12 @@ export const GLOBAL_ASSUMPTIONS: readonly GlobalAssumption[] = [
     title: "Elixir entrypoints, and runtime dispatch is kept alive (experimental)",
     detail:
       "The Elixir reachability roots are the OTP application callback module (`mix.exs` `application/0` `mod:`, read from the compiled `.app` resource), everything its supervision tree references (child modules appear as ordinary alias/call references in the tracer, so supervised children are reached transitively), `Phoenix.Endpoint`/`Phoenix.Router` modules when Phoenix is a dependency, and `Mix.Task` modules (`lib/mix/tasks/**`, invoked by CLI name) — all production roots. `config/*.exs` module references are config roots (a module named in config is kept alive). `test/` + ExUnit is the test partition. A public function is a symbol named `Mod.fun/arity` (kind `export` in v1); a module is a symbol named `Mod`; a `.ex`/`.exs` file is a `file` subject. Reflectively-dispatched CALLBACK FUNCTIONS are kept alive, never flagged — but only relative to a module that is itself reachable: a behaviour/OTP module (`@behaviour`/`use GenServer`), a Phoenix runtime module or protocol implementation (`defimpl`), or a plain OTP-supervisable module (one defining `child_spec/1`) has its callback claims suppressed when it is supervised, aliased, or config-named. A module reachable by NOTHING is still claimable as a dead file (the keep-alive suppresses callback claims, not the module's own file claim) — capped to medium by the unit's dynamic-dispatch hazard when an `apply`/`Module.concat` exists in the unit, never confidently dead while such a computed dispatch could reach it. HEEx `~H`/`.heex` component references are visible to the tracer (empirically confirmed) and need no special handling. A project with no application callback, mix task, or Phoenix endpoint anchors no liveness and is proven-nothing rather than flagged wholesale, exactly as a TypeScript project with no entrypoint. Full parity (dependency claims via `mix.lock`, umbrella apps, per-callback precision) is post-v1.",
+  },
+  {
+    id: "elixir-test-partition-completeness",
+    title: "Incomplete Elixir test compilation fails closed",
+    detail:
+      "Elixir test files are compiled separately because Mix does not include them in the application compile. The analyzer intentionally enters Mix with `--no-start`; a test module can therefore fail during compilation when its module body reads runtime state that normal `mix test` initializes by starting the application first. Such a failure does not invalidate the already-complete production compiler trace, but it makes the test partition incomplete. The boundary is published as `status: partial` with `partitions.test: incomplete`, a deterministic warning is written to stderr, and a conservative safety root keeps every compiler-known production file, module, and public function alive. Exact outgoing bridge edges remain reachable too. No potentially test-reachable subject receives an unused/test-only claim or a supported deletion plan until the test partition compiles completely; unrelated complete language boundaries remain analyzable. The application is not started speculatively because doing so would execute arbitrary runtime behavior and change the analyzer's disclosed compiler-only trust boundary.",
   },
 ];
 

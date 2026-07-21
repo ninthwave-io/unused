@@ -14,6 +14,22 @@ three languages. Claim ids and `idVersion: 1` are unchanged. Full verification
 passes at 81 test files / 1,066 tests, and the installed-package and privacy
 smokes pass.
 
+Elixir test-partition completeness (verification complete; review pending,
+2026-07-21): the tracer's
+existing best-effort test compile failure is now an explicit schema 1.4.0
+partial boundary with production/config/test status. A conservative safety
+anchor keeps every compiler-known production surface and exact bridge
+descendant alive, while deterministic diagnostics remain on stderr and
+deletion planning refuses completeness-rooted subjects. A neutral generated
+fixture reproduces normal-test application startup versus analyzer
+`--no-start`. Full verification passes at 81 files / 1,075 tests; typecheck,
+lint (the established 2 warnings / 48 informational diagnostics), boundaries
+(917 modules / 1,982 dependencies), assumptions 1.8, build, installed-package,
+diff, and privacy gates pass. Elixir corpus is 11 cases / 29 subjects at
+precision 1.0 and recall 0.9090909090909091; its one deliberate miss records
+the fail-closed incomplete partition. Independent review is required before
+commit.
+
 Elixir compiler-boundary hardening (2026-07-21): tracer compilation now uses a
 temporary `MIX_BUILD_PATH`, reuses existing dependency artifacts read-only, and
 leaves the consumer's `_build` (including consolidated protocols) unchanged. A

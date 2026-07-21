@@ -312,6 +312,7 @@ export function parseTraceOutput(raw: string): TraceResult {
   let deps: readonly string[] = [];
   let compileOk = true;
   let sawCompileError = false;
+  let testPartition: TraceResult["testPartition"] = "complete";
   const compileErrorDetails: string[] = [];
 
   const lines = raw.split("\n");
@@ -353,6 +354,9 @@ export function parseTraceOutput(raw: string): TraceResult {
           );
         }
         break;
+      case "test_compile_error":
+        testPartition = "incomplete";
+        break;
       default:
         break;
     }
@@ -373,7 +377,7 @@ export function parseTraceOutput(raw: string): TraceResult {
     );
   }
 
-  return { events, modules, functions, appMod, deps, compileOk };
+  return { events, modules, functions, appMod, deps, compileOk, testPartition };
 }
 
 function tailLines(text: string, n: number): string {

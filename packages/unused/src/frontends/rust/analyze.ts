@@ -218,6 +218,7 @@ export async function analyzeRustProjectWithGraph(
           language: "rs",
           fileCount: files.length,
           workspaceCount: units.length,
+          partitions: { production: "complete", config: "complete", test: "complete" },
         },
       ],
     },

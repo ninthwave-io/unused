@@ -68,6 +68,15 @@ describe("parseTraceOutput", () => {
     expect(result.modules).toHaveLength(1);
   });
 
+  it("preserves an incomplete test-partition signal without rejecting complete production facts", () => {
+    const result = parseTraceOutput(
+      `${OK_LINES}\n${JSON.stringify({ k: "test_compile_error" })}\n`,
+    );
+    expect(result.compileOk).toBe(true);
+    expect(result.testPartition).toBe("incomplete");
+    expect(result.modules).toHaveLength(1);
+  });
+
   it("refuses (throws) when the tracer reported a compile error", () => {
     const lines = [
       JSON.stringify({ k: "compile_error", count: 3 }),

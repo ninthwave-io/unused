@@ -5,7 +5,11 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fileId } from "../core/ir/index.js";
 import { isMixAvailable } from "../testing/corpus/elixir-corpus.js";
-import { analyzeProjectAuto, analyzeProjectAutoWithGraph } from "./dispatch.js";
+import {
+  analyzeProjectAuto,
+  analyzeProjectAutoWithGraph,
+  deriveDirectBoundaryMetadata,
+} from "./dispatch.js";
 
 const elixirFixture = fileURLToPath(
   new URL("../../../../fixtures/elixir/test-only-zombie", import.meta.url),
@@ -113,6 +117,21 @@ describe.skipIf(!MIX_AVAILABLE)("mixed-language dispatch policy", () => {
 });
 
 describe("nested-boundary dispatch", () => {
+  it("fails closed when a direct analyzer omits boundary completeness metadata", () => {
+    expect(() =>
+      deriveDirectBoundaryMetadata({
+        analyzerBoundaries: [],
+        pluginId: "language:neutral",
+        boundaryId: "neutral:fallback",
+        language: "neutral",
+        fileCount: 1,
+        workspaceCount: 1,
+      }),
+    ).toThrow(
+      "analysis completeness contract violation: language:neutral omitted required boundary metadata",
+    );
+  });
+
   it("analyzes a nested TypeScript project from the repository root", async () => {
     const root = await mkdtemp(join(tmpdir(), "unused-nested-dispatch-"));
     temporaryProjects.push(root);

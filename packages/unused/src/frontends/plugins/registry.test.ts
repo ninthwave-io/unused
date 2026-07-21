@@ -4,6 +4,7 @@ import {
   executePluginOperation,
   type LanguageFrontendPlugin,
   PluginExecutionError,
+  requireAnalyzerBoundaryMetadata,
 } from "./types.js";
 
 function languagePlugin(id: string, language = id): LanguageFrontendPlugin {
@@ -31,6 +32,12 @@ function languagePlugin(id: string, language = id): LanguageFrontendPlugin {
 }
 
 describe("PluginRegistry", () => {
+  it("fails closed when an analyzer omits required boundary completeness metadata", () => {
+    expect(() => requireAnalyzerBoundaryMetadata([], "language:neutral")).toThrow(
+      "analysis completeness contract violation: language:neutral omitted required boundary metadata",
+    );
+  });
+
   it("returns plugins in stable id order independent of registration order", () => {
     const registry = new PluginRegistry([
       languagePlugin("language:typescript", "ts"),

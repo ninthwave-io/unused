@@ -17,6 +17,8 @@
  */
 
 export type {
+  AnalysisBoundary,
+  AnalysisPartitionCompletion,
   Claim,
   ClaimRun,
   ClaimSummary,

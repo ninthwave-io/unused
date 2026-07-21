@@ -487,6 +487,53 @@ with a boundary record and attributed claims. The privacy scan finds no private
 consumer identifier, added absolute user path, private-key marker, or credential
 marker.
 
+### P8 — Elixir test-partition completeness
+
+Status: verification complete; independent review pending
+
+Objective: preserve useful production compiler facts when isolated ExUnit
+compilation is incomplete without allowing any potentially test-reachable
+subject or bridge descendant to look deletion-safe.
+
+Implemented checkpoint:
+
+- tracer `test_compile_error` is retained as explicit partition completeness;
+- schema 1.4.0 requires production/config/test status and marks the boundary
+  partial when the test partition is incomplete;
+- a non-claimable `mix.exs` safety anchor reaches every compiler-known
+  production file, module, and public function before bridge/global
+  reachability;
+- deterministic diagnostics are out-of-band on stderr; and
+- deletion planning refuses live `safety-root` inbound references.
+
+Neutral acceptance coverage uses an independently generated Mix application
+whose normal test command starts application state that a test module reads at
+compile time. Unit, same-graph `why`, deletion, canonical CLI, corpus, complete
+fixture equivalence, and mixed TypeScript/Elixir/Rust bridge tests are present.
+
+Verification:
+
+- typecheck passes; lint passes with the established 2 warnings and 48
+  informational diagnostics; dependency boundaries pass over 917 modules and
+  1,982 dependencies; `git diff --check` passes;
+- the full toolchain-equipped suite passes all 81 files / 1,075 tests;
+- schema tests, canonical JSON stdout/stderr separation, same-graph `why`,
+  deletion refusal, exact complete-fixture claims, and mixed bridge protection
+  are included in that run;
+- generated assumption set 1.8 is in sync; build and an installed-tarball smoke
+  emit diagnostic-free schema 1.4.0 JSON with complete partition metadata;
+- TypeScript remains 52 cases / 237 subjects, precision 1.0, recall
+  0.826530612244898; Elixir is 11 / 29, precision 1.0, recall
+  0.9090909090909091 with the single deliberate incomplete-partition recall
+  miss; Rust remains 4 / 12, precision 1.0, recall 0.8333333333333334; Rustler
+  remains 1 / 4 at precision and recall 1.0; every corpus has zero false
+  positives, confidence violations, and unlabelled claims; and
+- the privacy scan finds no added absolute user paths, credential/private-key
+  markers, or paths outside the neutral public fixture/docs/package scope.
+
+Next exact action: independent review of the uncommitted diff. Correct any
+evidenced findings, rerun affected gates, then commit one focused checkpoint.
+
 ## Verification commands
 
 Run at each applicable checkpoint:
@@ -516,6 +563,8 @@ Packaging and privacy smokes remain mandatory before any release recommendation.
 - 2026-07-21: Rustler/NIF is the first cross-language bridge.
 - 2026-07-21: consuming-project evidence remains private and is never the source
   of public fixtures.
+- 2026-07-21: bounded partition incompleteness is explicit `partial` metadata,
+  never an unqualified complete boundary or a confidence-only downgrade.
 
 ## Checkpoint history
 

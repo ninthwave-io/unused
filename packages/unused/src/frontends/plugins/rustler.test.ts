@@ -164,6 +164,7 @@ function fragment(language: "ex" | "rs", file: string, graph: IRGraph): Frontend
       workspaceCount: 1,
       configHash: "test",
       gateThreshold: "high",
+      completeness: { production: "complete", config: "complete", test: "complete" },
     },
     claimInputs: {
       fileLineCounts: new Map(),

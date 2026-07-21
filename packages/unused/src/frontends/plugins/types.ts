@@ -10,7 +10,13 @@
 
 import type { DependencyClaimInput } from "../../core/analysis/claims.js";
 import type { PerformanceTracker } from "../../core/analysis/index.js";
-import type { Evidence, Provenance, Suppression } from "../../core/claims/index.js";
+import type {
+  AnalysisBoundary,
+  AnalysisPartitionCompletion,
+  Evidence,
+  Provenance,
+  Suppression,
+} from "../../core/claims/index.js";
 import type { HazardAnnotation, IREdge, IRGraph, IRNode, Site } from "../../core/ir/index.js";
 
 /** Stable, open language id used in graph/claim identity (`ts`, `ex`, `rs`). */
@@ -108,6 +114,7 @@ export interface FrontendGraphFragment {
     readonly workspaceCount: number;
     readonly configHash: string;
     readonly gateThreshold: "high" | "medium" | "low";
+    readonly completeness: AnalysisPartitionCompletion;
   };
   readonly claimInputs: FrontendClaimInputs;
   /** Stable-id metadata reapplied after repository-wide claim emission. */
@@ -193,6 +200,24 @@ export type BoundaryAnalysisRecord =
       readonly boundary: ProjectBoundary;
       readonly diagnostic: PluginDiagnostic;
     };
+
+/**
+ * Fail closed when a frontend violates the ADR 0013 completeness contract.
+ * Callers must never manufacture an all-complete boundary when the analyzer
+ * omitted the metadata that proves it.
+ */
+export function requireAnalyzerBoundaryMetadata(
+  boundaries: readonly AnalysisBoundary[],
+  pluginId: string,
+): AnalysisBoundary {
+  const boundary = boundaries[0];
+  if (boundary === undefined || boundary.partitions === undefined) {
+    throw new Error(
+      `analysis completeness contract violation: ${pluginId} omitted required boundary metadata`,
+    );
+  }
+  return boundary;
+}
 
 /** Error wrapper that always identifies the plugin and optional project boundary. */
 export class PluginExecutionError extends Error {

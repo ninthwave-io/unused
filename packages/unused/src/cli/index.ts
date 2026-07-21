@@ -400,6 +400,19 @@ function finishPerformance(performance: PerformanceTracker | undefined): void {
   );
 }
 
+function emitAnalysisDiagnostics(
+  result: AnalyzeResult,
+  emittedLines: Set<string> = new Set<string>(),
+): void {
+  for (const diagnostic of result.diagnostics ?? []) {
+    const boundary = diagnostic.boundaryId === undefined ? "" : ` ${diagnostic.boundaryId}`;
+    const line = `unused: ${diagnostic.severity} [${diagnostic.code}]${boundary}: ${diagnostic.message}\n`;
+    if (emittedLines.has(line)) continue;
+    emittedLines.add(line);
+    process.stderr.write(line);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Shared: resolve --cwd, stat it, run analyzeProject, map every failure mode
 // to the PRD §3 exit contract. Used by the default report and both
@@ -415,6 +428,7 @@ async function runAnalysis(
   configArg: string | undefined,
   noGitignore = false,
   performance?: PerformanceTracker,
+  emittedDiagnosticLines?: Set<string>,
 ): Promise<AnalysisOutcome> {
   const root = resolvePath(process.cwd(), cwdArg ?? ".");
 
@@ -435,6 +449,7 @@ async function runAnalysis(
       ...(noGitignore ? { gitignore: false } : {}),
       ...(performance === undefined ? {} : { performance }),
     });
+    emitAnalysisDiagnostics(result, emittedDiagnosticLines);
     return { ok: true, root, result };
   } catch (err) {
     // A config/usage problem (T4.3: missing --config target, malformed
@@ -698,6 +713,7 @@ async function runAnalysisWithGraph(
   configArg: string | undefined,
   noGitignore = false,
   performance?: PerformanceTracker,
+  emittedDiagnosticLines?: Set<string>,
 ): Promise<GraphAnalysisOutcome> {
   const root = resolvePath(process.cwd(), cwdArg ?? ".");
   try {
@@ -716,6 +732,7 @@ async function runAnalysisWithGraph(
       ...(noGitignore ? { gitignore: false } : {}),
       ...(performance === undefined ? {} : { performance }),
     });
+    emitAnalysisDiagnostics(analysis.result, emittedDiagnosticLines);
     return { ok: true, root, analysis };
   } catch (err) {
     if (err instanceof ConfigError) {
@@ -1046,6 +1063,7 @@ async function runReportCommand(argv: readonly string[]): Promise<number> {
     repoName,
     units: _units,
     gateThreshold: _gateThreshold,
+    diagnostics: _diagnostics,
     ...claimRun
   } = result;
 
@@ -1403,11 +1421,13 @@ export async function run(argv: readonly string[]): Promise<number> {
   }
 
   const performance = createPerformanceTracker(parsed.args.performance);
+  const emittedDiagnosticLines = new Set<string>();
   const outcome = await runAnalysis(
     parsed.args.cwd,
     parsed.args.config,
     parsed.args.noGitignore,
     performance,
+    emittedDiagnosticLines,
   );
   if (!outcome.ok) return outcome.exitCode;
   let { result } = outcome;
@@ -1422,6 +1442,7 @@ export async function run(argv: readonly string[]): Promise<number> {
         parsed.args.config,
         parsed.args.noGitignore,
         performance,
+        emittedDiagnosticLines,
       );
       if (!graphOutcome.ok) return graphOutcome.exitCode;
       result = graphOutcome.analysis.result;
@@ -1504,6 +1525,7 @@ export async function run(argv: readonly string[]): Promise<number> {
         parsed.args.config,
         parsed.args.noGitignore,
         performance,
+        emittedDiagnosticLines,
       );
       if (!after.ok) {
         process.stderr.write(
@@ -1542,6 +1564,7 @@ export async function run(argv: readonly string[]): Promise<number> {
     repoName,
     units: _units,
     gateThreshold: _gateThreshold,
+    diagnostics: _diagnostics,
     ...claimRun
   } = result;
 

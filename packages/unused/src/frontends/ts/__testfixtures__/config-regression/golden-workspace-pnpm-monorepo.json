@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "1.3.0",
+  "schemaVersion": "1.4.0",
   "tool": {
     "name": "unused",
     "version": "0.1.0"
@@ -14,7 +14,8 @@
         "boundaryId": "ts:.",
         "language": "ts",
         "fileCount": 5,
-        "workspaceCount": 3
+        "workspaceCount": 3,
+        "partitions": { "production": "complete", "config": "complete", "test": "complete" }
       }
     ]
   },

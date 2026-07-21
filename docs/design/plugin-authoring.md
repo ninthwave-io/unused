@@ -11,8 +11,10 @@ and Rustler implementations have proved the boundary.
 
 ## Choose the narrowest plugin kind
 
-- A `LanguageFrontendPlugin` discovers a manifest boundary and emits a complete
+- A `LanguageFrontendPlugin` discovers a manifest boundary and emits a
   repository-relative graph fragment plus the inputs core needs to emit claims.
+  It declares production/config/test completeness; a partial fragment is valid
+  only when missing facts have been conservatively safety-rooted.
 - A `ConventionPlugin` adds roots, references, endpoints, or hazards for one or
   more languages. It must not compute reachability or emit claims.
 - A `BridgePlugin` joins already-emitted facts across language fragments. It
@@ -52,6 +54,13 @@ A contribution may add nodes, edges, hazards, and diagnostics. It may not
 remove or mutate another plugin's facts. Duplicate identical node ids are
 idempotent; conflicting shapes fail loudly. Diagnostics must be deterministic
 and must never enter canonical JSON stdout.
+
+Language diagnostics stay out-of-band. The CLI renders deterministic diagnostics
+to stderr, while `run.boundaries[].status` and `.partitions` carry only stable
+machine-readable completeness. An incomplete partition must not be represented
+as a confidence downgrade: add the narrowest safety roots needed to make every
+potentially reachable subject alive, including bridge descendants, so claim and
+deletion-plan semantics agree.
 
 When a convention depends on expensive language-tool facts, the language
 frontend may prepare a `GraphContribution` during its one parse/compiler pass

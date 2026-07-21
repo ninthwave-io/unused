@@ -84,6 +84,9 @@ export interface TestCompileErrorRecord {
   readonly k: "test_compile_error";
 }
 
+/** Completeness of the separately compiled ExUnit source partition. */
+export type TestPartitionStatus = "complete" | "incomplete";
+
 export type TraceRecord =
   | TraceEvent
   | ModuleRecord
@@ -105,4 +108,10 @@ export interface TraceResult {
   readonly deps: readonly string[];
   /** `false` when the production compile reported errors — the caller refuses. */
   readonly compileOk: boolean;
+  /**
+   * Whether every discovered ExUnit test source compiled under the
+   * analyzer's isolated `--no-start` process. Production compilation can be
+   * complete while this partition is incomplete.
+   */
+  readonly testPartition: TestPartitionStatus;
 }

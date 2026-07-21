@@ -30,6 +30,10 @@
  *    transitively.
  *  - **config**: any file whose module is named in `config/*.exs`.
  *  - **test**: every ExUnit test file (under `test/`, a `_test.exs` basename).
+ *    If that separate compiler pass is incomplete, a synthetic config safety
+ *    root conservatively reaches every production public surface. This keeps
+ *    potentially test-reachable code alive (including across bridge edges)
+ *    and gives deletion planning an explicit inbound safety reference.
  *
  * ## Hazards (keep-alive / cap)
  *  - a module declaring a behaviour ⇒ `elixir-behaviour-callback` (its function
@@ -310,6 +314,41 @@ export function emitElixirIR(input: EmitElixirInput): IRGraph {
       file: mod.file,
       reason: "exunit-test",
     });
+  }
+
+  if (traceResult.testPartition === "incomplete") {
+    const productionFiles = new Set(
+      traceResult.modules.filter((mod) => mod.partition === "prod").map((mod) => mod.file),
+    );
+    addFile("mix.exs");
+    graph.addNode({
+      kind: "entrypoint",
+      id: entrypointId("config", "mix.exs"),
+      entryKind: "config",
+      file: "mix.exs",
+      reason: "incomplete-test-partition",
+    });
+    for (const file of [...productionFiles].sort()) {
+      graph.addEdge({
+        kind: "references",
+        referenceKind: "safety-root",
+        from: fileId("mix.exs"),
+        to: fileId(file),
+        site: siteAt("mix.exs", 1),
+        name: "*",
+      });
+    }
+    for (const node of graph.nodes()) {
+      if (node.kind !== "symbol" || !productionFiles.has(node.file)) continue;
+      graph.addEdge({
+        kind: "references",
+        referenceKind: "safety-root",
+        from: fileId("mix.exs"),
+        to: node.id,
+        site: siteAt("mix.exs", 1),
+        name: node.exportedName,
+      });
+    }
   }
 
   return graph;

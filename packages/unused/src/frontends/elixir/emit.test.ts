@@ -6,8 +6,14 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { computePartitionedReachability, emitClaims } from "../../core/analysis/index.js";
+import {
+  computeDeletionPlan,
+  computePartitionedReachability,
+  emitClaims,
+  whyAlive,
+} from "../../core/analysis/index.js";
 import type { Claim } from "../../core/claims/types.js";
+import { fileId, symbolId } from "../../core/ir/index.js";
 import { emitElixirIR } from "./emit.js";
 import type { FunctionRecord, ModuleRecord, TraceEvent, TraceResult } from "./events.js";
 import type { ElixirDynamicDispatch, ElixirRuntimeReference } from "./runtime-references.js";
@@ -89,6 +95,7 @@ const CLEAN: TraceResult = {
   appMod: "App.Application",
   deps: [],
   compileOk: true,
+  testPartition: "complete",
   modules: [
     mod("App.Application", "lib/app/application.ex"),
     mod("App.Core", "lib/app/core.ex"),
@@ -155,12 +162,90 @@ describe("emitElixirIR — clean scenario", () => {
   });
 });
 
+describe("emitElixirIR — incomplete test partition", () => {
+  const trace: TraceResult = {
+    ...CLEAN,
+    testPartition: "incomplete",
+    modules: [...CLEAN.modules, mod("App.Empty", "lib/app/empty.ex")],
+  };
+  const graph = emitElixirIR({ traceResult: trace, configReferencedModules: new Set() });
+  const reachability = computePartitionedReachability(graph);
+  const claims = emitClaims({
+    graph,
+    reachability,
+    provenance: {
+      analyzer: "elixir-reference-graph",
+      version: "0.1.0",
+      generatedAt: "1970-01-01T00:00:00.000Z",
+    },
+    language: "ex",
+  });
+
+  it("keeps every compiler-known production file, module, and function alive", () => {
+    const productionFiles = new Set(
+      trace.modules.filter((record) => record.partition === "prod").map((record) => record.file),
+    );
+    const productionSymbols = graph
+      .nodes()
+      .filter((node) => node.kind === "symbol" && productionFiles.has(node.file));
+
+    expect(
+      [...productionFiles].every((file) => reachability.config.reachableFiles.has(fileId(file))),
+    ).toBe(true);
+    expect(
+      productionSymbols.every((node) => reachability.config.reachableSymbols.has(node.id)),
+    ).toBe(true);
+    expect(
+      reachability.config.reachableSymbols.has(symbolId("lib/app/empty.ex", "App.Empty")),
+    ).toBe(true);
+    expect(claims).toEqual([]);
+  });
+
+  it("explains the conservative same-graph path and refuses export and file deletion", () => {
+    const why = whyAlive({
+      graph,
+      reachability,
+      claims,
+      query: "App.Core.dead/1",
+    });
+    expect(why).toMatchObject({
+      outcome: "alive",
+      entrypointKind: "config",
+      testOnly: false,
+      paths: [
+        {
+          entrypointReason: "incomplete-test-partition",
+          hops: [{ file: "mix.exs" }, { file: "lib/app/core.ex", symbol: "App.Core.dead/1" }],
+        },
+      ],
+    });
+    if (why.outcome !== "alive") throw new Error("expected safety-root liveness");
+    expect(computeDeletionPlan({ graph, reachability, subject: why.subject })).toMatchObject({
+      supported: false,
+      unsupportedReason: "selected subject has a live analysis-completeness reference at mix.exs:1",
+      stages: [],
+    });
+    expect(
+      computeDeletionPlan({
+        graph,
+        reachability,
+        subject: { kind: "file", file: "lib/app/empty.ex" },
+      }),
+    ).toMatchObject({
+      supported: false,
+      unsupportedReason: "selected subject has a live analysis-completeness reference at mix.exs:1",
+      stages: [],
+    });
+  });
+});
+
 // --- scenario 2: dynamic dispatch caps the unit to medium ------------------
 
 const DYNAMIC: TraceResult = {
   appMod: "App.Application",
   deps: [],
   compileOk: true,
+  testPartition: "complete",
   modules: [
     mod("App.Application", "lib/app/application.ex"),
     mod("App.Handlers", "lib/app/handlers.ex"),
@@ -242,6 +327,7 @@ describe("emitElixirIR — no production entrypoint", () => {
       appMod: null,
       deps: [],
       compileOk: true,
+      testPartition: "complete",
       modules: [mod("Lib.Thing", "lib/lib/thing.ex")],
       functions: [fn("do_it", 0, "lib/lib/thing.ex", "Lib.Thing")],
       events: [],

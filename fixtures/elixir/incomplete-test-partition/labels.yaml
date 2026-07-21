@@ -1,0 +1,15 @@
+case: incomplete-test-partition
+description: >-
+  A test module reads application runtime state while it is compiled. Normal
+  mix test starts the application first, but the analyzer intentionally uses
+  --no-start, so the test partition is incomplete and must fail closed.
+subjects:
+  - kind: export
+    name: NeutralPartition.Subject.checked_only_in_test/0
+    file: lib/neutral_partition/subject.ex
+    expected: test-only
+    minConfidence: high
+    because: >-
+      The function is reached only by the test under a normal application-started
+      test run. When isolated test compilation is incomplete, the analyzer must
+      keep it conservatively alive instead of producing a deletion-safe claim.

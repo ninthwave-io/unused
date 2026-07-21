@@ -113,7 +113,7 @@ COMMANDS
                        its verdict, confidence, and evidence. Answers for any
                        symbol — a bare name, file.ts:name, or a file path.
                        --delete returns a read-only counterfactual consequence
-                       plan; add --json for its schema-1.3 machine form.
+                       plan; add --json for its schema-1.4 machine form.
   unused mcp          Start the MCP server (stdio) over the same engine, for
                        coding agents: find_unused, why_alive, usage_evidence.
                        Read-only, zero network.

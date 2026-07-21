@@ -228,6 +228,8 @@ export type EdgeKind = "references" | "exports" | "contains" | "consumes";
  *  - `static`          — a static import / type import (resolved statically).
  *  - `dynamic-resolved`— a string-literal `import()` / `require()` that resolved.
  *  - `runtime-resolved`— a literal runtime convention resolved to one symbol.
+ *  - `safety-root`     — a conservative completeness root: an unavailable
+ *                        analysis partition could reference the exact surface.
  *  - `re-export`       — a barrel edge (`export … from`), symbol- or file-level.
  *  - `side-effect`     — `import "./x"`: keeps the file alive, binds no symbol.
  *  - `hazard`          — a keep-alive edge whose target must stay reachable
@@ -238,6 +240,7 @@ export type ReferenceKind =
   | "static"
   | "dynamic-resolved"
   | "runtime-resolved"
+  | "safety-root"
   | "re-export"
   | "side-effect"
   | "hazard";

@@ -10,8 +10,8 @@ import type {
 import { isValidKindVerdict, KIND_VERDICTS, SCHEMA_VERSION } from "./types.js";
 
 describe("SCHEMA_VERSION", () => {
-  it("is 1.3.0 — additive language and boundary observability are a MINOR bump", () => {
-    expect(SCHEMA_VERSION).toBe("1.3.0");
+  it("is 1.4.0 — additive boundary partition completeness is a MINOR bump", () => {
+    expect(SCHEMA_VERSION).toBe("1.4.0");
   });
 });
 
@@ -23,7 +23,7 @@ describe("DeletionPlan type contract", () => {
       name: "thing",
     };
     const plan: DeletionPlan = {
-      schemaVersion: "1.3.0",
+      schemaVersion: "1.4.0",
       selected: subject,
       supported: false,
       unsupportedReason: "not modeled",
@@ -41,7 +41,7 @@ describe("DeletionPlan type contract", () => {
     const missingExportName: DeletionPlanSubject = { kind: "export", file: "src/origin.ts" };
     // @ts-expect-error Unsupported plans require a non-empty reason structurally.
     const missingUnsupportedReason: DeletionPlan = {
-      schemaVersion: "1.3.0",
+      schemaVersion: "1.4.0",
       selected: subject,
       supported: false,
       reExportEdits: [],
@@ -66,7 +66,7 @@ describe("DeletionPlan type contract", () => {
     };
     // @ts-expect-error Dependency deletion cannot be represented as a supported graph plan.
     const supportedDependency: DeletionPlan = {
-      schemaVersion: "1.3.0",
+      schemaVersion: "1.4.0",
       selected: { kind: "dependency", file: "package.json", name: "some-package" },
       supported: true,
       reExportEdits: [],
@@ -74,7 +74,7 @@ describe("DeletionPlan type contract", () => {
     };
     // @ts-expect-error Unsupported plans cannot claim required source edits.
     const unsupportedWithEdit: DeletionPlan = {
-      schemaVersion: "1.3.0",
+      schemaVersion: "1.4.0",
       selected: subject,
       supported: false,
       unsupportedReason: "not modeled",
@@ -94,7 +94,7 @@ describe("DeletionPlan type contract", () => {
     };
     // @ts-expect-error Unsupported plans cannot claim graph-derived stages.
     const unsupportedWithStage: DeletionPlan = {
-      schemaVersion: "1.3.0",
+      schemaVersion: "1.4.0",
       selected: subject,
       supported: false,
       unsupportedReason: "not modeled",

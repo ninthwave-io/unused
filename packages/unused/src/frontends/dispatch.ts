@@ -7,8 +7,8 @@ import {
   type PartitionedReachability,
 } from "../core/analysis/index.js";
 import {
+  type AnalysisBoundary,
   type Claim,
-  type CompletedAnalysisBoundary,
   computeSummary,
   SCHEMA_VERSION,
 } from "../core/claims/index.js";
@@ -21,6 +21,7 @@ import {
   type FrontendGraphFragment,
   type GraphContribution,
   type RepositoryAnalysisContext,
+  requireAnalyzerBoundaryMetadata,
 } from "./plugins/types.js";
 import { type AnalyzeOptions, type AnalyzeResult, analyzeProjectWithGraph } from "./ts/analyze.js";
 import {
@@ -42,7 +43,7 @@ export interface AnalyzeAutoWithGraph {
   readonly boundaries: readonly BoundaryRunMetadata[];
 }
 
-export type BoundaryRunMetadata = CompletedAnalysisBoundary;
+export type BoundaryRunMetadata = AnalysisBoundary;
 
 export async function analyzeProjectAuto(
   rootDir: string,
@@ -107,14 +108,14 @@ export async function analyzeProjectAutoWithGraph(
   if (discovered.length === 0) {
     const analysis = await analyzeProjectWithGraph(root, options);
     const boundaries: readonly BoundaryRunMetadata[] = [
-      {
-        status: "complete",
+      deriveDirectBoundaryMetadata({
+        analyzerBoundaries: analysis.result.run.boundaries,
         pluginId: "language:typescript",
         boundaryId: "ts:fallback",
         language: "ts",
         fileCount: analysis.result.fileCount,
         workspaceCount: analysis.result.workspaceCount,
-      },
+      }),
     ];
     return {
       ...analysis,
@@ -132,14 +133,14 @@ export async function analyzeProjectAutoWithGraph(
       ? analyzeElixirProjectWithGraph(root, options)
       : analyzeProjectWithGraph(root, options));
     const boundaries: readonly BoundaryRunMetadata[] = [
-      {
-        status: "complete",
+      deriveDirectBoundaryMetadata({
+        analyzerBoundaries: analysis.result.run.boundaries,
         pluginId: selected.plugin.id,
         boundaryId: selected.boundary.id,
         language: selected.plugin.language,
         fileCount: analysis.result.fileCount,
         workspaceCount: analysis.result.workspaceCount,
-      },
+      }),
     ];
     return {
       ...analysis,
@@ -263,6 +264,9 @@ export async function analyzeProjectAutoWithGraph(
     repoName: rootProject?.metadata.projectName ?? basename(root),
     units,
     gateThreshold: config.gate?.threshold ?? "high",
+    ...(fragments.some((fragment) => fragment.diagnostics.length > 0)
+      ? { diagnostics: fragments.flatMap((fragment) => fragment.diagnostics).sort(byDiagnostic) }
+      : {}),
   };
   return {
     result,
@@ -272,14 +276,48 @@ export async function analyzeProjectAutoWithGraph(
   };
 }
 
+function byDiagnostic(
+  a: FrontendGraphFragment["diagnostics"][number],
+  b: FrontendGraphFragment["diagnostics"][number],
+): number {
+  return (
+    (a.boundaryId ?? "").localeCompare(b.boundaryId ?? "") ||
+    a.pluginId.localeCompare(b.pluginId) ||
+    a.code.localeCompare(b.code) ||
+    a.message.localeCompare(b.message)
+  );
+}
+
 function completedBoundary(fragment: FrontendGraphFragment): BoundaryRunMetadata {
   return {
-    status: "complete",
+    status: fragment.metadata.completeness.test === "incomplete" ? "partial" : "complete",
     pluginId: fragment.pluginId,
     boundaryId: fragment.boundary.id,
     language: fragment.language,
     fileCount: fragment.metadata.fileCount,
     workspaceCount: fragment.metadata.workspaceCount,
+    partitions: fragment.metadata.completeness,
+  };
+}
+
+/** Internal direct-path adapter; exported only so its fail-closed contract is regression-tested. */
+export function deriveDirectBoundaryMetadata(input: {
+  readonly analyzerBoundaries: readonly AnalysisBoundary[];
+  readonly pluginId: string;
+  readonly boundaryId: string;
+  readonly language: string;
+  readonly fileCount: number;
+  readonly workspaceCount: number;
+}): BoundaryRunMetadata {
+  const localBoundary = requireAnalyzerBoundaryMetadata(input.analyzerBoundaries, input.pluginId);
+  return {
+    status: localBoundary.status,
+    pluginId: input.pluginId,
+    boundaryId: input.boundaryId,
+    language: input.language,
+    fileCount: input.fileCount,
+    workspaceCount: input.workspaceCount,
+    partitions: localBoundary.partitions,
   };
 }
 

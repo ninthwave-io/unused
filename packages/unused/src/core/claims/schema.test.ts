@@ -52,7 +52,7 @@ describe("claim-run.schema.json", () => {
     expect(valid).toBe(true);
   });
 
-  it("requires completed boundaries and explicit claim language attribution", () => {
+  it("requires analyzed boundaries and explicit claim language attribution", () => {
     const validate = compileSchema();
     const withoutBoundaries = structuredClone(prdWorkedExample) as {
       run: { boundaries?: unknown };
@@ -65,6 +65,29 @@ describe("claim-run.schema.json", () => {
     };
     delete withoutLanguage.claims[0].language;
     expect(validate(withoutLanguage)).toBe(false);
+  });
+
+  it("accepts an explicitly partial test partition and rejects status/completeness drift", () => {
+    const validate = compileSchema();
+    const partial = structuredClone(prdWorkedExample) as {
+      run: {
+        boundaries: Array<{
+          status: string;
+          partitions: { production: string; config: string; test: string };
+        }>;
+      };
+    };
+    const boundary = partial.run.boundaries[0];
+    if (boundary === undefined) throw new Error("worked example boundary missing");
+    boundary.status = "partial";
+    boundary.partitions.test = "incomplete";
+    expect(validate(partial), JSON.stringify(validate.errors)).toBe(true);
+
+    boundary.status = "complete";
+    expect(validate(partial)).toBe(false);
+    boundary.partitions.test = "complete";
+    boundary.status = "partial";
+    expect(validate(partial)).toBe(false);
   });
 
   it("rejects a claim pairing subject.kind=export with verdict=unconsumed-endpoint", () => {

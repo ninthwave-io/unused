@@ -85,7 +85,9 @@ export function computeDeletionPlan(input: ComputeDeletionPlanInput): DeletionPl
     const reference =
       liveInboundReference.referenceKind === "runtime-resolved"
         ? "runtime"
-        : (liveInboundReference.referenceKind ?? "unclassified");
+        : liveInboundReference.referenceKind === "safety-root"
+          ? "analysis-completeness"
+          : (liveInboundReference.referenceKind ?? "unclassified");
     return finish({
       schemaVersion: SCHEMA_VERSION,
       selected: subject,

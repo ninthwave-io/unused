@@ -24,6 +24,7 @@ import type {
   LanguageFrontendPlugin,
   RepositoryAnalysisContext,
 } from "./types.js";
+import { requireAnalyzerBoundaryMetadata } from "./types.js";
 import { typescriptConfigCarriersConventionPlugin } from "./typescript-conventions.js";
 
 const PLUGIN_VERSION = "0.1.0";
@@ -46,6 +47,7 @@ function fragment(
     readonly deferredContributions?: ReadonlyMap<string, GraphContribution>;
   },
 ): FrontendGraphFragment {
+  const localBoundary = requireAnalyzerBoundaryMetadata(analysis.result.run.boundaries, pluginId);
   const claimAnnotations = new Map<
     string,
     {
@@ -80,6 +82,7 @@ function fragment(
       workspaceCount: analysis.result.workspaceCount,
       configHash: analysis.result.run.configHash,
       gateThreshold: analysis.result.gateThreshold,
+      completeness: localBoundary.partitions,
     },
     claimInputs: rebaseClaimInputs(analysis.claimInputs, boundary.rootRelDir),
     claimAnnotations,
@@ -93,7 +96,10 @@ function fragment(
             ]),
           ),
         }),
-    diagnostics: [],
+    diagnostics: (analysis.result.diagnostics ?? []).map((diagnostic) => ({
+      ...diagnostic,
+      boundaryId: boundary.id,
+    })),
   };
 }
 

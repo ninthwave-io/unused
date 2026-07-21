@@ -21,7 +21,7 @@ function validator() {
 }
 
 const PLAN: DeletionPlan = {
-  schemaVersion: "1.3.0",
+  schemaVersion: "1.4.0",
   selected: { kind: "export", file: "src/origin.ts", name: "thing", line: 2 },
   supported: true,
   reExportEdits: [
@@ -69,7 +69,7 @@ describe("deletion-plan.schema.json", () => {
     const dependency = { kind: "dependency", file: "package.json", name: "some-package" };
     expect(
       validate({
-        schemaVersion: "1.3.0",
+        schemaVersion: "1.4.0",
         selected: dependency,
         supported: false,
         unsupportedReason: "dependency deletion has no graph cascade model",

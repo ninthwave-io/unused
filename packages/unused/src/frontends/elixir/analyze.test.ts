@@ -3,12 +3,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { computeDeletionPlan, whyAlive } from "../../core/analysis/index.js";
 import { isMixAvailable } from "../../testing/corpus/elixir-corpus.js";
 import { ConfigError } from "../ts/config.js";
-import { analyzeElixirProject } from "./analyze.js";
+import { analyzeElixirProject, analyzeElixirProjectWithGraph } from "./analyze.js";
 
 const sourceFixture = fileURLToPath(
   new URL("../../../../../fixtures/elixir/basic-dead-function", import.meta.url),
+);
+const completeTestFixture = fileURLToPath(
+  new URL("../../../../../fixtures/elixir/test-only-zombie", import.meta.url),
+);
+const incompleteTestFixture = fileURLToPath(
+  new URL("../../../../../fixtures/elixir/incomplete-test-partition", import.meta.url),
 );
 const temporaryProjects: string[] = [];
 const MIX_AVAILABLE = isMixAvailable();
@@ -85,6 +92,106 @@ describe("Elixir analysis policy", () => {
       expect(
         audit.claims.some((claim) => claim.subject.name === "BasicDead.Core.unused_helper/1"),
       ).toBe(true);
+    },
+    30_000,
+  );
+
+  it.skipIf(!MIX_AVAILABLE)(
+    "publishes partial test completeness and fails closed for potentially test-reachable subjects",
+    async () => {
+      const analysis = await analyzeElixirProjectWithGraph(incompleteTestFixture, {
+        now: new Date(0),
+      });
+      expect(analysis.result.run.boundaries).toEqual([
+        {
+          status: "partial",
+          pluginId: "language:elixir",
+          boundaryId: "ex:.",
+          language: "ex",
+          fileCount: 2,
+          workspaceCount: 1,
+          partitions: { production: "complete", config: "complete", test: "incomplete" },
+        },
+      ]);
+      expect(analysis.result.diagnostics).toEqual([
+        expect.objectContaining({
+          severity: "warning",
+          code: "elixir-test-partition-incomplete",
+          boundaryId: "ex:.",
+        }),
+      ]);
+      expect(analysis.result.claims).toEqual([]);
+
+      const why = whyAlive({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        claims: analysis.result.claims,
+        query: "NeutralPartition.Subject.checked_only_in_test/0",
+      });
+      expect(why).toMatchObject({
+        outcome: "alive",
+        entrypointKind: "config",
+        paths: [{ entrypointReason: "incomplete-test-partition" }],
+      });
+      if (why.outcome !== "alive") throw new Error("expected conservative liveness");
+      expect(
+        computeDeletionPlan({
+          graph: analysis.graph,
+          reachability: analysis.reachability,
+          subject: why.subject,
+        }),
+      ).toMatchObject({
+        supported: false,
+        unsupportedReason:
+          "selected subject has a live analysis-completeness reference at mix.exs:1",
+      });
+    },
+    30_000,
+  );
+
+  it.skipIf(!MIX_AVAILABLE)(
+    "preserves the complete test fixture claim set apart from required 1.4 metadata",
+    async () => {
+      const run = await analyzeElixirProject(completeTestFixture, { now: new Date(0) });
+      expect(run.run.boundaries).toEqual([
+        {
+          status: "complete",
+          pluginId: "language:elixir",
+          boundaryId: "ex:.",
+          language: "ex",
+          fileCount: 5,
+          workspaceCount: 1,
+          partitions: { production: "complete", config: "complete", test: "complete" },
+        },
+      ]);
+      expect(run.diagnostics).toBeUndefined();
+      expect(
+        run.claims.map((claim) => ({
+          id: claim.id,
+          kind: claim.subject.kind,
+          name: claim.subject.name,
+          file: claim.subject.loc.file,
+          verdict: claim.verdict,
+          confidence: claim.confidence,
+        })),
+      ).toEqual([
+        {
+          id: "fil_d1b0e58873cafe99",
+          kind: "file",
+          name: "lib/tob/fixture_factory.ex",
+          file: "lib/tob/fixture_factory.ex",
+          verdict: "test-only",
+          confidence: "high",
+        },
+        {
+          id: "tst_b4a937dafa0c5a30",
+          kind: "test",
+          name: "test/fixture_factory_test.exs",
+          file: "test/fixture_factory_test.exs",
+          verdict: "test-only",
+          confidence: "high",
+        },
+      ]);
     },
     30_000,
   );

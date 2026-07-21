@@ -57,6 +57,7 @@ function makeRun(claims: readonly Claim[]): ClaimRun {
           language: "ts",
           fileCount: 1,
           workspaceCount: 1,
+          partitions: { production: "complete", config: "complete", test: "complete" },
         },
       ],
     },

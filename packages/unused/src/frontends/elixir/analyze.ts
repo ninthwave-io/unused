@@ -31,7 +31,7 @@ import {
   SCHEMA_VERSION,
 } from "../../core/claims/index.js";
 import { entrypointId, fileId, IRGraph } from "../../core/ir/index.js";
-import type { FrontendClaimInputs, GraphContribution } from "../plugins/types.js";
+import type { FrontendClaimInputs, GraphContribution, PluginDiagnostic } from "../plugins/types.js";
 import type { AnalyzeInternalOptions, AnalyzeOptions, AnalyzeResult } from "../ts/analyze.js";
 import {
   applyConfigSuppressions,
@@ -220,12 +220,17 @@ export async function analyzeElixirProjectWithGraph(
       durationMs: Date.now() - start,
       boundaries: [
         {
-          status: "complete",
+          status: traceResult.testPartition === "complete" ? "complete" : "partial",
           pluginId: "language:elixir",
           boundaryId: "ex:.",
           language: "ex",
           fileCount: analyzedFiles.length,
           workspaceCount: 1,
+          partitions: {
+            production: "complete",
+            config: "complete",
+            test: traceResult.testPartition,
+          },
         },
       ],
     },
@@ -241,6 +246,9 @@ export async function analyzeElixirProjectWithGraph(
     repoName: appName,
     units: [{ rootRelDir: "", name: appName }],
     gateThreshold: config.gate?.threshold ?? "high",
+    ...(traceResult.testPartition === "complete"
+      ? {}
+      : { diagnostics: [incompleteTestPartitionDiagnostic("ex:.")] }),
   };
   return {
     result,
@@ -251,6 +259,17 @@ export async function analyzeElixirProjectWithGraph(
     ...(contribution === undefined
       ? {}
       : { deferredContributions: new Map([[ELIXIR_RUNTIME_PLUGIN_ID, contribution]]) }),
+  };
+}
+
+function incompleteTestPartitionDiagnostic(boundaryId: string): PluginDiagnostic {
+  return {
+    pluginId: "language:elixir",
+    boundaryId,
+    severity: "warning",
+    code: "elixir-test-partition-incomplete",
+    message:
+      "test compilation was incomplete under isolated --no-start analysis; potentially test-reachable subjects were conservatively kept alive",
   };
 }
 

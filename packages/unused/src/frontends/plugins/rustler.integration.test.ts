@@ -1,4 +1,4 @@
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -144,6 +144,80 @@ describe.skipIf(!isPolyglotToolchainAvailable())("literal Rustler bridge integra
     expect(
       analysis.reachability.production.reachableSymbols.has(
         symbolId("native/src/lib.rs", "live_nif"),
+      ),
+    ).toBe(false);
+  });
+
+  it("protects bridge descendants from incomplete Elixir tests without hiding complete boundaries", {
+    timeout: 120_000,
+  }, async () => {
+    const root = await mkdtemp(join(tmpdir(), "unused-rustler-incomplete-test-"));
+    temporaryRoots.push(root);
+    await cp(fixture, root, {
+      recursive: true,
+      filter: (source) => !["_build", "target"].includes(basename(source)),
+    });
+
+    await mkdir(join(root, "src"));
+    await writeFile(
+      join(root, "package.json"),
+      JSON.stringify({ name: "neutral-polyglot-root", type: "module", main: "src/index.ts" }),
+    );
+    await writeFile(join(root, "src/index.ts"), "export const live = true;\n");
+    await writeFile(join(root, "src/dead.ts"), "export const deadValue = true;\n");
+
+    const application = join(root, "beam/lib/neutral_bridge/application.ex");
+    const applicationSource = await readFile(application, "utf8");
+    await writeFile(
+      application,
+      applicationSource.replace(
+        "  def start(_type, _args) do\n",
+        "  def start(_type, _args) do\n    Application.put_env(:neutral_bridge, :runtime_marker, :started)\n",
+      ),
+    );
+    await mkdir(join(root, "beam/test"));
+    await writeFile(join(root, "beam/test/test_helper.exs"), "ExUnit.start()\n");
+    await writeFile(
+      join(root, "beam/test/native_test.exs"),
+      `defmodule NeutralBridge.NativeTest do
+  use ExUnit.Case
+  @runtime_marker Application.fetch_env!(:neutral_bridge, :runtime_marker)
+  test "runtime-selected NIF" do
+    assert @runtime_marker == :started
+    assert NeutralBridge.Native.dead_nif(1) == 1
+  end
+end
+`,
+    );
+
+    const analysis = await analyzeProjectAutoWithGraph(root, { now: new Date(0) });
+    expect(analysis.result.run.boundaries).toMatchObject([
+      {
+        boundaryId: "ex:beam",
+        status: "partial",
+        partitions: { production: "complete", config: "complete", test: "incomplete" },
+      },
+      {
+        boundaryId: "rs:native",
+        status: "complete",
+        partitions: { production: "complete", config: "complete", test: "complete" },
+      },
+      {
+        boundaryId: "ts:.",
+        status: "complete",
+        partitions: { production: "complete", config: "complete", test: "complete" },
+      },
+    ]);
+    expect(analysis.result.claims.length).toBeGreaterThan(0);
+    expect(new Set(analysis.result.claims.map((claim) => claim.language))).toEqual(new Set(["ts"]));
+    expect(analysis.result.claims.some((claim) => claim.subject.loc.file === "src/dead.ts")).toBe(
+      true,
+    );
+    expect(
+      analysis.result.claims.some(
+        (claim) =>
+          claim.subject.name === "NeutralBridge.Native.dead_nif/1" ||
+          claim.subject.name === "dead_nif",
       ),
     ).toBe(false);
   });

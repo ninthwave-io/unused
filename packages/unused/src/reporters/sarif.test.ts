@@ -28,6 +28,7 @@ const BOUNDARY = {
   language: "ts",
   fileCount: 1,
   workspaceCount: 1,
+  partitions: { production: "complete", config: "complete", test: "complete" },
 } as const;
 
 function compileSarifSchema() {

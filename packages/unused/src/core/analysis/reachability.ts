@@ -217,6 +217,7 @@ export function computeReachability(
         markSurfaceLive(fileRel, pred);
         return;
       case "runtime-resolved":
+      case "safety-root":
       case "static": {
         if (edge.name === undefined || edge.name === "*") {
           markSurfaceLive(fileRel, pred); // namespace / bare type-import
@@ -272,7 +273,11 @@ export function computeReachability(
       if (edge.kind !== "references") continue;
       const target = graph.getNode(edge.to);
       const pred: Predecessor = { via: "edge", edge };
-      if (edge.referenceKind === "static" || edge.referenceKind === "runtime-resolved") {
+      if (
+        edge.referenceKind === "static" ||
+        edge.referenceKind === "runtime-resolved" ||
+        edge.referenceKind === "safety-root"
+      ) {
         // A statically proven or literal-runtime symbol edge keeps that exact
         // target alive (including cross-file Elixir runtime conventions).
         if (target?.kind === "symbol") markSymbol(target.id, pred);

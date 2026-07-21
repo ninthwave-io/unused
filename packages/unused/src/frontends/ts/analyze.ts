@@ -78,7 +78,7 @@ import {
   type IRGraph,
   type Site,
 } from "../../core/ir/index.js";
-import type { FrontendClaimInputs } from "../plugins/types.js";
+import type { FrontendClaimInputs, PluginDiagnostic } from "../plugins/types.js";
 import {
   applyConfigSuppressions,
   type ConfigUnit,
@@ -207,6 +207,8 @@ export type DeferredConventionId =
  * gate needs the resolved threshold without re-loading config a second time.
  */
 export interface AnalyzeResult extends ClaimRun {
+  /** Deterministic out-of-band diagnostics rendered to stderr, never JSON stdout. */
+  readonly diagnostics?: readonly PluginDiagnostic[];
   /** Count of production entrypoint files found before claim emission. */
   readonly productionEntrypointCount: number;
   /**
@@ -779,6 +781,7 @@ export async function analyzeProjectWithGraph(
           language: "ts",
           fileCount: files.length,
           workspaceCount: units.length,
+          partitions: { production: "complete", config: "complete", test: "complete" },
         },
       ],
     },

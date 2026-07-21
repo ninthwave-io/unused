@@ -43,3 +43,19 @@ The isolated application layout also contains a link to the project's tracked
 compile-time reads through `Application.app_dir/2` while keeping the resource
 and the consumer's `_build` unchanged; the link exists only for the lifetime of
 the analyzer's temporary directory.
+
+## Implementation amendment — test-partition completeness (2026-07-21)
+
+The production compiler trace and the separately compiled ExUnit partition have
+independent completeness. A test module may execute module-body code that reads
+application runtime state; normal `mix test` starts the application first, while
+the analyzer deliberately uses `--no-start`. If that separate test compile
+fails, production facts remain usable but the boundary is `partial` and its test
+partition is `incomplete` in schema 1.4.0.
+
+The analyzer does not start the application speculatively. Instead, a
+non-claimable safety root keeps every compiler-known production file, module,
+and public function alive, including exact cross-language bridge descendants.
+Potentially test-reachable subjects therefore produce neither claims nor
+supported deletion plans. One deterministic diagnostic is emitted on stderr;
+canonical JSON stdout contains only structured completeness metadata.

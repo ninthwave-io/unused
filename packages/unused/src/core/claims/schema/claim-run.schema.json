@@ -47,23 +47,65 @@
         "boundaries": {
           "type": "array",
           "minItems": 1,
-          "description": "Deterministic boundary-id-sorted record of every completed language analysis.",
-          "items": { "$ref": "#/$defs/completedBoundary" }
+          "description": "Deterministic boundary-id-sorted record of every complete or conservatively bounded language analysis.",
+          "items": { "$ref": "#/$defs/analysisBoundary" }
         }
       }
     },
 
-    "completedBoundary": {
+    "analysisBoundary": {
       "type": "object",
-      "required": ["status", "pluginId", "boundaryId", "language", "fileCount", "workspaceCount"],
+      "required": [
+        "status",
+        "pluginId",
+        "boundaryId",
+        "language",
+        "fileCount",
+        "workspaceCount",
+        "partitions"
+      ],
       "additionalProperties": false,
       "properties": {
-        "status": { "const": "complete" },
+        "status": { "enum": ["complete", "partial"] },
         "pluginId": { "type": "string", "minLength": 1 },
         "boundaryId": { "type": "string", "minLength": 1 },
         "language": { "type": "string", "minLength": 1 },
         "fileCount": { "type": "integer", "minimum": 0 },
-        "workspaceCount": { "type": "integer", "minimum": 1 }
+        "workspaceCount": { "type": "integer", "minimum": 1 },
+        "partitions": { "$ref": "#/$defs/analysisPartitions" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "partitions": {
+                "type": "object",
+                "properties": { "test": { "const": "incomplete" } },
+                "required": ["test"]
+              }
+            },
+            "required": ["partitions"]
+          },
+          "then": {
+            "type": "object",
+            "properties": { "status": { "const": "partial" } }
+          },
+          "else": {
+            "type": "object",
+            "properties": { "status": { "const": "complete" } }
+          }
+        }
+      ]
+    },
+
+    "analysisPartitions": {
+      "type": "object",
+      "required": ["production", "config", "test"],
+      "additionalProperties": false,
+      "properties": {
+        "production": { "const": "complete" },
+        "config": { "const": "complete" },
+        "test": { "enum": ["complete", "incomplete"] }
       }
     },
 

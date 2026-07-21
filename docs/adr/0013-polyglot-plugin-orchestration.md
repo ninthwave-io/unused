@@ -80,12 +80,18 @@ language slot remains wire-compatible.
 
 ### Completeness and partial failure
 
-The orchestrator records every detected frontend boundary as complete,
-unsupported, or failed. A detected boundary that cannot be analyzed prevents
+The orchestrator records every detected frontend boundary as complete, partial,
+unsupported, or failed, with production/config/test partition status. A detected boundary that cannot be analyzed prevents
 high-confidence claims whose proof could cross that boundary. The default CLI
 fails closed when a required toolchain or compiler run fails; a future explicit
 partial-analysis mode may return bounded results but may not masquerade as a
 complete run.
+
+A frontend may return `partial` only when it can bound the missing facts toward
+alive. The initial case is an incomplete Elixir test compile: compiler-known
+production surfaces are safety-rooted before bridges and global reachability, so
+the incomplete boundary and its exact bridge descendants cannot produce a
+deletion-safe claim. Unrelated complete boundaries continue normally.
 
 Elixir and Rust compiler/tooling execution remains explicit. TypeScript keeps
 its no-user-code-execution posture.

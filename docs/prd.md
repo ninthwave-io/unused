@@ -59,9 +59,9 @@ The `--json` output is the canonical machine representation; SARIF and the MCP t
 
 **Top level:**
 ```
-{ schemaVersion, tool: {name, version}, run: {root, commit?, configHash, startedAt, durationMs, boundaries: [{status, pluginId, boundaryId, language, fileCount, workspaceCount}]}, claims: [], summary: {byKind, byConfidence, estDeletableLoc} }
+{ schemaVersion, tool: {name, version}, run: {root, commit?, configHash, startedAt, durationMs, boundaries: [{status, pluginId, boundaryId, language, fileCount, workspaceCount, partitions: {production, config, test}}]}, claims: [], summary: {byKind, byConfidence, estDeletableLoc} }
 ```
-`run.commit` is optional because not every analysis happens inside a git repo with a resolvable HEAD (e.g. a shallow CI checkout or a plain directory). `run.configHash` lets a consumer detect that two runs aren't comparable because the config changed underneath them — relevant for baseline diffing in `unused check`. `run.boundaries` is the deterministic record of completed language analyses, so a successful polyglot run proves which detected TypeScript, Elixir, Rust, or future boundaries actually contributed. `summary` exists so a TTY report or a chat-posted digest can render totals without walking the full `claims` array.
+`run.commit` is optional because not every analysis happens inside a git repo with a resolvable HEAD (e.g. a shallow CI checkout or a plain directory). `run.configHash` lets a consumer detect that two runs aren't comparable because the config changed underneath them — relevant for baseline diffing in `unused check`. `run.boundaries` is the deterministic record of analyzed language boundaries. Each boundary is `complete` or conservatively `partial`, with explicit production/config/test status, so a polyglot consumer never mistakes bounded missing facts for a complete proof. Partial partitions fail closed toward alive and cannot license a deletion-safe claim; deterministic diagnostics use stderr, not canonical JSON stdout. `summary` exists so a TTY report or a chat-posted digest can render totals without walking the full `claims` array.
 
 **Claim:**
 ```
@@ -87,7 +87,7 @@ The `--json` output is the canonical machine representation; SARIF and the MCP t
 **Worked example.** An export with no inbound reference from any production entrypoint, no dynamic-reference hazard nearby:
 ```json
 {
-  "schemaVersion": "1.3.0",
+  "schemaVersion": "1.4.0",
   "tool": { "name": "unused", "version": "0.1.0" },
   "run": {
     "root": "/repo",
@@ -102,7 +102,8 @@ The `--json` output is the canonical machine representation; SARIF and the MCP t
         "boundaryId": "ts:.",
         "language": "ts",
         "fileCount": 1284,
-        "workspaceCount": 1
+        "workspaceCount": 1,
+        "partitions": { "production": "complete", "config": "complete", "test": "complete" }
       }
     ]
   },

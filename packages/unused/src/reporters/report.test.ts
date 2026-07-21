@@ -49,6 +49,7 @@ function makeRun(claims: readonly Claim[], overrides: Partial<ClaimRun["summary"
           language: "ts",
           fileCount: 1,
           workspaceCount: 1,
+          partitions: { production: "complete", config: "complete", test: "complete" },
         },
       ],
     },
@@ -211,7 +212,7 @@ describe("renderReportMarkdown", () => {
       ...CTX_BASE,
       deletionPlans: {
         [formatCurrency.id]: {
-          schemaVersion: "1.3.0",
+          schemaVersion: "1.4.0",
           selected: {
             kind: "export",
             file: formatCurrency.subject.loc.file,

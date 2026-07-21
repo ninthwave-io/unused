@@ -51,6 +51,7 @@ const SUPPRESSION_FIXTURE = join(FIXTURES_ROOT, "suppression-comment"); // 2 hig
 const ELIXIR_FIXTURE = join(REPO_ROOT, "fixtures/elixir/basic-dead-function");
 const ELIXIR_MFA_FIXTURE = join(REPO_ROOT, "fixtures/elixir/runtime-mfa-callback");
 const ELIXIR_USE_FIXTURE = join(REPO_ROOT, "fixtures/elixir/dynamic-use-helpers");
+const ELIXIR_INCOMPLETE_TEST_FIXTURE = join(REPO_ROOT, "fixtures/elixir/incomplete-test-partition");
 
 function readSchema(): object {
   return JSON.parse(
@@ -294,7 +295,7 @@ describe.skipIf(!MIX_AVAILABLE)("unused CLI — canonical polyglot observability
       };
       const validate = compileSchema();
       expect(validate(parsed), JSON.stringify(validate.errors)).toBe(true);
-      expect(parsed.schemaVersion).toBe("1.3.0");
+      expect(parsed.schemaVersion).toBe("1.4.0");
       expect(parsed.run.boundaries).toMatchObject([
         { status: "complete", boundaryId: "ex:services/backend", language: "ex" },
         { status: "complete", boundaryId: "rs:services/backend/native/core", language: "rs" },
@@ -308,6 +309,71 @@ describe.skipIf(!MIX_AVAILABLE)("unused CLI — canonical polyglot observability
       await rm(root, { recursive: true, force: true });
     }
   }, 60_000);
+});
+
+describe.skipIf(!MIX_AVAILABLE)("unused CLI — incomplete Elixir test partition", () => {
+  it("keeps canonical JSON pure while publishing partial status and a deterministic stderr warning", {
+    timeout: 60_000,
+  }, () => {
+    const result = runCli(["--json", "--cwd", ELIXIR_INCOMPLETE_TEST_FIXTURE]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toBe(
+      "unused: warning [elixir-test-partition-incomplete] ex:.: test compilation was incomplete under isolated --no-start analysis; potentially test-reachable subjects were conservatively kept alive\n",
+    );
+    expect(result.stdout).not.toContain("warning");
+    const parsed = JSON.parse(result.stdout) as {
+      schemaVersion: string;
+      run: { boundaries: unknown[] };
+      claims: unknown[];
+    };
+    const validate = compileSchema();
+    expect(validate(parsed), JSON.stringify(validate.errors)).toBe(true);
+    expect(parsed.schemaVersion).toBe("1.4.0");
+    expect(parsed.run.boundaries).toEqual([
+      {
+        status: "partial",
+        pluginId: "language:elixir",
+        boundaryId: "ex:.",
+        language: "ex",
+        fileCount: 2,
+        workspaceCount: 1,
+        partitions: { production: "complete", config: "complete", test: "incomplete" },
+      },
+    ]);
+    expect(parsed.claims).toEqual([]);
+  });
+
+  it("refuses deletion of a potentially test-reachable subject", { timeout: 60_000 }, () => {
+    const result = runCli([
+      "why",
+      "--delete",
+      "--json",
+      "NeutralPartition.Subject.checked_only_in_test/0",
+      "--cwd",
+      ELIXIR_INCOMPLETE_TEST_FIXTURE,
+    ]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain("[elixir-test-partition-incomplete]");
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      schemaVersion: "1.4.0",
+      supported: false,
+      unsupportedReason: "selected subject has a live analysis-completeness reference at mix.exs:1",
+      reExportEdits: [],
+      stages: [],
+    });
+  });
+
+  it("emits the partial-boundary warning once across every --fix analysis pass", {
+    timeout: 120_000,
+  }, () => {
+    const result = runCli(["--fix", "--cwd", ELIXIR_INCOMPLETE_TEST_FIXTURE]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toBe(
+      "unused: warning [elixir-test-partition-incomplete] ex:.: test compilation was incomplete under isolated --no-start analysis; potentially test-reachable subjects were conservatively kept alive\n",
+    );
+    expect(result.stdout).toContain("unused --fix: frozen eligible set:");
+    expect(result.stdout).toContain("0 applied, 0 skipped, 0 eligible claims remain");
+  });
 });
 
 describe("unused CLI — zero production entrypoints", () => {
@@ -1585,7 +1651,7 @@ describe("unused baseline (T7.1)", () => {
       const header = JSON.parse(lines[0] as string);
       expect(header.analyzerVersion).toBe("0.1.0");
       expect(header.idVersion).toBe(1);
-      expect(header.schemaVersion).toBe("1.3.0");
+      expect(header.schemaVersion).toBe("1.4.0");
       expect(typeof header.configHash).toBe("string");
       expect(typeof header.generatedAt).toBe("string");
       const claim = JSON.parse(lines[1] as string);
@@ -1831,14 +1897,14 @@ describe("unused check (T7.2)", () => {
     });
   });
 
-  it("schemaVersion MINOR-only mismatch (e.g. 1.1.0 -> 1.3.0) still evaluates the gate — only a MAJOR change makes ids incomparable (ADR 0006)", async () => {
+  it("schemaVersion MINOR-only mismatch (e.g. 1.1.0 -> 1.4.0) still evaluates the gate — only a MAJOR change makes ids incomparable (ADR 0006)", async () => {
     await withTempFixtureCopy(DEAD_FIXTURE, async (dir) => {
       expect(runCli(["baseline", "--cwd", dir]).status).toBe(0);
       await tamperBaselineHeader(dir, { schemaVersion: "1.1.0" });
 
       const check = runCli(["check", "--cwd", dir]);
       expect(check.status).toBe(0);
-      expect(check.stdout).toContain("schema version: baseline 1.1.0, current 1.3.0");
+      expect(check.stdout).toContain("schema version: baseline 1.1.0, current 1.4.0");
       expect(check.stdout).toContain("PASS no new dead weight since baseline -- exit 0");
       expect(check.stdout).not.toContain("gate not evaluated");
     });
@@ -1884,7 +1950,7 @@ describe("unused check (T7.2)", () => {
 
       const check = runCli(["check", "--cwd", dir]);
       expect(check.status).toBe(0);
-      expect(check.stdout).toContain("schema version: baseline 2.0.0, current 1.3.0");
+      expect(check.stdout).toContain("schema version: baseline 2.0.0, current 1.4.0");
       expect(check.stdout).toMatch(/gate not evaluated.*re-baseline required.*exit 0/);
     });
   });
@@ -1942,7 +2008,7 @@ describe("unused CLI — why (T8.2, cli-ux §4)", () => {
     expect(result.stdout).toContain("consequence plan only");
   });
 
-  it("emits the standalone schema-1.3 deletion plan JSON", () => {
+  it("emits the standalone schema-1.4 deletion plan JSON", () => {
     const result = runCli([
       "why",
       "--delete",
@@ -1957,7 +2023,7 @@ describe("unused CLI — why (T8.2, cli-ux §4)", () => {
       supported: boolean;
       reExportEdits: unknown[];
     };
-    expect(plan.schemaVersion).toBe("1.3.0");
+    expect(plan.schemaVersion).toBe("1.4.0");
     expect(plan.supported).toBe(true);
     expect(plan.reExportEdits).toHaveLength(1);
   });

@@ -147,7 +147,9 @@ end
     expect(subsequentCompile.stdout).not.toContain("Consolidated");
   });
 
-  it("refuses clearly when a fetched dependency has no compiled artifacts", () => {
+  it("refuses clearly when a fetched dependency has no compiled artifacts", {
+    timeout: 60_000,
+  }, () => {
     const projectDir = mkdtempSync(join(tmpdir(), "unused-ex-missing-build-test-"));
     dirs.push(projectDir);
     mkdirSync(join(projectDir, "lib"));

@@ -28,7 +28,7 @@ The measured Rust compiler/tooling boundary is
 
 ## 3. Reference-graph IR (the language-agnostic contract)
 - Nodes: `symbol`, `file`, `dependency`, `endpoint`, `entrypoint(kind: production|test|config)`.
-- Edges: `references` (kind: `static` | `dynamic-resolved` | `runtime-resolved` | `re-export` | `side-effect` | `hazard`), `exports`, `contains`, plus a reserved `consumes` edge for the endpoint→consumer join (tier 3). `runtime-resolved` is a literal runtime convention resolved to one exact symbol; `side-effect` keeps a file alive while binding no symbol — exports inside a side-effect-only module stay individually flaggable; `re-export` makes barrel chains (`export * from`) explicitly traversable by reachability and `why_alive`.
+- Edges: `references` (kind: `static` | `dynamic-resolved` | `runtime-resolved` | `safety-root` | `re-export` | `side-effect` | `hazard`), `exports`, `contains`, plus a reserved `consumes` edge for the endpoint→consumer join (tier 3). `runtime-resolved` is a literal runtime convention resolved to one exact symbol; `safety-root` is an explicit conservative edge from a bounded incomplete partition to an exact potentially reachable surface; `side-effect` keeps a file alive while binding no symbol — exports inside a side-effect-only module stay individually flaggable; `re-export` makes barrel chains (`export * from`) explicitly traversable by reachability and `why_alive`.
 - **Provenance**: every edge and every hazard annotation carries the referencing site's span (file + span). Why-paths and report lines like "dynamic import nearby" render from stored provenance, never re-analysis.
 - Hazard annotations attach to files/scopes: each cites a hazard class from the registry (§4).
 - **Partition rule**: roots are production, test, or config. Code reachable from a config root is alive and never flagged in v1 — config-only liveness is not a claim; a future `config-only` verdict would be additive under the ADR 0006 enum policy.
@@ -42,6 +42,9 @@ The measured Rust compiler/tooling boundary is
 - Suppression comments and project/workspace rules annotate claims without removing graph nodes or edges. Config suppressions carry rule provenance in the machine contract (ADR 0012).
 - File liveness is complete root reachability: an inbound edge from another unreachable file never makes a file alive.
 - Mutation is a CLI orchestration layer over claims and deletion plans. Core analysis and MCP stay pure/read-only; the CLI applies an initial high-confidence set, then re-runs analysis once (ADR 0012).
+- Boundary and production/config/test partition completeness is part of the
+  machine contract. Partial facts must be bounded toward alive before global
+  reachability; diagnostics are deterministic stderr, never JSON stdout.
 
 ## 5. Performance strategy
 - Discovery produces one gitignore-bounded inventory of sources, JSON configs,

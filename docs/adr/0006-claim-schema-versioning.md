@@ -20,3 +20,12 @@ For versioning: implicit stability (breaks silently) vs an explicit semver polic
 - Baseline diffing, SARIF `partialFingerprints.unusedClaimId/v1`, and hosted history all key off one identity definition.
 - Renaming a symbol intentionally changes its id — a rename reads as resolved + new in `unused check`, which is correct (the old claim is gone) but worth documenting.
 - The `language` field enters the canonical string now (empty ⇒ `ts` implied in v1) so Python/Elixir claims never collide with TS ones — ADR 0003's schema audit item, resolved here.
+
+## Additive completeness amendment (2026-07-21)
+
+Schema 1.4.0 adds required per-partition completion metadata to every analyzed
+language boundary. Boundary `status` is `complete` when production, config, and
+test facts are complete, and `partial` when a bounded partition is incomplete.
+This is an additive MINOR change: claim identity and `idVersion: 1` do not
+change. Stable status metadata belongs in canonical JSON; deterministic human
+diagnostics remain out-of-band on stderr.

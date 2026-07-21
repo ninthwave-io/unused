@@ -32,6 +32,7 @@ describe("extractElixirRuntimeReferences", () => {
       appMod: "NeutralMfa.Application",
       deps: [],
       compileOk: true,
+      testPartition: "complete",
       modules: [
         mod("NeutralMfa.RuntimeConfig", "lib/neutral_mfa/runtime_config.ex"),
         mod("NeutralMfa.Callback", "lib/neutral_mfa/callback.ex"),
@@ -70,6 +71,7 @@ describe("extractElixirRuntimeReferences", () => {
       appMod: "NeutralUse.Application",
       deps: [],
       compileOk: true,
+      testPartition: "complete",
       modules: [
         mod("NeutralUse.Web", "lib/neutral_use/web.ex"),
         mod("NeutralUse.Router", "lib/neutral_use/router.ex"),
@@ -99,6 +101,7 @@ describe("extractElixirRuntimeReferences", () => {
       appMod: "Dyn.Application",
       deps: [],
       compileOk: true,
+      testPartition: "complete",
       modules: [
         mod("Dyn.Router", "lib/dyn/router.ex"),
         mod("Dyn.Handlers", "lib/dyn/handlers.ex"),
@@ -142,6 +145,7 @@ describe("extractElixirRuntimeReferences", () => {
       appMod: "Dyn.Application",
       deps: [],
       compileOk: true,
+      testPartition: "complete",
       modules: [mod("Dyn.Router", "lib/dyn/router.ex")],
       functions: [fn("Dyn.Router", "dispatch", 1, "lib/dyn/router.ex")],
       events: [
