@@ -16,6 +16,7 @@
     "build": "tsc -p packages/unused/tsconfig.json && node packages/unused/scripts/copy-schemas.mjs",
     "scoreboard": "tsc -p packages/unused/tsconfig.json && node packages/unused/dist/testing/corpus/scoreboard.js",
     "scoreboard:elixir": "tsc -p packages/unused/tsconfig.json && node packages/unused/dist/testing/corpus/scoreboard-elixir.js",
+    "scoreboard:rust": "tsc -p packages/unused/tsconfig.json && node packages/unused/dist/testing/corpus/scoreboard-rust.js",
     "assumptions": "tsc -p packages/unused/tsconfig.json && node packages/unused/dist/testing/assumption-set-doc.js",
     "ci": "pnpm run typecheck && pnpm run lint && pnpm run boundaries && pnpm run test"
   },

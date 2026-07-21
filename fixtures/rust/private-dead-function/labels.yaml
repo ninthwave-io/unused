@@ -1,0 +1,28 @@
+case: private-dead-function
+description: >-
+  A public library function remains an external API while rustc independently
+  reports a private sibling function dead in every required feature mode.
+subjects:
+  - kind: export
+    name: dead_helper
+    file: src/lib.rs
+    expected: dead
+    minConfidence: high
+    because: >-
+      Stable rustc emits dead_code for this private function in default and
+      all-features, all-target checks at the same source span.
+  - kind: export
+    name: public_api
+    file: src/lib.rs
+    expected: alive
+    because: >-
+      The public library surface is conservatively rooted and must not be
+      claimed merely because no in-workspace caller exists.
+  - kind: export
+    name: unused_public_api
+    file: src/lib.rs
+    expected: dead
+    minConfidence: high
+    because: >-
+      This planted unused public API records the stable compiler foundation's
+      known recall gap: rustc dead_code does not diagnose exported library API.

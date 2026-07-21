@@ -162,9 +162,10 @@ export async function analyzeRustProjectWithGraph(
   if (internal.emitConfigMatchWarnings !== false) {
     warnOnEmptyConfigMatches(config, files, files, configUnits);
   }
-  const claims = applyConfigSuppressions(emitted, config, configUnits, files, {
+  let claims = applyConfigSuppressions(emitted, config, configUnits, files, {
     emitWarnings: internal.emitConfigMatchWarnings !== false,
   });
+  if (units.length > 1) claims = annotateRustPackages(claims, units);
   const result: AnalyzeResult = {
     schemaVersion: SCHEMA_VERSION,
     tool: { name: "unused", version },
@@ -184,6 +185,30 @@ export async function analyzeRustProjectWithGraph(
     gateThreshold: config.gate?.threshold ?? "high",
   };
   return { result, graph, reachability, claimInputs, provenance };
+}
+
+function annotateRustPackages(
+  claims: readonly Claim[],
+  units: readonly { readonly rootRelDir: string; readonly name: string | null }[],
+): Claim[] {
+  const byDepth = [...units].sort((a, b) => b.rootRelDir.length - a.rootRelDir.length);
+  return claims.map((claim) => {
+    const file = claim.subject.loc.file;
+    const owner = byDepth.find(
+      (unit) =>
+        unit.rootRelDir === "" ||
+        file === unit.rootRelDir ||
+        file.startsWith(`${unit.rootRelDir}/`),
+    );
+    if (owner?.name === null || owner?.name === undefined) return claim;
+    return {
+      ...claim,
+      subject: {
+        ...claim.subject,
+        loc: { ...claim.subject.loc, package: owner.name },
+      },
+    } as Claim;
+  });
 }
 
 function withRustcEvidence(claim: Claim): Claim {

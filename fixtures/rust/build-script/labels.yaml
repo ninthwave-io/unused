@@ -1,0 +1,20 @@
+case: build-script
+description: >-
+  Cargo executes a neutral build script during analysis; its entrypoint remains
+  config-rooted while rustc can still prove a private helper dead.
+subjects:
+  - kind: export
+    name: dead_build_helper
+    file: build.rs
+    expected: dead
+    minConfidence: high
+    because: >-
+      The build script is compiled in both feature modes and rustc reports this
+      private helper dead at the same source span.
+  - kind: export
+    name: public_api
+    file: src/lib.rs
+    expected: alive
+    because: >-
+      Public library API remains conservatively alive despite no local caller.
+

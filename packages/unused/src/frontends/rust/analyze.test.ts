@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { whyAlive } from "../../core/analysis/index.js";
 import { symbolId } from "../../core/ir/index.js";
 import { analyzeRustProjectWithGraph } from "./analyze.js";
 
@@ -39,5 +40,25 @@ describe("Rust frontend", () => {
     expect(
       analysis.reachability.production.reachableSymbols.has(symbolId("src/lib.rs", "dead_helper")),
     ).toBe(false);
+    expect(
+      whyAlive({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        claims: analysis.result.claims,
+        query: "dead_helper",
+      }),
+    ).toMatchObject({
+      outcome: "dead",
+      confidence: "high",
+      evidence: [{ source: "rustc-dead-code" }],
+    });
+    expect(
+      whyAlive({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        claims: analysis.result.claims,
+        query: "public_api",
+      }),
+    ).toMatchObject({ outcome: "alive", entrypointKind: "production" });
   });
 });

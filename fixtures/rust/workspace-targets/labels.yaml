@@ -1,0 +1,33 @@
+case: workspace-targets
+description: >-
+  A virtual Cargo workspace contains library and binary targets, each with one
+  compiler-confirmed private dead function and explicit owning-package metadata.
+subjects:
+  - kind: export
+    name: dead_library_helper
+    file: crates/library/src/lib.rs
+    expected: dead
+    minConfidence: high
+    because: >-
+      rustc reports the private library helper dead in both required builds.
+  - kind: export
+    name: dead_binary_helper
+    file: crates/runner/src/main.rs
+    expected: dead
+    minConfidence: high
+    because: >-
+      rustc reports the private binary helper dead in both required builds.
+  - kind: export
+    name: library_api
+    file: crates/library/src/lib.rs
+    expected: alive
+    because: >-
+      The public library API is conservatively retained for external callers.
+  - kind: export
+    name: dead_test_helper
+    file: crates/runner/tests/smoke.rs
+    expected: dead
+    minConfidence: high
+    because: >-
+      The all-target checks compile the integration-test target and rustc reports
+      this uncalled private helper dead in both feature modes.

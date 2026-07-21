@@ -1,0 +1,25 @@
+case: feature-selected-use
+description: >-
+  A private helper warned dead in the default build is used by a public API when
+  an optional feature is enabled, so the diagnostic intersection must keep it.
+subjects:
+  - kind: export
+    name: feature_helper
+    file: src/lib.rs
+    expected: alive
+    because: >-
+      The extra feature's public entry calls this helper; the all-features check
+      removes the default-only dead_code diagnostic from claimable evidence.
+  - kind: export
+    name: feature_entry
+    file: src/lib.rs
+    expected: alive
+    because: >-
+      This is a feature-gated public library API and remains conservatively alive.
+  - kind: export
+    name: public_api
+    file: src/lib.rs
+    expected: alive
+    because: >-
+      This is an unconditional public library API and remains conservatively alive.
+

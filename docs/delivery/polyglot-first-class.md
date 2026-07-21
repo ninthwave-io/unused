@@ -213,12 +213,22 @@ Progress:
 - Focused verification: typecheck; 73 Rust/compiler/discovery/core/plugin/
   dispatch tests pass (2 Mix-skipped under the default shell); dependency
   boundaries (898 modules / 1,879 dependencies).
+- A neutral four-case Rust corpus now covers library, binary, integration-test,
+  workspace, optional-feature, and build-script targets. The committed Rust
+  scoreboard reports 4 cases / 12 labelled subjects, precision 1.0, recall
+  0.8333, zero false positives, zero confidence violations, and one explicit
+  unused-public-API miss.
+- Rust corpus gates are non-vacuous and enforce precision, confidence ceilings,
+  unlabelled-high-confidence safety, and non-decrease against
+  `fixtures/scoreboard.rust.json`. The `scoreboard:rust` command regenerates it.
+- `why` integration checks both the rustc-evidenced dead function and a live
+  public API path. Multi-package Rust claims carry the owning Cargo package.
 
-Next action: add the neutral labelled Rust corpus and scoreboard/gate harness.
-Cover workspace members, library/binary/test targets, default-versus-feature
-use, compiler failure, build-script/proc-macro disclosure, public API kept alive,
-and planted private dead functions. Report precision/recall before widening the
-claim class or beginning the Rustler bridge.
+Next action: finish P3 refusal/capability coverage for mutually exclusive
+all-features failures and macro/linkage exclusions, then decide whether the
+measured 0.8333 recall is sufficient to enter P4 or whether a bounded public-item
+reference prototype is required first. Do not broaden claims without retaining
+precision 1.0.
 
 ### P4 — Rustler/NIF bridge
 
