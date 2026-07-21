@@ -20,6 +20,7 @@ export type {
   Claim,
   ClaimRun,
   ClaimSummary,
+  CompletedAnalysisBoundary,
   Confidence,
   DeletionPlan,
   DeletionPlanConsequenceSubject,

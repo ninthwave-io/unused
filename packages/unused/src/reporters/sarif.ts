@@ -109,6 +109,7 @@ export interface SarifResult {
   ];
   readonly partialFingerprints: { readonly "unusedClaimId/v1": string };
   readonly properties: {
+    readonly language: string;
     readonly confidence: Confidence;
     readonly evidence: readonly Evidence[];
     readonly why: string;
@@ -139,6 +140,7 @@ function toResult(claim: Claim): SarifResult {
     ],
     partialFingerprints: { "unusedClaimId/v1": claim.id },
     properties: {
+      language: claim.language,
       confidence: claim.confidence,
       evidence: claim.evidence,
       why,

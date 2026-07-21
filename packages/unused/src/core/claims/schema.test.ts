@@ -1,6 +1,6 @@
 /**
  * Validates `schema/claim-run.schema.json` against ajv (draft 2020-12):
- * (1) the PRD §4 worked example, copied verbatim into
+ * (1) the current PRD §4 worked example, copied verbatim into
  *     `fixtures/prd-worked-example.json`, must validate unchanged; and
  * (2) the schema's oneOf-per-kind encoding of the kind -> verdict binding
  *     (PRD §4) rejects mismatched pairings, mirroring `isValidKindVerdict`
@@ -50,6 +50,21 @@ describe("claim-run.schema.json", () => {
     const valid = validate(prdWorkedExample);
     expect(validate.errors).toBeNull();
     expect(valid).toBe(true);
+  });
+
+  it("requires completed boundaries and explicit claim language attribution", () => {
+    const validate = compileSchema();
+    const withoutBoundaries = structuredClone(prdWorkedExample) as {
+      run: { boundaries?: unknown };
+    };
+    delete withoutBoundaries.run.boundaries;
+    expect(validate(withoutBoundaries)).toBe(false);
+
+    const withoutLanguage = structuredClone(prdWorkedExample) as {
+      claims: [{ language?: string }];
+    };
+    delete withoutLanguage.claims[0].language;
+    expect(validate(withoutLanguage)).toBe(false);
   });
 
   it("rejects a claim pairing subject.kind=export with verdict=unconsumed-endpoint", () => {

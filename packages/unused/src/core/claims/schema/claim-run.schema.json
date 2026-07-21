@@ -32,7 +32,7 @@
 
     "run": {
       "type": "object",
-      "required": ["root", "configHash", "startedAt", "durationMs"],
+      "required": ["root", "configHash", "startedAt", "durationMs", "boundaries"],
       "additionalProperties": false,
       "properties": {
         "root": { "type": "string", "minLength": 1 },
@@ -43,8 +43,34 @@
         },
         "configHash": { "type": "string", "minLength": 1 },
         "startedAt": { "type": "string", "format": "date-time" },
-        "durationMs": { "type": "integer", "minimum": 0 }
+        "durationMs": { "type": "integer", "minimum": 0 },
+        "boundaries": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Deterministic boundary-id-sorted record of every completed language analysis.",
+          "items": { "$ref": "#/$defs/completedBoundary" }
+        }
       }
+    },
+
+    "completedBoundary": {
+      "type": "object",
+      "required": ["status", "pluginId", "boundaryId", "language", "fileCount", "workspaceCount"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "const": "complete" },
+        "pluginId": { "type": "string", "minLength": 1 },
+        "boundaryId": { "type": "string", "minLength": 1 },
+        "language": { "type": "string", "minLength": 1 },
+        "fileCount": { "type": "integer", "minimum": 0 },
+        "workspaceCount": { "type": "integer", "minimum": 1 }
+      }
+    },
+
+    "language": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable open language id for the claim (`ts`, `ex`, `rs`, ...)."
     },
 
     "confidence": {
@@ -193,10 +219,11 @@
 
     "exportFileDependencyClaim": {
       "type": "object",
-      "required": ["id", "subject", "verdict", "confidence", "evidence", "provenance"],
+      "required": ["id", "language", "subject", "verdict", "confidence", "evidence", "provenance"],
       "additionalProperties": false,
       "properties": {
         "id": { "$ref": "#/$defs/claimId" },
+        "language": { "$ref": "#/$defs/language" },
         "subject": { "$ref": "#/$defs/exportFileDependencySubject" },
         "verdict": {
           "type": "string",
@@ -213,10 +240,11 @@
 
     "endpointClaim": {
       "type": "object",
-      "required": ["id", "subject", "verdict", "confidence", "evidence", "provenance"],
+      "required": ["id", "language", "subject", "verdict", "confidence", "evidence", "provenance"],
       "additionalProperties": false,
       "properties": {
         "id": { "$ref": "#/$defs/claimId" },
+        "language": { "$ref": "#/$defs/language" },
         "subject": { "$ref": "#/$defs/endpointSubject" },
         "verdict": {
           "const": "unconsumed-endpoint",
@@ -231,10 +259,11 @@
 
     "testClaim": {
       "type": "object",
-      "required": ["id", "subject", "verdict", "confidence", "evidence", "provenance"],
+      "required": ["id", "language", "subject", "verdict", "confidence", "evidence", "provenance"],
       "additionalProperties": false,
       "properties": {
         "id": { "$ref": "#/$defs/claimId" },
+        "language": { "$ref": "#/$defs/language" },
         "subject": { "$ref": "#/$defs/testSubject" },
         "verdict": {
           "const": "test-only",

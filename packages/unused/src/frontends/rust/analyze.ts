@@ -210,6 +210,16 @@ export async function analyzeRustProjectWithGraph(
       configHash: computeConfigHash(config),
       startedAt: now.toISOString(),
       durationMs: Date.now() - started,
+      boundaries: [
+        {
+          status: "complete",
+          pluginId: "language:rust",
+          boundaryId: "rs:.",
+          language: "rs",
+          fileCount: files.length,
+          workspaceCount: units.length,
+        },
+      ],
     },
     claims,
     summary: computeSummary(claims, { ciSecondsPerTestFile: config.ciSecondsPerTestFile }),

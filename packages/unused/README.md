@@ -18,7 +18,7 @@ Every claim `unused` makes sits on a graded ladder, from proven to probable:
 4. **Runtime evidence** *(schema reserved, not yet implemented)* — reachable, but zero production traffic over a window.
 5. **Human-usage evidence** *(schema reserved, not yet implemented)* — served, but untouched by users.
 
-Every claim is a **subject + verdict + confidence + evidence + provenance** — never a bare "unused" with no way to check the tool's work.
+Every claim is a **language + subject + verdict + confidence + evidence + provenance** — never a bare "unused" with no way to check the tool's work. Canonical JSON also lists every completed language boundary, so a polyglot run is auditable even when one language produces no findings.
 
 ## What a run looks like
 

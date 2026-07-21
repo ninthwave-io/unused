@@ -13,10 +13,10 @@
 
 /**
  * ADR 0006 semver policy: bump on a MAJOR/MINOR/PATCH change to this
- * contract. 1.2.0 (ADR 0012): additive suppression provenance and deletion
- * consequence planning fields — MINOR per ADR 0006.
+ * contract. 1.3.0: additive claim-language and completed-boundary
+ * observability — MINOR per ADR 0006.
  */
-export const SCHEMA_VERSION = "1.2.0";
+export const SCHEMA_VERSION = "1.3.0";
 
 // ---------------------------------------------------------------------------
 // Enums (PRD §4, ADR 0006 open/closed policy)
@@ -224,6 +224,8 @@ export type Subject =
 
 interface BaseClaim<S extends Subject, V extends Verdict> {
   id: string;
+  /** Stable language id (`ts`, `ex`, `rs`, ...); see ADR 0006 for identity compatibility. */
+  language: string;
   subject: S;
   verdict: V;
   confidence: Confidence;
@@ -311,6 +313,21 @@ export interface ClaimSummary {
   zombieTests?: ZombieTestsSummary;
 }
 
+/** A language boundary that completed and contributed to this claim run. */
+export interface CompletedAnalysisBoundary {
+  status: "complete";
+  /** Stable language-plugin id, e.g. `language:typescript`. */
+  pluginId: string;
+  /** Stable repository-analysis boundary id, e.g. `ts:.` or `ex:services/api`. */
+  boundaryId: string;
+  /** Open language id used by claims from this boundary. */
+  language: string;
+  /** Files analyzed by this boundary after ignore handling. */
+  fileCount: number;
+  /** Package/application/crate units owned by this boundary. */
+  workspaceCount: number;
+}
+
 export interface ClaimRun {
   schemaVersion: string;
   tool: {
@@ -325,6 +342,8 @@ export interface ClaimRun {
     /** ISO 8601. */
     startedAt: string;
     durationMs: number;
+    /** Deterministic, boundary-id-sorted record of every completed language analysis. */
+    boundaries: readonly CompletedAnalysisBoundary[];
   };
   claims: readonly Claim[];
   summary: ClaimSummary;

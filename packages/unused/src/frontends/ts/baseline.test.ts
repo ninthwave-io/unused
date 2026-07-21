@@ -30,6 +30,7 @@ function exportClaim(
   const subject = { kind: "export" as const, name, loc: { file, span: [1, 2] as const } };
   return {
     id: computeClaimId(subject),
+    language: "ts",
     subject,
     verdict: "unused",
     confidence: "high",

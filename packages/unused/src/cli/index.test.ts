@@ -256,6 +256,60 @@ describe("unused CLI — --json is schema-valid and stdout-clean", () => {
   });
 });
 
+describe.skipIf(!MIX_AVAILABLE)("unused CLI — canonical polyglot observability", () => {
+  it("reports completed root TS, nested Mix, and Mix-nested Cargo boundaries and attributes every claim", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unused-neutral-polyglot-"));
+    try {
+      const backend = join(root, "services", "backend");
+      const native = join(backend, "native", "core");
+      await cp(ELIXIR_FIXTURE, backend, { recursive: true });
+      await mkdir(join(root, "src"), { recursive: true });
+      await mkdir(join(native, "src"), { recursive: true });
+      await writeFile(
+        join(root, "package.json"),
+        JSON.stringify({
+          name: "neutral-root",
+          private: true,
+          type: "module",
+          main: "src/index.ts",
+        }),
+      );
+      await writeFile(join(root, "src", "index.ts"), "export const live = true;\n");
+      await writeFile(join(root, "src", "unused.ts"), "export const unusedValue = true;\n");
+      await writeFile(
+        join(native, "Cargo.toml"),
+        '[package]\nname = "neutral_native"\nversion = "0.1.0"\nedition = "2024"\n',
+      );
+      await writeFile(
+        join(native, "src", "lib.rs"),
+        "pub fn public_api() {}\nfn unused_helper() {}\n",
+      );
+
+      const result = runCli(["--json", "--cwd", root]);
+      expect(result.status, result.stderr).toBe(0);
+      const parsed = JSON.parse(result.stdout) as {
+        schemaVersion: string;
+        run: { boundaries: Array<{ boundaryId: string; language: string; status: string }> };
+        claims: Array<{ language: string }>;
+      };
+      const validate = compileSchema();
+      expect(validate(parsed), JSON.stringify(validate.errors)).toBe(true);
+      expect(parsed.schemaVersion).toBe("1.3.0");
+      expect(parsed.run.boundaries).toMatchObject([
+        { status: "complete", boundaryId: "ex:services/backend", language: "ex" },
+        { status: "complete", boundaryId: "rs:services/backend/native/core", language: "rs" },
+        { status: "complete", boundaryId: "ts:.", language: "ts" },
+      ]);
+      expect(new Set(parsed.claims.map((claim) => claim.language))).toEqual(
+        new Set(["ex", "rs", "ts"]),
+      );
+      expect(parsed.claims.every((claim) => claim.language.length > 0)).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
+
 describe("unused CLI — zero production entrypoints", () => {
   it("warns on stderr and still exits 0, with schema-valid --json on stdout", () => {
     const result = runCli(["--json", "--cwd", NO_ENTRYPOINTS_FIXTURE]);
@@ -1402,7 +1456,8 @@ describe("unused CLI — --all (T6.2, defeats top-10 truncation)", () => {
     const withAll = runCli(["--cwd", DEAD_FIXTURE, "--all"]);
     const without = runCli(["--cwd", DEAD_FIXTURE]);
     expect(withAll.status).toBe(0);
-    expect(withAll.stdout).toBe(without.stdout);
+    const withoutDuration = (text: string) => text.replace(/ -- \d+\.\d+s\n/, " -- <duration>\n");
+    expect(withoutDuration(withAll.stdout)).toBe(withoutDuration(without.stdout));
   });
 });
 
@@ -1530,7 +1585,7 @@ describe("unused baseline (T7.1)", () => {
       const header = JSON.parse(lines[0] as string);
       expect(header.analyzerVersion).toBe("0.1.0");
       expect(header.idVersion).toBe(1);
-      expect(header.schemaVersion).toBe("1.2.0");
+      expect(header.schemaVersion).toBe("1.3.0");
       expect(typeof header.configHash).toBe("string");
       expect(typeof header.generatedAt).toBe("string");
       const claim = JSON.parse(lines[1] as string);
@@ -1776,14 +1831,14 @@ describe("unused check (T7.2)", () => {
     });
   });
 
-  it("schemaVersion MINOR-only mismatch (e.g. 1.1.0 -> 1.2.0) still evaluates the gate — only a MAJOR change makes ids incomparable (ADR 0006)", async () => {
+  it("schemaVersion MINOR-only mismatch (e.g. 1.1.0 -> 1.3.0) still evaluates the gate — only a MAJOR change makes ids incomparable (ADR 0006)", async () => {
     await withTempFixtureCopy(DEAD_FIXTURE, async (dir) => {
       expect(runCli(["baseline", "--cwd", dir]).status).toBe(0);
       await tamperBaselineHeader(dir, { schemaVersion: "1.1.0" });
 
       const check = runCli(["check", "--cwd", dir]);
       expect(check.status).toBe(0);
-      expect(check.stdout).toContain("schema version: baseline 1.1.0, current 1.2.0");
+      expect(check.stdout).toContain("schema version: baseline 1.1.0, current 1.3.0");
       expect(check.stdout).toContain("PASS no new dead weight since baseline -- exit 0");
       expect(check.stdout).not.toContain("gate not evaluated");
     });
@@ -1829,7 +1884,7 @@ describe("unused check (T7.2)", () => {
 
       const check = runCli(["check", "--cwd", dir]);
       expect(check.status).toBe(0);
-      expect(check.stdout).toContain("schema version: baseline 2.0.0, current 1.2.0");
+      expect(check.stdout).toContain("schema version: baseline 2.0.0, current 1.3.0");
       expect(check.stdout).toMatch(/gate not evaluated.*re-baseline required.*exit 0/);
     });
   });
@@ -1887,7 +1942,7 @@ describe("unused CLI — why (T8.2, cli-ux §4)", () => {
     expect(result.stdout).toContain("consequence plan only");
   });
 
-  it("emits the standalone schema-1.2 deletion plan JSON", () => {
+  it("emits the standalone schema-1.3 deletion plan JSON", () => {
     const result = runCli([
       "why",
       "--delete",
@@ -1902,7 +1957,7 @@ describe("unused CLI — why (T8.2, cli-ux §4)", () => {
       supported: boolean;
       reExportEdits: unknown[];
     };
-    expect(plan.schemaVersion).toBe("1.2.0");
+    expect(plan.schemaVersion).toBe("1.3.0");
     expect(plan.supported).toBe(true);
     expect(plan.reExportEdits).toHaveLength(1);
   });
@@ -1972,6 +2027,7 @@ describe("unused CLI — why (T8.2, cli-ux §4)", () => {
           "selected subject has a live runtime reference at lib/neutral_mfa/runtime_config.ex:4",
       });
     },
+    30_000,
   );
 
   it.skipIf(!MIX_AVAILABLE)(
@@ -1992,6 +2048,7 @@ describe("unused CLI — why (T8.2, cli-ux §4)", () => {
           "selected subject has a live runtime reference at lib/neutral_use/router.ex:2",
       });
     },
+    30_000,
   );
 
   it("exits 3 with a fix hint on a nonexistent name (stdout clean)", () => {

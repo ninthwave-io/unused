@@ -9,8 +9,9 @@
  * runs the project's compiler (`runTracer`). A project that cannot compile is
  * refused (a thrown {@link ElixirFrontendError}), never a silently-empty result.
  *
- * Claims carry `subject.language = "ex"` via the ADR 0006 id canonical string
- * (the `language` slot), so an Elixir claim id can never collide with a TS one.
+ * Claims carry `language = "ex"` and use the same value in ADR 0006's
+ * canonical-id language slot, so an Elixir claim id can never collide with a
+ * TypeScript one.
  * Public functions are `export`-kind subjects named `Mod.fun/arity`; modules are
  * `export`-kind subjects named `Mod`; files are `file` subjects (v1 — documented
  * in ADR 0011).
@@ -217,6 +218,16 @@ export async function analyzeElixirProjectWithGraph(
       configHash: computeConfigHash(config),
       startedAt: now.toISOString(),
       durationMs: Date.now() - start,
+      boundaries: [
+        {
+          status: "complete",
+          pluginId: "language:elixir",
+          boundaryId: "ex:.",
+          language: "ex",
+          fileCount: analyzedFiles.length,
+          workspaceCount: 1,
+        },
+      ],
     },
     claims,
     summary: computeSummary(claims, { ciSecondsPerTestFile: config.ciSecondsPerTestFile }),

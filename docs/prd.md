@@ -59,15 +59,15 @@ The `--json` output is the canonical machine representation; SARIF and the MCP t
 
 **Top level:**
 ```
-{ schemaVersion, tool: {name, version}, run: {root, commit?, configHash, startedAt, durationMs}, claims: [], summary: {byKind, byConfidence, estDeletableLoc} }
+{ schemaVersion, tool: {name, version}, run: {root, commit?, configHash, startedAt, durationMs, boundaries: [{status, pluginId, boundaryId, language, fileCount, workspaceCount}]}, claims: [], summary: {byKind, byConfidence, estDeletableLoc} }
 ```
-`run.commit` is optional because not every analysis happens inside a git repo with a resolvable HEAD (e.g. a shallow CI checkout or a plain directory). `run.configHash` lets a consumer detect that two runs aren't comparable because the config changed underneath them — relevant for baseline diffing in `unused check`. `summary` exists so a TTY report or a chat-posted digest can render totals without walking the full `claims` array.
+`run.commit` is optional because not every analysis happens inside a git repo with a resolvable HEAD (e.g. a shallow CI checkout or a plain directory). `run.configHash` lets a consumer detect that two runs aren't comparable because the config changed underneath them — relevant for baseline diffing in `unused check`. `run.boundaries` is the deterministic record of completed language analyses, so a successful polyglot run proves which detected TypeScript, Elixir, Rust, or future boundaries actually contributed. `summary` exists so a TTY report or a chat-posted digest can render totals without walking the full `claims` array.
 
 **Claim:**
 ```
-{ id, subject: { kind: export|file|dependency|endpoint|test, name, protocol?, loc: {file, span, package?} }, verdict: unused|test-only|unconsumed-endpoint, confidence: high|medium|low, evidence: [{ type, detail, source, window? }], provenance: { analyzer, version, generatedAt }, suppression?: { reason, source?, pattern? }, deletionPlan?: { stages, requiredEdits } }
+{ id, language, subject: { kind: export|file|dependency|endpoint|test, name, protocol?, loc: {file, span, package?} }, verdict: unused|test-only|unconsumed-endpoint, confidence: high|medium|low, evidence: [{ type, detail, source, window? }], provenance: { analyzer, version, generatedAt }, suppression?: { reason, source?, pattern? }, deletionPlan?: { stages, requiredEdits } }
 ```
-`id` is a stable hash of `(kind, name, file)` — it deliberately excludes line numbers so a claim survives the subject moving within its file, which is what makes baseline diffing in `unused check` meaningful across commits rather than noisy on every reformat. It is stable to in-file moves but **not** to cross-file moves: a moved symbol reads as one resolved claim plus one new claim — documented behaviour, not a bug. Baselines stamp the analyzer version; on a version mismatch `unused check` warns and recommends re-baselining rather than hard-failing, because an analyzer upgrade must never paint the whole repo as "new dead weight". The exact hash algorithm and its cross-version stability guarantee are fixed in the Phase 2 claim-schema-versioning ADR.
+`language` is the explicit open language id (`ts`, `ex`, `rs`, or a future frontend id), so consumers never need to infer attribution from file extensions or analyzer names. `id` is a stable hash of `(kind, language, name, file)` — it deliberately excludes line numbers so a claim survives the subject moving within its file, which is what makes baseline diffing in `unused check` meaningful across commits rather than noisy on every reformat. TypeScript retains its historical empty canonical language slot for id compatibility while rendering `language: "ts"`; Elixir, Rust, and future frontends use their explicit language id in identity. It is stable to in-file moves but **not** to cross-file moves: a moved symbol reads as one resolved claim plus one new claim — documented behaviour, not a bug. Baselines stamp the analyzer version; on a version mismatch `unused check` warns and recommends re-baselining rather than hard-failing, because an analyzer upgrade must never paint the whole repo as "new dead weight". The exact hash algorithm and its cross-version stability guarantee are fixed in the Phase 2 claim-schema-versioning ADR.
 
 `endpoint` subjects carry `protocol` (`http`, `trpc`, `graphql`) and, for HTTP, the method as part of identity — `GET /users` and `POST /users` are distinct claims. `subject.loc.package` is optional and names the workspace package in a monorepo; a future `repo` qualifier is reserved for multi-repo claims — free local multi-repo and hosted alike (ADR 0002) — so the shape extends without breaking.
 
@@ -87,18 +87,29 @@ The `--json` output is the canonical machine representation; SARIF and the MCP t
 **Worked example.** An export with no inbound reference from any production entrypoint, no dynamic-reference hazard nearby:
 ```json
 {
-  "schemaVersion": "1.2.0",
+  "schemaVersion": "1.3.0",
   "tool": { "name": "unused", "version": "0.1.0" },
   "run": {
-    "root": "/Users/rob/code/acme-web",
+    "root": "/repo",
     "commit": "3f1a9c2",
     "configHash": "9e1b6f2a9d4c",
     "startedAt": "2026-07-18T09:12:03.000Z",
-    "durationMs": 4210
+    "durationMs": 4210,
+    "boundaries": [
+      {
+        "status": "complete",
+        "pluginId": "language:typescript",
+        "boundaryId": "ts:.",
+        "language": "ts",
+        "fileCount": 1284,
+        "workspaceCount": 1
+      }
+    ]
   },
   "claims": [
     {
       "id": "exp_7c1a4e2f9b0d3c6a",
+      "language": "ts",
       "subject": {
         "kind": "export",
         "name": "formatCurrency",

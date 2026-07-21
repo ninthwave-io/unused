@@ -381,6 +381,7 @@ describe("applyConfigSuppressions", () => {
   function makeClaim(file: string, kind: SubjectKind = "file", reason?: string): Claim {
     return {
       id: `${kind}:${file}`,
+      language: "ts",
       subject: { kind, name: file, loc: { file, span: [1, 1] } },
       verdict: kind === "test" ? "test-only" : "unused",
       confidence: "high",

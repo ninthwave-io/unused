@@ -5,6 +5,7 @@ import { applyClaimFilters, filterClaims, hasActiveFilters } from "./filter.js";
 function claim(overrides: Partial<Claim> & Pick<Claim, "subject" | "verdict">): Claim {
   return {
     id: `id_${overrides.subject.name}`,
+    language: "ts",
     confidence: "high",
     evidence: [{ type: "static-reachability", detail: "why", source: "reference-graph" }],
     provenance: {
@@ -48,6 +49,16 @@ function makeRun(claims: readonly Claim[]): ClaimRun {
       configHash: "abc",
       startedAt: "2026-07-18T00:00:00.000Z",
       durationMs: 10,
+      boundaries: [
+        {
+          status: "complete",
+          pluginId: "language:typescript",
+          boundaryId: "ts:.",
+          language: "ts",
+          fileCount: 1,
+          workspaceCount: 1,
+        },
+      ],
     },
     claims,
     summary: {

@@ -18,6 +18,7 @@ function exportClaim(overrides: Partial<ExportClaim> = {}): ExportClaim {
   };
   return {
     id: computeClaimId(subject),
+    language: "ts",
     subject,
     verdict: "unused",
     confidence: "high",
@@ -41,6 +42,7 @@ function fileClaim(overrides: Partial<FileClaim> = {}): FileClaim {
   };
   return {
     id: computeClaimId(subject),
+    language: "ts",
     subject,
     verdict: "unused",
     confidence: "medium",
@@ -64,6 +66,7 @@ function testOnlyClaim(overrides: Partial<TestClaim> = {}): TestClaim {
   };
   return {
     id: computeClaimId(subject),
+    language: "ts",
     subject,
     verdict: "test-only",
     confidence: "low",

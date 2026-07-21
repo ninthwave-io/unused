@@ -120,7 +120,7 @@ describe("computeDeletionPlan", () => {
     });
 
     expect(plan).toEqual({
-      schemaVersion: "1.2.0",
+      schemaVersion: "1.3.0",
       selected: { kind: "export", file: "lib/callback.ex", name: "Callback.handle/0" },
       supported: false,
       unsupportedReason: "selected subject has a live runtime reference at lib/config.ex:7",
@@ -676,7 +676,7 @@ describe("computeDeletionPlan", () => {
       subject: { kind: "dependency", file: "package.json", name: "some-package" },
     });
     expect(plan).toEqual({
-      schemaVersion: "1.2.0",
+      schemaVersion: "1.3.0",
       selected: { kind: "dependency", file: "package.json", name: "some-package" },
       supported: false,
       unsupportedReason: "dependency deletion has no graph cascade model",

@@ -21,6 +21,14 @@ import { buildSarifLog, renderSarif } from "./sarif.js";
 const addFormats = createRequire(import.meta.url)("ajv-formats") as FormatsPlugin;
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const BOUNDARY = {
+  status: "complete",
+  pluginId: "language:typescript",
+  boundaryId: "ts:.",
+  language: "ts",
+  fileCount: 1,
+  workspaceCount: 1,
+} as const;
 
 function compileSarifSchema() {
   const schema = JSON.parse(readFileSync(join(HERE, "schema/sarif-2.1.0.schema.json"), "utf8"));
@@ -37,6 +45,7 @@ function compileSarifSchema() {
 function claim(overrides: Partial<Claim> & Pick<Claim, "subject" | "verdict">): Claim {
   return {
     id: `id_${overrides.subject.name}`,
+    language: "ts",
     confidence: "high",
     evidence: [{ type: "static-reachability", detail: "why text", source: "reference-graph" }],
     provenance: {
@@ -57,6 +66,7 @@ function makeRun(claims: readonly Claim[]): ClaimRun {
       configHash: "abc",
       startedAt: "2026-07-18T00:00:00.000Z",
       durationMs: 10,
+      boundaries: [BOUNDARY],
     },
     claims,
     summary: {
@@ -136,7 +146,7 @@ describe("buildSarifLog — shape", () => {
     expect(loc?.region).toEqual({ startLine: 1, endLine: 42 });
   });
 
-  it("carries confidence, the full evidence array, and why in properties", () => {
+  it("carries language, confidence, the full evidence array, and why in properties", () => {
     const c = claim({
       subject: { kind: "export", name: "a", loc: { file: "a.ts", span: [1, 1] } },
       verdict: "unused",
@@ -144,6 +154,7 @@ describe("buildSarifLog — shape", () => {
       evidence: [{ type: "static-reachability", detail: "the reason", source: "reference-graph" }],
     });
     const props = buildSarifLog(makeRun([c])).runs[0]?.results[0]?.properties;
+    expect(props?.language).toBe("ts");
     expect(props?.confidence).toBe("medium");
     expect(props?.evidence).toEqual(c.evidence);
     expect(props?.why).toBe("the reason");

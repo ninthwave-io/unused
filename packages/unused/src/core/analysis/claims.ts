@@ -937,6 +937,7 @@ function buildExportClaim(
   const id = computeClaimId(subject, langOpt(input));
   return {
     id,
+    language: claimLanguage(input),
     subject,
     verdict,
     confidence,
@@ -958,7 +959,15 @@ function buildFileClaim(
   const subject: FileSubject = { kind: "file", name: file, loc: { file, span } };
   const evidence = buildLivenessEvidence(verdict, `\`${file}\``, capNote, testEntry);
   const id = computeClaimId(subject, langOpt(input));
-  return { id, subject, verdict, confidence, evidence: [evidence], provenance: input.provenance };
+  return {
+    id,
+    language: claimLanguage(input),
+    subject,
+    verdict,
+    confidence,
+    evidence: [evidence],
+    provenance: input.provenance,
+  };
 }
 
 function buildTestClaim(
@@ -977,6 +986,7 @@ function buildTestClaim(
   const id = computeClaimId(subject, langOpt(input));
   return {
     id,
+    language: claimLanguage(input),
     subject,
     verdict: "test-only",
     confidence,
@@ -1004,7 +1014,15 @@ function buildDependencyClaim(
     source: EVIDENCE_SOURCE,
   };
   const id = computeClaimId(subject, langOpt(input));
-  return { id, subject, verdict, confidence, evidence: [evidence], provenance: input.provenance };
+  return {
+    id,
+    language: claimLanguage(input),
+    subject,
+    verdict,
+    confidence,
+    evidence: [evidence],
+    provenance: input.provenance,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1013,6 +1031,11 @@ function buildDependencyClaim(
 
 function langOpt(input: EmitClaimsInput): { language?: string } {
   return input.language !== undefined ? { language: input.language } : {};
+}
+
+/** TypeScript's historical empty identity slot still renders explicitly as `ts`. */
+function claimLanguage(input: EmitClaimsInput): string {
+  return input.language ?? "ts";
 }
 
 /** A suppressed symbol still yields a claim; the reason travels in the object (PRD §6). */

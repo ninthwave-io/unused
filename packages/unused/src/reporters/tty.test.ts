@@ -26,6 +26,7 @@ function stripAnsi(text: string): string {
 function claim(overrides: Partial<Claim> & Pick<Claim, "subject" | "verdict">): Claim {
   return {
     id: `id_${overrides.subject.name}`,
+    language: "ts",
     confidence: "high",
     evidence: [
       {
@@ -163,6 +164,16 @@ function makeRun(claims: readonly Claim[], overrides: Partial<ClaimRun["summary"
       configHash: "abc",
       startedAt: "2026-07-18T09:12:03.000Z",
       durationMs: 4200,
+      boundaries: [
+        {
+          status: "complete",
+          pluginId: "language:typescript",
+          boundaryId: "ts:.",
+          language: "ts",
+          fileCount: 1,
+          workspaceCount: 1,
+        },
+      ],
     },
     claims,
     summary: {

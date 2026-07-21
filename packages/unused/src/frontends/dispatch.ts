@@ -6,7 +6,12 @@ import {
   emitClaims,
   type PartitionedReachability,
 } from "../core/analysis/index.js";
-import { type Claim, computeSummary, SCHEMA_VERSION } from "../core/claims/index.js";
+import {
+  type Claim,
+  type CompletedAnalysisBoundary,
+  computeSummary,
+  SCHEMA_VERSION,
+} from "../core/claims/index.js";
 import { entrypointId, IRGraph, type IRNode } from "../core/ir/index.js";
 import { analyzeElixirProjectWithGraph } from "./elixir/index.js";
 import { BUILT_IN_PLUGINS, claimAnnotationKey } from "./plugins/builtins.js";
@@ -33,18 +38,11 @@ export interface AnalyzeAutoWithGraph {
   readonly result: AnalyzeResult;
   readonly graph: IRGraph;
   readonly reachability: PartitionedReachability;
-  /** Internal completeness/counter metadata; never included in canonical JSON. */
+  /** Internal access to the same completion records also published at `result.run.boundaries`. */
   readonly boundaries: readonly BoundaryRunMetadata[];
 }
 
-export interface BoundaryRunMetadata {
-  readonly status: "complete";
-  readonly pluginId: string;
-  readonly boundaryId: string;
-  readonly language: string;
-  readonly fileCount: number;
-  readonly workspaceCount: number;
-}
+export type BoundaryRunMetadata = CompletedAnalysisBoundary;
 
 export async function analyzeProjectAuto(
   rootDir: string,
@@ -104,21 +102,24 @@ export async function analyzeProjectAutoWithGraph(
     a.boundary.id < b.boundary.id ? -1 : a.boundary.id > b.boundary.id ? 1 : 0,
   );
 
-  // The historical no-manifest fallback and root-only paths stay byte-compatible.
+  // Root-only paths retain their established analysis behavior; this layer
+  // replaces only the new public completion metadata.
   if (discovered.length === 0) {
     const analysis = await analyzeProjectWithGraph(root, options);
+    const boundaries: readonly BoundaryRunMetadata[] = [
+      {
+        status: "complete",
+        pluginId: "language:typescript",
+        boundaryId: "ts:fallback",
+        language: "ts",
+        fileCount: analysis.result.fileCount,
+        workspaceCount: analysis.result.workspaceCount,
+      },
+    ];
     return {
       ...analysis,
-      boundaries: [
-        {
-          status: "complete",
-          pluginId: "language:typescript",
-          boundaryId: "ts:fallback",
-          language: "ts",
-          fileCount: analysis.result.fileCount,
-          workspaceCount: analysis.result.workspaceCount,
-        },
-      ],
+      result: withCompletedBoundaries(analysis.result, boundaries),
+      boundaries,
     };
   }
   if (
@@ -130,18 +131,20 @@ export async function analyzeProjectAutoWithGraph(
     const analysis = await (selected.plugin.language === "ex"
       ? analyzeElixirProjectWithGraph(root, options)
       : analyzeProjectWithGraph(root, options));
+    const boundaries: readonly BoundaryRunMetadata[] = [
+      {
+        status: "complete",
+        pluginId: selected.plugin.id,
+        boundaryId: selected.boundary.id,
+        language: selected.plugin.language,
+        fileCount: analysis.result.fileCount,
+        workspaceCount: analysis.result.workspaceCount,
+      },
+    ];
     return {
       ...analysis,
-      boundaries: [
-        {
-          status: "complete",
-          pluginId: selected.plugin.id,
-          boundaryId: selected.boundary.id,
-          language: selected.plugin.language,
-          fileCount: analysis.result.fileCount,
-          workspaceCount: analysis.result.workspaceCount,
-        },
-      ],
+      result: withCompletedBoundaries(analysis.result, boundaries),
+      boundaries,
     };
   }
 
@@ -233,6 +236,7 @@ export async function analyzeProjectAutoWithGraph(
   );
   const rootProject =
     rootTypeScript ?? fragments.find((fragment) => fragment.boundary.rootRelDir === "");
+  const boundaries = fragments.map(completedBoundary);
   options.performance?.set("files", analyzedFiles.length);
   options.performance?.set(
     "symbols",
@@ -249,6 +253,7 @@ export async function analyzeProjectAutoWithGraph(
       configHash: computeConfigHash(config),
       startedAt: now.toISOString(),
       durationMs: Date.now() - started,
+      boundaries,
     },
     claims,
     summary: computeSummary(claims, { ciSecondsPerTestFile: config.ciSecondsPerTestFile }),
@@ -263,15 +268,26 @@ export async function analyzeProjectAutoWithGraph(
     result,
     graph,
     reachability,
-    boundaries: fragments.map((fragment) => ({
-      status: "complete",
-      pluginId: fragment.pluginId,
-      boundaryId: fragment.boundary.id,
-      language: fragment.language,
-      fileCount: fragment.metadata.fileCount,
-      workspaceCount: fragment.metadata.workspaceCount,
-    })),
+    boundaries,
   };
+}
+
+function completedBoundary(fragment: FrontendGraphFragment): BoundaryRunMetadata {
+  return {
+    status: "complete",
+    pluginId: fragment.pluginId,
+    boundaryId: fragment.boundary.id,
+    language: fragment.language,
+    fileCount: fragment.metadata.fileCount,
+    workspaceCount: fragment.metadata.workspaceCount,
+  };
+}
+
+function withCompletedBoundaries(
+  result: AnalyzeResult,
+  boundaries: readonly BoundaryRunMetadata[],
+): AnalyzeResult {
+  return { ...result, run: { ...result.run, boundaries } };
 }
 
 function mergeFragments(fragments: readonly FrontendGraphFragment[]): IRGraph {

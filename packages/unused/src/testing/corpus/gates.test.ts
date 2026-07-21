@@ -35,6 +35,7 @@ function claimForLabel(label: Label, confidence: Confidence): Claim {
   } as Subject;
   return {
     id: computeClaimId(subject),
+    language: "ts",
     subject,
     verdict: "unused",
     confidence,
@@ -101,6 +102,7 @@ const evilUnlabelledHighAnalyzer: Analyzer = {
     return [
       {
         id: computeClaimId(subject),
+        language: "ts",
         subject,
         verdict: "unused",
         confidence: "high",

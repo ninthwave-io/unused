@@ -130,6 +130,7 @@ describe("whyAlive — dead", () => {
   it("surfaces verdict/confidence/evidence from the subject's claim", () => {
     const claim: Claim = {
       id: "exp_test",
+      language: "ts",
       subject: { kind: "export", name: "deadThing", loc: { file: "src/orphan.ts", span: [6, 6] } },
       verdict: "unused",
       confidence: "high",
@@ -214,6 +215,7 @@ describe("whyAlive — resolution outcomes", () => {
     const g = new IRGraph();
     const claim: Claim = {
       id: "dep_test",
+      language: "ts",
       subject: {
         kind: "dependency",
         name: "unused-package",
@@ -246,6 +248,7 @@ describe("whyAlive — resolution outcomes", () => {
   it("disambiguates the same unused dependency across workspaces", () => {
     const dependencyClaim = (workspace: string): Claim => ({
       id: `dep_${workspace}`,
+      language: "ts",
       subject: {
         kind: "dependency",
         name: "shared-package",

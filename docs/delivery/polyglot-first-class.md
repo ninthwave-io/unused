@@ -143,9 +143,10 @@ Progress:
 - Root config entry, project, dependency-ignore, suppression, warning, summary,
   and gate behavior applies to the complete file union. Stable claim
   coordinates retain local frontend suppression/package annotations.
-- Internal boundary metadata records plugin, language, status, file count, and
-  workspace count without entering canonical JSON. Single-root and no-manifest
-  paths retain their historical frontend output.
+- Boundary metadata records plugin, language, status, file count, and workspace
+  count. Schema 1.3.0 now publishes the completed records in canonical JSON and
+  attributes every claim with an explicit language id; the internal graph API
+  retains the same records for programmatic callers.
 - Acceptance evidence: a neutral nested TS+Mix repository is analyzed in one
   graph; core tests prove a planted cross-fragment edge changes claim liveness;
   the 166-test CLI/TS/Elixir regression selection passes (6 toolchain/fixture
@@ -447,7 +448,7 @@ Progress:
   confidence violations, and unlabelled claims.
 - The packed package installs in a new npm project under the selected Node 22
   runtime. Its installed bin renders help and produces diagnostic-free schema
-  1.2.0 JSON; the tarball contains the CLI, claim schema, README, LICENSE, and
+  1.3.0 JSON; the tarball contains the CLI, claim schema, README, LICENSE, and
   package metadata. The privacy scan found zero consuming-project identifiers,
   new absolute user paths, or credential patterns in tracked delivery changes.
 - The separate validation-only consuming-project rerun completed within its
@@ -464,6 +465,27 @@ push, publish, or consuming-project mutation was performed by this programme.
 
 Next action: founder release review. Any semver tag, push, or publication remains
 an explicit founder action.
+
+### P7 — Public polyglot observability
+
+Status: complete
+
+Schema 1.3.0 is the ADR 0006 MINOR addition that makes P2's completion facts
+public. Canonical JSON now contains a deterministic `run.boundaries` record for
+every completed frontend boundary and a required `language` on every claim.
+TypeScript renders `ts` without changing its historical empty claim-id language
+slot; `idVersion` remains 1 and every existing claim id stays stable. SARIF
+projects the same language into each result's properties.
+
+A neutral built-CLI regression creates a root TypeScript project, a nested Mix
+application, and a Cargo crate nested beneath that application. It validates
+the output against the shipped schema, asserts all three completion records,
+and requires claims attributable to `ts`, `ex`, and `rs`. The release matrix
+passes at 81 files / 1,066 tests; all four corpus scoreboards retain precision
+1.0 and their accepted totals. The installed-tarball smoke emits schema 1.3.0
+with a boundary record and attributed claims. The privacy scan finds no private
+consumer identifier, added absolute user path, private-key marker, or credential
+marker.
 
 ## Verification commands
 

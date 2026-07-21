@@ -11,6 +11,7 @@ import { type BadgeJson, computeBadge, renderBadgeConfirmation, renderBadgeJson 
 function claim(overrides: Partial<Claim> & Pick<Claim, "subject" | "verdict">): Claim {
   return {
     id: `id_${overrides.subject.name}`,
+    language: "ts",
     confidence: "high",
     evidence: [
       { type: "static-reachability", detail: "no inbound refs", source: "reference-graph" },
@@ -33,6 +34,16 @@ function makeRun(claims: readonly Claim[]): ClaimRun {
       configHash: "abc",
       startedAt: "2026-07-18T09:12:03.000Z",
       durationMs: 100,
+      boundaries: [
+        {
+          status: "complete",
+          pluginId: "language:typescript",
+          boundaryId: "ts:.",
+          language: "ts",
+          fileCount: 1,
+          workspaceCount: 1,
+        },
+      ],
     },
     claims,
     summary: {

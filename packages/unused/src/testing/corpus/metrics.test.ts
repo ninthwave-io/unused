@@ -31,6 +31,7 @@ function exportClaim(
   };
   return {
     id: `exp_${subject.name}_${subject.loc.file}`,
+    language: "ts",
     subject,
     verdict: "unused",
     confidence: overrides.confidence ?? "high",
@@ -47,6 +48,7 @@ function fileClaim(overrides: { file?: string; confidence?: Confidence } = {}): 
   };
   return {
     id: `fil_${subject.name}`,
+    language: "ts",
     subject,
     verdict: "unused",
     confidence: overrides.confidence ?? "high",

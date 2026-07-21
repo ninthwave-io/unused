@@ -177,8 +177,8 @@ export type DeferredConventionId =
   | "elixir-runtime";
 
 /**
- * {@link analyzeProject}'s return value: the PRD §4 wire format plus one
- * out-of-band, non-schema field callers need to disambiguate `claims: []`.
+ * {@link analyzeProject}'s return value: the PRD §4 wire format plus
+ * out-of-band, non-schema fields used by human and CI surfaces.
  *
  * An empty `claims` array is genuinely ambiguous on its own: it is the
  * outcome of (a) a project with production entrypoints where nothing is
@@ -198,7 +198,7 @@ export type DeferredConventionId =
  * out-of-band: the header needs repo identity and scale figures the claim
  * schema itself has no field for (PRD §4 fixes the `ClaimRun` shape; these
  * three are analysis-time facts a reporter needs alongside it, not inside
- * it). The CLI strips all six non-schema fields before any `--json`/SARIF
+ * it). The CLI strips these non-schema fields before any `--json`/SARIF
  * output, exactly as it already did for `productionEntrypointCount`.
  *
  * `units` and `gateThreshold` (M7, docs/phasing.md T7.1/T7.2) serve
@@ -245,7 +245,7 @@ export interface AnalyzeResult extends ClaimRun {
  *
  * The graph and reachability are deliberately NOT on {@link AnalyzeResult}: the
  * default report / `--json` / SARIF paths must never see them (the CLI's
- * six-field strip keeps `--json` byte-identical to the claim-run schema). Only
+ * out-of-band-field strip keeps `--json` equal to the claim-run schema). Only
  * the M8 `why`/MCP surfaces — which answer for ANY symbol, not just claimed-dead
  * ones, and render reference paths from stored provenance (PRD §5/§8) — need the
  * live graph and predecessor maps, so they call this entry instead.
@@ -771,6 +771,16 @@ export async function analyzeProjectWithGraph(
       configHash: computeConfigHash(config),
       startedAt: now.toISOString(),
       durationMs: Date.now() - start,
+      boundaries: [
+        {
+          status: "complete",
+          pluginId: "language:typescript",
+          boundaryId: "ts:.",
+          language: "ts",
+          fileCount: files.length,
+          workspaceCount: units.length,
+        },
+      ],
     },
     claims,
     // T5.3: config `ciSecondsPerTestFile` overrides the zombie-tests

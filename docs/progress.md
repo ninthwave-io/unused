@@ -6,6 +6,14 @@ Completed programme: ADR 0013 first-class TypeScript/Elixir/Rust orchestration
 and Rustler/NIF bridging. The authoritative acceptance and resume state lives in
 `docs/delivery/polyglot-first-class.md`; chat history is not authoritative.
 
+Public polyglot observability (2026-07-21): schema 1.3.0 additively publishes a
+deterministic `run.boundaries` completion record and requires explicit language
+attribution on every claim. A neutral built-CLI regression covers root
+TypeScript, nested Mix, and Cargo nested beneath Mix, with claim findings in all
+three languages. Claim ids and `idVersion: 1` are unchanged. Full verification
+passes at 81 test files / 1,066 tests, and the installed-package and privacy
+smokes pass.
+
 Elixir compiler-boundary hardening (2026-07-21): tracer compilation now uses a
 temporary `MIX_BUILD_PATH`, reuses existing dependency artifacts read-only, and
 leaves the consumer's `_build` (including consolidated protocols) unchanged. A
@@ -23,7 +31,7 @@ mutating the resource tree or consumer build.
 ## What shipped (v1, private-beta ready)
 `@ninthwave-io/unused` — a liveness oracle for TS/JS. Tiers 1–2 fully implemented:
 - **Analysis**: oxc-based frontend (per-unit resolution incl. member tsconfigs), language-agnostic IR (intra-file symbol edges, provenance spans), partitioned reachability (production/config/test), 18-class hazard registry with scoped confidence caps, dependency claims (conservative-first), test-only verdicts + zombie tests + estimated CI-seconds, workspaces (npm/pnpm/yarn-classic/bun; PnP refused loudly), JSONC config (project=claimability, ignore=invisibility), presets (vite, next incl. metadata routes), generated assumption set (drift-tested).
-- **Surfaces**: TTY report per cli-ux spec; `--json` (schema 1.1.0) + SARIF 2.1.0 (fingerprints); `unused check`/`baseline` CI gate (per-workspace JSONL, version+configHash stamps, honest gate-not-evaluated state); `unused why`; MCP server (find_unused / why_alive / usage_evidence, SDK 1.29.0); `unused report --md|--html` + `unused badge`; full flag surface, exit contract 0/1/2/3.
+- **Surfaces**: TTY report per cli-ux spec; `--json` (schema 1.3.0, explicit claim language and completed-boundary records) + SARIF 2.1.0 (fingerprints and language properties); `unused check`/`baseline` CI gate (per-workspace JSONL, version+configHash stamps, honest gate-not-evaluated state); `unused why`; MCP server (find_unused / why_alive / usage_evidence, SDK 1.29.0); `unused report --md|--html` + `unused badge`; full flag surface, exit contract 0/1/2/3.
 - **Quality**: corpus 36 cases / 103 subjects — precision 1.0, recall 0.939, 0 FP/CV/unlabelled; gates A–D with planted proofs, origin/main baseline in CI. 824 tests. Smoke: hono/axios/fastify/zod pinned, 0 high-confidence FPs after three fix rounds (M3: 144 test-file highs; M4: member tsconfig paths; M5: 15 wrong zombies incl. systemic intra-file edge gap). Perf ≤1.23× knip at ~400-file scale; checkpoint verdict: stay TS.
 - **Packaging**: npm pack verified cold from an installed tarball (caught the symlinked-bin silent-noop bug); OIDC provenance workflow tag-gated and ready; README + assumption-set link.
 
@@ -77,7 +85,7 @@ Founder review of the reference-codebase deletion list (the real-use-case valida
 
 ## Implementation checkpoint (2026-07-19, review rounds active)
 - ADR 0012 is implemented across discovery, claim policy, deletion planning, reporting, and conservative CLI mutation. The implementation is still uncommitted while independent fix/re-review rounds finish; do not treat this checkpoint as release acceptance.
-- Complete file reachability, dependency-aware `why`, `why --delete`, standalone schema-1.2 deletion plans, report consequence summaries, structured root/workspace suppressions, ordered `project` scope, default nested/ancestor `.gitignore` handling, and `--no-gitignore` are present.
+- Complete file reachability, dependency-aware `why`, `why --delete`, standalone schema-1.3 deletion plans, report consequence summaries, structured root/workspace suppressions, ordered `project` scope, default nested/ancestor `.gitignore` handling, and `--no-gitignore` are present.
 - `--fix` mutates only its frozen unsuppressed-HIGH-unused set, has two opt-ins for files, fails closed on semantic inbound references/unsupported plans, applies required re-export and primary edits transactionally with rollback, never commits, and re-analyses once to report remaining/newly exposed claims.
 - The cross-unit hazard leak is corrected with carrier-reachable fixed-point activation; config-reference evidence now points to the actual carrier site.
 - Missing-root work covers workflow commands, Task, Vite/Vitest, k6, browser HTML/extension/service-worker assets, MSW, native project commands, AudioWorklet assets, and CDK `NodejsFunction` entries. Review found and fixed multiple “fixture was easier than production syntax” cases; a final bounded Task/CDK/native review round remains active at this checkpoint.
