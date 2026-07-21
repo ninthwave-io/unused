@@ -437,8 +437,8 @@ Progress:
   dominates this deliberately small cold polyglot run. Reproduction details
   are in `docs/bench/2026-07-21-polyglot-acceptance.md`.
 - Final matrix: typecheck; lint with the established 2 warnings and 48
-  informational diagnostics; dependency boundaries (916 modules / 1,972
-  dependencies); generated-assumption sync; all 80 test files / 1,056 tests;
+  informational diagnostics; dependency boundaries (917 modules / 1,980
+  dependencies); generated-assumption sync; all 81 test files / 1,064 tests;
   build; and diff check pass.
 - Final scoreboards: TypeScript 52 cases / 237 subjects, precision 1.0, recall
   0.826530612244898; Elixir 10 / 26, precision and recall 1.0; Rust 4 / 12,

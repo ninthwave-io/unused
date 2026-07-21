@@ -25,3 +25,15 @@ Evidence that would reverse this: the tracer approach failing to produce a usabl
 - The frontend interface gets its second real implementation, proving ADR 0003's core constraint before the first release — the point of the founder directive.
 - Requires Elixir/OTP present to analyze Elixir projects (refusal with a clear message otherwise).
 - The corpus gains a `fixtures/elixir/` tree with the same labels.yaml contract (per-language layout existed from M1 by design).
+
+## Implementation amendment — isolated build state (2026-07-21)
+
+The compiler tracer runs the analyzed application under a temporary
+`MIX_BUILD_PATH`. It reuses previously compiled dependency application paths but
+does not place the analyzed application's compiler manifests, BEAM files, `.app`
+resource, or consolidated protocols in the project's `_build`. This preserves
+the compiler-backed precision decision while preventing analysis from making a
+subsequent `mix compile --warnings-as-errors` regenerate consolidation output.
+A project whose dependency artifacts are not available from a prior clean
+compile is refused explicitly; the analyzer neither fetches nor silently builds
+dependencies into the consumer's tree.

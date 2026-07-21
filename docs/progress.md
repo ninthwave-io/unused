@@ -6,6 +6,15 @@ Completed programme: ADR 0013 first-class TypeScript/Elixir/Rust orchestration
 and Rustler/NIF bridging. The authoritative acceptance and resume state lives in
 `docs/delivery/polyglot-first-class.md`; chat history is not authoritative.
 
+Elixir compiler-boundary hardening (2026-07-21): tracer compilation now uses a
+temporary `MIX_BUILD_PATH`, reuses existing dependency artifacts read-only, and
+leaves the consumer's `_build` (including consolidated protocols) unchanged. A
+neutral generated regression snapshots the complete build tree and proves that
+an immediate `mix compile --warnings-as-errors` stays green without cleanup.
+The neutral basic fixture completes in 0.70–0.71s across three warm-toolchain
+runs; the added no-compile layout process is 0.23s on the same machine. This is
+a bounded process-startup cost, not repeated dependency compilation.
+
 ## What shipped (v1, private-beta ready)
 `@ninthwave-io/unused` — a liveness oracle for TS/JS. Tiers 1–2 fully implemented:
 - **Analysis**: oxc-based frontend (per-unit resolution incl. member tsconfigs), language-agnostic IR (intra-file symbol edges, provenance spans), partitioned reachability (production/config/test), 18-class hazard registry with scoped confidence caps, dependency claims (conservative-first), test-only verdicts + zombie tests + estimated CI-seconds, workspaces (npm/pnpm/yarn-classic/bun; PnP refused loudly), JSONC config (project=claimability, ignore=invisibility), presets (vite, next incl. metadata routes), generated assumption set (drift-tested).
@@ -151,8 +160,8 @@ Founder review of the reference-codebase deletion list (the real-use-case valida
   precision and recall 1.0. All four have zero false positives, confidence
   violations, and unlabelled claims.
 - Final gates pass: typecheck; lint with the established 2 warnings and 48
-  informational diagnostics; boundaries over 916 modules / 1,972 dependencies;
-  generated assumptions; 80 test files / 1,056 tests; build; diff check;
+  informational diagnostics; boundaries over 917 modules / 1,980 dependencies;
+  generated assumptions; 81 test files / 1,064 tests; build; diff check;
   installed-tarball smoke; and privacy scan. Compiler-backed corpus cases use
   isolated cold build roots, so parallel workers cannot consume shared
   Mix/Cargo cache state.

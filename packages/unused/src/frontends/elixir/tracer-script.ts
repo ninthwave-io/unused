@@ -14,7 +14,8 @@
  *     dynamic-dispatch call sites.
  *  2. Registers the tracer via `Code.put_compiler_option(:tracers, …)` and
  *     force-compiles the project's lib with `Mix.Task.rerun("compile.elixir",
- *     ["--force", "--return-errors"])`. `compile.elixir` (not the umbrella
+ *     ["--force", "--return-errors"])` inside a temporary build path prepared
+ *     by the runner. `compile.elixir` (not the umbrella
  *     `compile` task) is the task that merges the runtime-set tracer option
  *     (verified: the umbrella task drops it).
  *  3. Reflects the compiled BEAM modules for the public-function surface
@@ -134,10 +135,16 @@ Code.put_compiler_option(:tracers, [Unused.Tracer])
 compile_ok =
   case Mix.Task.rerun("compile.elixir", ["--force", "--return-errors"]) do
     {:error, diagnostics} when is_list(diagnostics) and diagnostics != [] ->
-      emit.(%{"k" => "compile_error", "count" => length(diagnostics)})
+      emit.(%{"k" => "compile_error", "count" => length(diagnostics),
+              "details" => Enum.map(diagnostics, &inspect/1)})
       false
     _ -> true
   end
+
+# The runner deliberately entered with no application artifacts in
+# the isolated build. Generate the .app resource there so application callback
+# discovery below remains compiler-backed without touching the project's build.
+if compile_ok, do: Mix.Task.rerun("compile.app", ["--force"])
 
 emit.(%{"k" => "meta", "compile_ok" => compile_ok})
 

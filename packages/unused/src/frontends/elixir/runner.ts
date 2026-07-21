@@ -2,9 +2,12 @@
  * Runs the generated compiler-tracer script against an Elixir project (ADR 0011).
  *
  * The one place `unused` executes user code (disclosed in the assumption set).
- * The flow: write {@link TRACER_SCRIPT} + an output path into a temp dir, run
- * `mix run <script>` in the project directory with `UNUSED_OUT` pointing at the
- * output file, then parse the JSON-lines it wrote back.
+ * The flow: inspect Mix without compiling, prepare an isolated temporary build
+ * path that reuses the project's already-compiled dependency artifacts, write
+ * {@link TRACER_SCRIPT} + an output path there, run the script with Mix's
+ * `--no-compile` option and `UNUSED_OUT` pointing at the output file, then parse the
+ * JSON-lines it wrote back. The analyzed application's own `_build` artifacts
+ * are never rewritten.
  *
  * ## Refusal, never a silently-wrong answer (ADR 0011)
  * Every way the run can fail to produce a trustworthy graph is a *refusal* — a
@@ -13,14 +16,23 @@
  * dead":
  *  - `mix`/`elixir` not on PATH (spawn `ENOENT`) ⇒ {@link ElixirToolchainError}.
  *  - `mix run` exits non-zero, or the tracer reported a compile error, or the
- *    project's deps are not fetched (compile fails) ⇒ {@link ElixirCompileError}.
+ *    project's deps are not fetched or not already compiled ⇒ {@link ElixirCompileError}.
  *  - the output file is missing/empty/unparseable ⇒ {@link ElixirCompileError}.
  */
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import type {
   AppModRecord,
   DepsRecord,
@@ -70,6 +82,12 @@ export interface RunTracerOptions {
 const DEFAULT_TIMEOUT_MS = 300_000;
 /** The tracer output of a large app can be many MB of JSON-lines. */
 const MAX_BUFFER = 256 * 1024 * 1024;
+const LAYOUT_MARKER = "__UNUSED_MIX_LAYOUT__";
+
+interface MixLayout {
+  readonly app: string;
+  readonly buildPath: string;
+}
 
 /**
  * Run the tracer against the Elixir project rooted at `projectDir` (the
@@ -80,16 +98,35 @@ export function runTracer(projectDir: string, options: RunTracerOptions = {}): T
   const workDir = mkdtempSync(join(tmpdir(), "unused-ex-"));
   const scriptPath = join(workDir, "unused_tracer.exs");
   const outPath = join(workDir, "trace.jsonl");
+  const isolatedBuildPath = join(workDir, "build");
   writeFileSync(scriptPath, TRACER_SCRIPT, "utf8");
 
   try {
-    const result = spawnSync(options.command ?? "mix", ["run", "--no-start", scriptPath], {
-      cwd: projectDir,
-      encoding: "utf8",
-      timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      maxBuffer: MAX_BUFFER,
-      env: { ...process.env, UNUSED_OUT: outPath, MIX_QUIET: "1" },
-    });
+    const command = options.command ?? "mix";
+    const layout = inspectMixLayout(
+      command,
+      projectDir,
+      join(workDir, "layout-build"),
+      options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    );
+    prepareIsolatedBuild(layout, isolatedBuildPath);
+
+    const result = spawnSync(
+      command,
+      ["run", "--no-start", "--no-compile", "--no-deps-check", scriptPath],
+      {
+        cwd: projectDir,
+        encoding: "utf8",
+        timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        maxBuffer: MAX_BUFFER,
+        env: {
+          ...process.env,
+          UNUSED_OUT: outPath,
+          MIX_BUILD_PATH: isolatedBuildPath,
+          MIX_QUIET: "1",
+        },
+      },
+    );
 
     if (result.error !== undefined) {
       const err = result.error as NodeJS.ErrnoException;
@@ -115,7 +152,8 @@ export function runTracer(projectDir: string, options: RunTracerOptions = {}): T
       const tail = tailLines(result.stderr ?? result.stdout ?? "", 12);
       throw new ElixirCompileError(
         `cannot analyze Elixir project: \`mix compile\` failed in ${projectDir} (exit ${result.status}). ` +
-          "Ensure dependencies are fetched (`mix deps.get`) and the project compiles cleanly, then retry.\n" +
+          "Ensure dependencies are fetched (`mix deps.get`), their build artifacts exist from a " +
+          "clean project compile, and the project compiles cleanly, then retry.\n" +
           tail,
       );
     }
@@ -136,6 +174,116 @@ export function runTracer(projectDir: string, options: RunTracerOptions = {}): T
   }
 }
 
+/**
+ * Ask Mix for the effective build path and application name without compiling
+ * the project. Loading `mix.exs` still executes the project's Mix configuration
+ * (already part of ADR 0011's disclosed trust boundary), but `--no-compile`
+ * guarantees this discovery step does not update compiler manifests.
+ */
+function inspectMixLayout(
+  command: string,
+  projectDir: string,
+  inspectionBuildPath: string,
+  timeoutMs: number,
+): MixLayout {
+  const expression =
+    'payload = %{app: to_string(Mix.Project.config()[:app] || ""), ' +
+    'build_root: to_string(Mix.Project.config()[:build_path] || ""), ' +
+    "mix_env: to_string(Mix.env())}; " +
+    `IO.puts("${LAYOUT_MARKER}" <> IO.iodata_to_binary(:json.encode(payload)))`;
+  const result = spawnSync(
+    command,
+    ["run", "--no-start", "--no-compile", "--no-deps-check", "-e", expression],
+    {
+      cwd: projectDir,
+      encoding: "utf8",
+      timeout: timeoutMs,
+      maxBuffer: MAX_BUFFER,
+      env: { ...process.env, MIX_BUILD_PATH: inspectionBuildPath, MIX_QUIET: "1" },
+    },
+  );
+
+  if (result.error !== undefined) throwSpawnError(result.error, projectDir, timeoutMs);
+  if (result.status !== 0) {
+    const tail = tailLines(result.stderr ?? result.stdout ?? "", 12);
+    throw new ElixirCompileError(
+      `cannot analyze Elixir project: failed to inspect the Mix build in ${projectDir} (exit ${result.status}). ` +
+        "Ensure dependencies are fetched and their build artifacts exist from a clean project compile.\n" +
+        tail,
+    );
+  }
+
+  const markerLine = (result.stdout ?? "")
+    .split("\n")
+    .find((line) => line.startsWith(LAYOUT_MARKER));
+  if (markerLine === undefined) {
+    throw new ElixirCompileError(
+      "cannot analyze Elixir project: Mix did not report its build layout.",
+    );
+  }
+
+  try {
+    const parsed = JSON.parse(markerLine.slice(LAYOUT_MARKER.length)) as {
+      app?: unknown;
+      build_root?: unknown;
+      mix_env?: unknown;
+    };
+    if (typeof parsed.app !== "string" || parsed.app === "") throw new Error("missing app");
+    if (typeof parsed.build_root !== "string") throw new Error("invalid build root");
+    if (typeof parsed.mix_env !== "string" || parsed.mix_env === "") throw new Error("missing env");
+
+    const { MIX_BUILD_PATH: configuredPath } = process.env;
+    const buildPath = configuredPath
+      ? resolveFromProject(projectDir, configuredPath)
+      : join(resolveFromProject(projectDir, parsed.build_root || "_build"), parsed.mix_env);
+    return { app: parsed.app, buildPath };
+  } catch {
+    throw new ElixirCompileError(
+      "cannot analyze Elixir project: Mix reported an invalid build layout.",
+    );
+  }
+}
+
+function resolveFromProject(projectDir: string, path: string): string {
+  return isAbsolute(path) ? path : resolve(projectDir, path);
+}
+
+/**
+ * Give the application a fresh build tree while reusing dependency artifacts
+ * read-only. `compile.elixir` only compiles the current application, so these
+ * dependency links are loaded but never passed to a compiler task.
+ */
+function prepareIsolatedBuild(layout: MixLayout, isolatedBuildPath: string): void {
+  const sourceLib = join(layout.buildPath, "lib");
+  const isolatedLib = join(isolatedBuildPath, "lib");
+  mkdirSync(isolatedLib, { recursive: true });
+  if (!existsSync(sourceLib)) return;
+
+  for (const entry of readdirSync(sourceLib, { withFileTypes: true })) {
+    if (entry.name === layout.app) continue;
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+    symlinkSync(join(sourceLib, entry.name), join(isolatedLib, entry.name), "dir");
+  }
+}
+
+function throwSpawnError(error: Error, projectDir: string, timeoutMs: number): never {
+  const err = error as NodeJS.ErrnoException;
+  if (err.code === "ENOENT") {
+    throw new ElixirToolchainError(
+      "cannot analyze Elixir project: `mix` was not found on PATH. Install Elixir/OTP " +
+        "(https://elixir-lang.org/install.html) and ensure `mix` is runnable, then retry.",
+    );
+  }
+  if (err.code === "ETIMEDOUT") {
+    throw new ElixirCompileError(
+      `cannot analyze Elixir project: \`mix compile\` timed out after ${timeoutMs / 1000}s in ${projectDir}.`,
+    );
+  }
+  throw new ElixirCompileError(
+    `cannot analyze Elixir project: failed to run \`mix\` in ${projectDir}: ${err.message}`,
+  );
+}
+
 /** Parse the JSON-lines the tracer wrote into a structured {@link TraceResult}. */
 export function parseTraceOutput(raw: string): TraceResult {
   const events: TraceEvent[] = [];
@@ -145,6 +293,7 @@ export function parseTraceOutput(raw: string): TraceResult {
   let deps: readonly string[] = [];
   let compileOk = true;
   let sawCompileError = false;
+  const compileErrorDetails: string[] = [];
 
   const lines = raw.split("\n");
   for (const line of lines) {
@@ -179,6 +328,11 @@ export function parseTraceOutput(raw: string): TraceResult {
         break;
       case "compile_error":
         sawCompileError = true;
+        if ("details" in record && Array.isArray(record.details)) {
+          compileErrorDetails.push(
+            ...record.details.filter((detail): detail is string => typeof detail === "string"),
+          );
+        }
         break;
       default:
         break;
@@ -186,9 +340,11 @@ export function parseTraceOutput(raw: string): TraceResult {
   }
 
   if (sawCompileError || !compileOk) {
+    const details = compileErrorDetails.length > 0 ? `\n${compileErrorDetails.join("\n")}` : "";
     throw new ElixirCompileError(
       "cannot analyze Elixir project: `mix compile` reported errors. Fix the compile errors " +
-        "(the project must compile cleanly) and retry.",
+        "and ensure dependency build artifacts exist from a clean project compile, then retry." +
+        details,
     );
   }
   if (modules.length === 0) {
