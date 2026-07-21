@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { computeDeletionPlan, whyAlive } from "../../core/analysis/index.js";
+import { computeDeletionPlan, PerformanceTracker, whyAlive } from "../../core/analysis/index.js";
 import { symbolId } from "../../core/ir/index.js";
 import { isPolyglotToolchainAvailable } from "../../testing/corpus/polyglot-corpus.js";
 import { analyzeProjectAutoWithGraph } from "../dispatch.js";
@@ -23,7 +23,30 @@ describe.skipIf(!isPolyglotToolchainAvailable())("literal Rustler bridge integra
   it("drives claims, why evidence, and deletion refusal across languages", {
     timeout: 120_000,
   }, async () => {
-    const analysis = await analyzeProjectAutoWithGraph(fixture, { now: new Date(0) });
+    const performance = new PerformanceTracker();
+    const analysis = await analyzeProjectAutoWithGraph(fixture, {
+      now: new Date(0),
+      performance,
+    });
+    const measured = performance.snapshot();
+    for (const phase of [
+      "discovery-gitignore",
+      "workspace-config-detection",
+      "parsing",
+      "convention-config-roots",
+      "graph-construction",
+      "reachability-partitioning",
+      "hazard-activation",
+      "claim-generation",
+    ] as const) {
+      expect(measured.phasesMs[phase], phase).toBeGreaterThan(0);
+    }
+    expect(measured.counters).toMatchObject({
+      files: 5,
+      claims: 2,
+      workspaces: 3,
+      deletionPlanSimulations: 0,
+    });
     const deadSubjects = analysis.result.claims.map(
       (claim) => `${claim.subject.loc.file}:${claim.subject.name}`,
     );

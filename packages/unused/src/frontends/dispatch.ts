@@ -64,9 +64,13 @@ export async function analyzeProjectAutoWithGraph(
 ): Promise<AnalyzeAutoWithGraph> {
   const started = Date.now();
   const root = resolve(rootDir);
+  const discoveryStarted = options.performance?.now();
   const inventory = await discoverProjectInventory(root, {
     ...(options.gitignore === undefined ? {} : { gitignore: options.gitignore }),
   });
+  if (discoveryStarted !== undefined) {
+    options.performance?.finish("discovery-gitignore", discoveryStarted);
+  }
   const context: RepositoryAnalysisContext = {
     rootDir: root,
     gitignore: options.gitignore !== false,
@@ -82,6 +86,7 @@ export async function analyzeProjectAutoWithGraph(
     ...(options.performance === undefined ? {} : { performance: options.performance }),
   };
   const registry = new PluginRegistry(BUILT_IN_PLUGINS);
+  const workspaceStarted = options.performance?.now();
   const discovered = (
     await Promise.all(
       registry.languagePlugins().map(async (plugin) => ({
@@ -92,6 +97,9 @@ export async function analyzeProjectAutoWithGraph(
       })),
     )
   ).flatMap(({ plugin, boundaries }) => boundaries.map((boundary) => ({ plugin, boundary })));
+  if (workspaceStarted !== undefined) {
+    options.performance?.finish("workspace-config-detection", workspaceStarted);
+  }
   discovered.sort((a, b) =>
     a.boundary.id < b.boundary.id ? -1 : a.boundary.id > b.boundary.id ? 1 : 0,
   );
@@ -143,13 +151,16 @@ export async function analyzeProjectAutoWithGraph(
       await executePluginOperation(plugin.id, boundary.id, () => plugin.analyze(context, boundary)),
     );
   }
+  const mergeStarted = options.performance?.now();
   const graph = mergeFragments(fragments);
+  if (mergeStarted !== undefined) options.performance?.finish("graph-construction", mergeStarted);
 
   for (const plugin of registry.conventionPlugins()) {
     for (const fragment of fragments) {
       if (!plugin.languages.includes(fragment.language)) continue;
       const pluginContext = { repository: context, fragment };
       if (!(await plugin.applies(pluginContext))) continue;
+      const conventionStarted = options.performance?.now();
       addContribution(
         graph,
         await executePluginOperation(plugin.id, fragment.boundary.id, () =>
@@ -157,6 +168,9 @@ export async function analyzeProjectAutoWithGraph(
         ),
         plugin.id,
       );
+      if (conventionStarted !== undefined) {
+        options.performance?.finish("convention-config-roots", conventionStarted);
+      }
     }
   }
   for (const plugin of registry.bridgePlugins()) {
@@ -164,14 +178,22 @@ export async function analyzeProjectAutoWithGraph(
     if (!plugin.requiredLanguages.every((language) => languages.has(language))) continue;
     const pluginContext = { repository: context, fragments, graph };
     if (!(await plugin.applies(pluginContext))) continue;
+    const bridgeStarted = options.performance?.now();
     addContribution(
       graph,
       await executePluginOperation(plugin.id, undefined, () => plugin.analyze(pluginContext)),
       plugin.id,
     );
+    if (bridgeStarted !== undefined) {
+      options.performance?.finish("graph-construction", bridgeStarted);
+    }
   }
 
+  const repositoryConfigStarted = options.performance?.now();
   const config = await loadConfig(root, context.configPath);
+  if (repositoryConfigStarted !== undefined) {
+    options.performance?.finish("workspace-config-detection", repositoryConfigStarted);
+  }
   const units = repositoryUnits(fragments);
   const analyzedFiles = [
     ...new Set(fragments.flatMap((f) => [...f.claimInputs.analysisFiles])),

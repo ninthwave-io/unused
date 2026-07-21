@@ -62,25 +62,37 @@ export async function analyzeRustProjectWithGraph(
   const root = realpathSync(resolve(rootDir));
   const now = options.now ?? new Date();
   const version = options.toolVersion ?? DEFAULT_TOOL_VERSION;
+  const performance = options.performance;
+  const workspaceStarted = performance?.now();
   const metadata = loadCargoMetadata(root, {
     ...(internal.cargoCommand === undefined ? {} : { cargoCommand: internal.cargoCommand }),
   });
   const config = await loadConfig(root, options.configPath);
+  if (workspaceStarted !== undefined) {
+    performance?.finish("workspace-config-detection", workspaceStarted);
+  }
+  const discoveryStarted = performance?.now();
   const sourceFiles = await rustSources(root, options, internal.sourceFiles);
   const files = sourceFiles.map((file) => toPosixRel(root, realpathSync(file))).sort();
+  if (discoveryStarted !== undefined) {
+    performance?.finish("discovery-gitignore", discoveryStarted);
+  }
   const fileSet = new Set(files);
   const units = cargoUnits(root, metadata);
   const configUnits = units.map((unit) => ({ rootRelDir: unit.rootRelDir, name: unit.name }));
   const graph = new IRGraph();
   const fileLineCounts = new Map<string, number>();
   const sources = new Map<string, string>();
+  const parsingStarted = performance?.now();
   for (const file of files) {
     const source = readFileSync(resolve(root, file), "utf8");
     sources.set(file, source);
     fileLineCounts.set(fileId(file), countLines(source));
     graph.addNode({ kind: "file", id: fileId(file), path: file });
   }
+  if (parsingStarted !== undefined) performance?.finish("parsing", parsingStarted);
 
+  const graphStarted = performance?.now();
   const targetFiles = new Map<string, "production" | "test" | "config">();
   for (const pkg of workspacePackages(metadata)) {
     for (const target of pkg.targets) {
@@ -104,11 +116,21 @@ export async function analyzeRustProjectWithGraph(
       "rust-source-conservative",
     );
   }
+  if (graphStarted !== undefined) performance?.finish("graph-construction", graphStarted);
+  const conventionStarted = performance?.now();
   for (const hit of collectConfigEntrypoints(files, config, configUnits)) {
     addEntrypoint(graph, hit.file, "production", hit.reason);
   }
+  if (conventionStarted !== undefined) {
+    performance?.finish("convention-config-roots", conventionStarted);
+  }
 
+  const publicGraphStarted = performance?.now();
   for (const [file, source] of sources) addPublicItems(graph, file, source);
+  if (publicGraphStarted !== undefined) {
+    performance?.finish("graph-construction", publicGraphStarted);
+  }
+  const compilerStarted = performance?.now();
   const compilerFacts = collectCompilerDeadFunctions(metadata, {
     ...(internal.cargoCommand === undefined ? {} : { cargoCommand: internal.cargoCommand }),
   }).filter(
@@ -116,7 +138,9 @@ export async function analyzeRustProjectWithGraph(
       fileSet.has(fact.file) &&
       isClaimSafeFunction(fact.name, fact.site.span.startLine, sources.get(fact.file)),
   );
+  if (compilerStarted !== undefined) performance?.finish("parsing", compilerStarted);
   const uniqueFacts = uniqueFunctionFacts(compilerFacts);
+  const compilerGraphStarted = performance?.now();
   for (const fact of uniqueFacts) {
     const id = symbolId(fact.file, fact.name);
     if (graph.hasNode(id)) continue;
@@ -138,8 +162,15 @@ export async function analyzeRustProjectWithGraph(
       name: fact.name,
     });
   }
+  if (compilerGraphStarted !== undefined) {
+    performance?.finish("graph-construction", compilerGraphStarted);
+  }
 
-  const reachability = computePartitionedReachability(graph, options.performance);
+  performance?.set("files", files.length);
+  performance?.set("symbols", graph.nodes().filter((node) => node.kind === "symbol").length);
+  performance?.set("edges", graph.edges().length);
+  performance?.set("workspaces", units.length);
+  const reachability = computePartitionedReachability(graph, performance);
   const provenance: Provenance = {
     analyzer: ANALYZER_NAME,
     version,
@@ -159,7 +190,7 @@ export async function analyzeRustProjectWithGraph(
     provenance,
     language: CLAIM_LANGUAGE,
     ...claimInputs,
-    ...(options.performance === undefined ? {} : { performance: options.performance }),
+    ...(performance === undefined ? {} : { performance }),
   })
     .filter((claim) => rustcFacts.has(`${claim.subject.loc.file}\0${claim.subject.name}`))
     .map(withRustcEvidence);
@@ -170,6 +201,7 @@ export async function analyzeRustProjectWithGraph(
     emitWarnings: internal.emitConfigMatchWarnings !== false,
   });
   if (units.length > 1) claims = annotateRustPackages(claims, units);
+  performance?.set("claims", claims.length);
   const result: AnalyzeResult = {
     schemaVersion: SCHEMA_VERSION,
     tool: { name: "unused", version },

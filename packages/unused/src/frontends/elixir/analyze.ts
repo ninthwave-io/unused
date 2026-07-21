@@ -90,15 +90,24 @@ export async function analyzeElixirProjectWithGraph(
   const start = Date.now();
   const now = options.now ?? new Date();
   const version = options.toolVersion ?? DEFAULT_TOOL_VERSION;
+  const performance = options.performance;
 
+  const workspaceStarted = performance?.now();
   const project = detectElixirProject(rootDir);
   if (project === null) {
     throw new ElixirFrontendError(`not an Elixir project: no mix.exs found in ${rootDir}.`);
   }
   const config = await loadConfig(project.projectDir, options.configPath);
+  if (workspaceStarted !== undefined) {
+    performance?.finish("workspace-config-detection", workspaceStarted);
+  }
 
   // The one place user code runs (disclosed). Throws on every refusal path.
+  const parsingStarted = performance?.now();
   const traceResult = runTracer(project.projectDir);
+  if (parsingStarted !== undefined) performance?.finish("parsing", parsingStarted);
+
+  const conventionStarted = performance?.now();
   const appName = readAppName(project.mixExsPath) ?? basename(project.projectDir);
   const configUnits = [{ rootRelDir: "", name: appName }] as const;
 
@@ -107,22 +116,33 @@ export async function analyzeElixirProjectWithGraph(
   const configReferencedModules = scanConfigModuleReferences(project.projectDir, projectModules);
 
   const runtimeReferences = extractElixirRuntimeReferences(project.projectDir, traceResult);
+  if (conventionStarted !== undefined) {
+    performance?.finish("convention-config-roots", conventionStarted);
+  }
+
+  const graphStarted = performance?.now();
   const emittedGraph = emitElixirIR({ traceResult, configReferencedModules, runtimeReferences });
   const deferred = internal.deferredConventions?.includes("elixir-runtime") === true;
   const { graph, contribution } = deferred
     ? deferElixirRuntimeContribution(emittedGraph)
     : { graph: emittedGraph, contribution: undefined };
+  if (graphStarted !== undefined) performance?.finish("graph-construction", graphStarted);
 
   // Per-file line counts for `file`-claim spans (core does no file I/O).
   const fileLineCounts = new Map<string, number>();
   const distinctFiles = new Set<string>();
   for (const mod of traceResult.modules) distinctFiles.add(mod.file);
   for (const fn of traceResult.functions) distinctFiles.add(fn.file);
+  const discoveryStarted = performance?.now();
   const analyzedFiles =
     options.gitignore === false
       ? [...distinctFiles]
       : await filterGitignoredRelativePaths(project.projectDir, [...distinctFiles]);
+  if (discoveryStarted !== undefined) {
+    performance?.finish("discovery-gitignore", discoveryStarted);
+  }
   const analyzedFileSet = new Set(analyzedFiles);
+  const configRootsStarted = performance?.now();
   for (const hit of collectConfigEntrypoints(analyzedFiles, config, configUnits)) {
     graph.addNode({
       kind: "entrypoint",
@@ -131,6 +151,9 @@ export async function analyzeElixirProjectWithGraph(
       file: hit.file,
       reason: hit.reason,
     });
+  }
+  if (configRootsStarted !== undefined) {
+    performance?.finish("convention-config-roots", configRootsStarted);
   }
   for (const rel of distinctFiles) {
     try {
@@ -142,7 +165,11 @@ export async function analyzeElixirProjectWithGraph(
     }
   }
 
-  const reachability = computePartitionedReachability(graph);
+  performance?.set("files", analyzedFiles.length);
+  performance?.set("symbols", graph.nodes().filter((node) => node.kind === "symbol").length);
+  performance?.set("edges", graph.edges().length);
+  performance?.set("workspaces", 1);
+  const reachability = computePartitionedReachability(graph, performance);
   const provenance: Provenance = {
     analyzer: ANALYZER_NAME,
     version,
@@ -161,6 +188,7 @@ export async function analyzeElixirProjectWithGraph(
     provenance,
     fileLineCounts,
     language: CLAIM_LANGUAGE,
+    ...(performance === undefined ? {} : { performance }),
   }).filter(
     (claim) =>
       analyzedFileSet.has(claim.subject.loc.file) &&
@@ -174,6 +202,7 @@ export async function analyzeElixirProjectWithGraph(
   const claims = applyConfigSuppressions(emittedClaims, config, configUnits, analyzedFiles, {
     emitWarnings: internal.emitConfigMatchWarnings !== false,
   });
+  performance?.set("claims", claims.length);
 
   const run: ClaimRun = {
     schemaVersion: SCHEMA_VERSION,
