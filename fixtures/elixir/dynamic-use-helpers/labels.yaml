@@ -32,3 +32,11 @@ subjects:
     because: >-
       No use site selects genuinely_unused, so the literal helper edges do not
       hide this true positive; the local dynamic-dispatch hazard caps confidence.
+  - kind: file
+    name: lib/neutral_use/unrelated.ex
+    file: lib/neutral_use/unrelated.ex
+    expected: dead
+    minConfidence: high
+    because: >-
+      apply(__MODULE__, which, []) can select only functions on NeutralUse.Web,
+      so an unrelated module remains independently deletable at high confidence.

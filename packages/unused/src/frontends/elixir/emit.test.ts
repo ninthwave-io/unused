@@ -10,6 +10,7 @@ import { computePartitionedReachability, emitClaims } from "../../core/analysis/
 import type { Claim } from "../../core/claims/types.js";
 import { emitElixirIR } from "./emit.js";
 import type { FunctionRecord, ModuleRecord, TraceEvent, TraceResult } from "./events.js";
+import type { ElixirDynamicDispatch, ElixirRuntimeReference } from "./runtime-references.js";
 
 // --- builders --------------------------------------------------------------
 
@@ -59,8 +60,12 @@ function callEvent(
 function claimsFor(
   traceResult: TraceResult,
   configReferencedModules: ReadonlySet<string> = new Set(),
+  conventions: {
+    readonly runtimeReferences?: readonly ElixirRuntimeReference[];
+    readonly dynamicDispatches?: readonly ElixirDynamicDispatch[];
+  } = {},
 ): Claim[] {
-  const graph = emitElixirIR({ traceResult, configReferencedModules });
+  const graph = emitElixirIR({ traceResult, configReferencedModules, ...conventions });
   const reachability = computePartitionedReachability(graph);
   return emitClaims({
     graph,
@@ -160,12 +165,14 @@ const DYNAMIC: TraceResult = {
     mod("App.Application", "lib/app/application.ex"),
     mod("App.Handlers", "lib/app/handlers.ex"),
     mod("App.Router", "lib/app/router.ex"),
+    mod("App.Unrelated", "lib/app/unrelated.ex"),
   ],
   functions: [
     fn("start", 2, "lib/app/application.ex", "App.Application"),
     fn("ping", 0, "lib/app/handlers.ex", "App.Handlers"),
     fn("dead_handler", 0, "lib/app/handlers.ex", "App.Handlers"),
     fn("dispatch", 1, "lib/app/router.ex", "App.Router"),
+    fn("dead", 0, "lib/app/unrelated.ex", "App.Unrelated"),
   ],
   events: [
     callEvent("App.Application", "start/2", "App.Handlers", "ping", 0),
@@ -202,6 +209,28 @@ describe("emitElixirIR — dynamic dispatch", () => {
     const c = claim(claimsFor(unreachableCarrier), "App.Handlers.dead_handler/0");
     expect(c?.verdict).toBe("unused");
     expect(c?.confidence).toBe("high");
+  });
+
+  it("caps only compiler-confirmed targets for a bounded apply", () => {
+    const target = DYNAMIC.functions.find(
+      (candidate) => candidate.mod === "App.Handlers" && candidate.name === "dead_handler",
+    );
+    expect(target).toBeDefined();
+    const bounded = claimsFor(DYNAMIC, new Set(), {
+      dynamicDispatches: [
+        {
+          fromMod: "App.Router",
+          fromFun: "dispatch/1",
+          file: "lib/app/router.ex",
+          line: 5,
+          kind: "bounded",
+          targets: target === undefined ? [] : [target],
+        },
+      ],
+    });
+
+    expect(claim(bounded, "App.Handlers.dead_handler/0")?.confidence).toBe("medium");
+    expect(claim(bounded, "lib/app/unrelated.ex")?.confidence).toBe("high");
   });
 });
 

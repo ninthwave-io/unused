@@ -44,7 +44,7 @@ import { filterGitignoredRelativePaths } from "../ts/discover.js";
 import { detectElixirProject } from "./detect.js";
 import { emitElixirIR } from "./emit.js";
 import { ElixirFrontendError, runTracer } from "./runner.js";
-import { extractElixirRuntimeReferences } from "./runtime-references.js";
+import { extractElixirRuntimeConventions } from "./runtime-references.js";
 
 /** Analyzer name stamped into provenance (distinct from the TS `ts-reference-graph`). */
 const ANALYZER_NAME = "elixir-reference-graph";
@@ -115,13 +115,18 @@ export async function analyzeElixirProjectWithGraph(
   const projectModules = new Set(traceResult.modules.map((m) => m.mod));
   const configReferencedModules = scanConfigModuleReferences(project.projectDir, projectModules);
 
-  const runtimeReferences = extractElixirRuntimeReferences(project.projectDir, traceResult);
+  const runtimeConventions = extractElixirRuntimeConventions(project.projectDir, traceResult);
   if (conventionStarted !== undefined) {
     performance?.finish("convention-config-roots", conventionStarted);
   }
 
   const graphStarted = performance?.now();
-  const emittedGraph = emitElixirIR({ traceResult, configReferencedModules, runtimeReferences });
+  const emittedGraph = emitElixirIR({
+    traceResult,
+    configReferencedModules,
+    runtimeReferences: runtimeConventions.references,
+    dynamicDispatches: runtimeConventions.dynamicDispatches,
+  });
   const deferred = internal.deferredConventions?.includes("elixir-runtime") === true;
   const { graph, contribution } = deferred
     ? deferElixirRuntimeContribution(emittedGraph)

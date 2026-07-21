@@ -1,7 +1,10 @@
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import type { FunctionRecord, ModuleRecord, TraceResult } from "./events.js";
-import { extractElixirRuntimeReferences } from "./runtime-references.js";
+import type { FunctionRecord, ModuleRecord, TraceEvent, TraceResult } from "./events.js";
+import {
+  extractElixirRuntimeConventions,
+  extractElixirRuntimeReferences,
+} from "./runtime-references.js";
 
 const fixture = (name: string): string =>
   fileURLToPath(new URL(`../../../../../fixtures/elixir/${name}`, import.meta.url));
@@ -90,4 +93,85 @@ describe("extractElixirRuntimeReferences", () => {
       },
     ]);
   });
+
+  it("bounds a known-module apply and resolves a literal apply as an exact edge", () => {
+    const trace: TraceResult = {
+      appMod: "Dyn.Application",
+      deps: [],
+      compileOk: true,
+      modules: [
+        mod("Dyn.Router", "lib/dyn/router.ex"),
+        mod("Dyn.Handlers", "lib/dyn/handlers.ex"),
+        mod("Dyn.Unrelated", "lib/dyn/unrelated.ex"),
+      ],
+      functions: [
+        fn("Dyn.Router", "dispatch", 1, "lib/dyn/router.ex"),
+        fn("Dyn.Router", "exact", 0, "lib/dyn/router.ex"),
+        fn("Dyn.Handlers", "ping", 0, "lib/dyn/handlers.ex"),
+        fn("Dyn.Handlers", "dead_handler", 0, "lib/dyn/handlers.ex"),
+        fn("Dyn.Unrelated", "dead", 0, "lib/dyn/unrelated.ex"),
+      ],
+      events: [dynamicApplyEvent("dispatch/1", 4), dynamicApplyEvent("exact/0", 5)],
+    };
+
+    const extraction = extractElixirRuntimeConventions(fixture("dynamic-dispatch"), trace);
+    expect(extraction.dynamicDispatches.map((dispatch) => dispatch.kind)).toEqual([
+      "bounded",
+      "exact",
+    ]);
+    expect(
+      extraction.dynamicDispatches[0]?.targets.map((target) => `${target.mod}.${target.name}/0`),
+    ).toEqual(["Dyn.Handlers.ping/0", "Dyn.Handlers.dead_handler/0"]);
+    expect(
+      extraction.dynamicDispatches[0]?.targets.some((target) => target.mod === "Dyn.Unrelated"),
+    ).toBe(false);
+    expect(extraction.references).toContainEqual(
+      expect.objectContaining({
+        fromMod: "Dyn.Router",
+        fromFun: "exact/0",
+        toMod: "Dyn.Handlers",
+        toName: "ping",
+        toArity: 0,
+        convention: "dynamic-apply",
+      }),
+    );
+  });
+
+  it("retains an opaque fallback when source arguments cannot bound the tracer event", () => {
+    const trace: TraceResult = {
+      appMod: "Dyn.Application",
+      deps: [],
+      compileOk: true,
+      modules: [mod("Dyn.Router", "lib/dyn/router.ex")],
+      functions: [fn("Dyn.Router", "dispatch", 1, "lib/dyn/router.ex")],
+      events: [
+        {
+          ...dynamicApplyEvent("dispatch/1", 4),
+          to_mod: "Module",
+          name: "concat",
+          arity: 2,
+        },
+      ],
+    };
+
+    expect(
+      extractElixirRuntimeConventions(fixture("dynamic-dispatch"), trace).dynamicDispatches,
+    ).toEqual([expect.objectContaining({ kind: "opaque", targets: [] })]);
+  });
 });
+
+function dynamicApplyEvent(fromFun: string, line: number): TraceEvent {
+  return {
+    k: "event",
+    kind: "remote",
+    file: "lib/dyn/router.ex",
+    line,
+    from_mod: "Dyn.Router",
+    from_fun: fromFun,
+    to_mod: "Kernel",
+    name: "apply",
+    arity: 3,
+    dyn: true,
+    partition: "prod",
+  };
+}

@@ -1,8 +1,8 @@
 case: dynamic-dispatch
 description: >-
-  A module performing apply/3 dynamic dispatch caps its whole unit's confidence
-  to medium — a genuinely dead function can still be surfaced, but never at high
-  confidence, because an apply could name it at runtime.
+  A module performing apply/3 against a literal target module caps only that
+  module's matching public functions. Literal function selection becomes an
+  exact runtime edge, while unrelated modules retain high confidence.
 subjects:
   - kind: export
     name: Dyn.Handlers.dead_handler/0
@@ -11,10 +11,19 @@ subjects:
     minConfidence: medium
     because: >-
       dead_handler/0 is reached by nothing statically, but Dyn.Router calls
-      apply/3, so the elixir-dynamic-dispatch hazard caps the whole unit at
-      medium — a high-confidence claim here would be a bug.
+      apply/3 against Dyn.Handlers, so the bounded elixir-dynamic-dispatch
+      hazard caps this candidate at medium — a high-confidence claim here
+      would be a bug.
   - kind: export
     name: Dyn.Handlers.ping/0
     file: lib/dyn/handlers.ex
     expected: alive
-    because: The application callback statically calls Dyn.Handlers.ping/0.
+    because: A literal apply/3 is emitted as an exact runtime edge to Dyn.Handlers.ping/0.
+  - kind: file
+    name: lib/dyn/unrelated.ex
+    file: lib/dyn/unrelated.ex
+    expected: dead
+    minConfidence: high
+    because: >-
+      The reachable apply/3 names Dyn.Handlers explicitly, so its bounded
+      dispatch cannot lower confidence for this unrelated module.

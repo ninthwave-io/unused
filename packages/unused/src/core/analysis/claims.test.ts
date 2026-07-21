@@ -380,10 +380,31 @@ describe("hazard registry — scoped effects (T3.1)", () => {
       affectedSymbols: [symbolId("lib/handlers.ex", "Neutral.Handlers.possible/0")],
     });
 
-    const byName = Object.fromEntries(run(g).map((claim) => [claim.subject.name, claim.confidence]));
+    const byName = Object.fromEntries(
+      run(g).map((claim) => [claim.subject.name, claim.confidence]),
+    );
     expect(byName["Neutral.Handlers.possible/0"]).toBe("medium");
     expect(byName["Neutral.Other.same_file/0"]).toBe("high");
     expect(byName["Neutral.Unrelated.dead/0"]).toBe("high");
+  });
+
+  it("does not activate explicit targets when only the target, not the carrier, is reachable", () => {
+    const g = new IRGraph();
+    addEntry(g, "lib/application.ex");
+    addSymbol(g, "lib/dormant_router.ex", "Neutral.Router.dispatch/1");
+    addSymbol(g, "lib/handlers.ex", "Neutral.Handlers.possible/0");
+    ref(g, "lib/application.ex", fileId("lib/handlers.ex"), "side-effect");
+    g.addHazard({
+      file: fileId("lib/dormant_router.ex"),
+      hazardClass: "elixir-dynamic-dispatch",
+      detail: "bounded neutral dispatch",
+      site: site("lib/dormant_router.ex"),
+      affectedSymbols: [symbolId("lib/handlers.ex", "Neutral.Handlers.possible/0")],
+    });
+
+    expect(
+      run(g).find((claim) => claim.subject.name === "Neutral.Handlers.possible/0")?.confidence,
+    ).toBe("high");
   });
 
   it("caps a whole-file deletion when it contains an explicit dynamic target", () => {

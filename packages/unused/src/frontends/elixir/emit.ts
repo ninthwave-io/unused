@@ -35,8 +35,9 @@
  *  - a module declaring a behaviour ⇒ `elixir-behaviour-callback` (its function
  *    claims suppressed); a Phoenix behaviour / protocol / `defimpl` ⇒
  *    `elixir-phoenix-runtime` (same suppression); a file with an
- *    `apply`/`Module.concat` dynamic-dispatch site ⇒ `elixir-dynamic-dispatch`
- *    (the owning unit capped at medium).
+ *    `apply`/`Module.concat` dynamic-dispatch site ⇒ `elixir-dynamic-dispatch`.
+ *    Literal calls become exact runtime edges, bounded calls cap only their
+ *    compiler-confirmed candidates, and opaque calls retain the owning-unit cap.
  */
 
 import {
@@ -48,7 +49,7 @@ import {
   symbolId,
 } from "../../core/ir/index.js";
 import type { FunctionRecord, ModuleRecord, TraceEvent, TraceResult } from "./events.js";
-import type { ElixirRuntimeReference } from "./runtime-references.js";
+import type { ElixirDynamicDispatch, ElixirRuntimeReference } from "./runtime-references.js";
 
 /** A resolved symbol identity (its owning file + its exported name). */
 interface SymRef {
@@ -62,6 +63,8 @@ export interface EmitElixirInput {
   readonly configReferencedModules: ReadonlySet<string>;
   /** Literal runtime conventions independently extracted from project source. */
   readonly runtimeReferences?: readonly ElixirRuntimeReference[];
+  /** Argument-aware facts for compiler-traced dynamic-dispatch sites. */
+  readonly dynamicDispatches?: readonly ElixirDynamicDispatch[];
 }
 
 /** Phoenix behaviour names whose implementers are runtime-dispatch entrypoints. */
@@ -75,7 +78,12 @@ function siteAt(file: string, line: number): Site {
 
 /** Build the reference-graph IR for an Elixir project. */
 export function emitElixirIR(input: EmitElixirInput): IRGraph {
-  const { traceResult, configReferencedModules, runtimeReferences = [] } = input;
+  const {
+    traceResult,
+    configReferencedModules,
+    runtimeReferences = [],
+    dynamicDispatches = [],
+  } = input;
   const graph = new IRGraph();
 
   // --- index modules + functions --------------------------------------------
@@ -231,7 +239,7 @@ export function emitElixirIR(input: EmitElixirInput): IRGraph {
     if (fn.name === "child_spec" && fn.arity === 1) supervisableModules.add(fn.mod);
   }
   emitModuleHazards(graph, traceResult.modules, supervisableModules);
-  emitDynamicDispatchHazards(graph, traceResult, moduleByName);
+  emitDynamicDispatchHazards(graph, traceResult, moduleByName, dynamicDispatches);
 
   // --- entrypoints -----------------------------------------------------------
   const seededProd = new Set<string>();
@@ -358,20 +366,64 @@ function emitDynamicDispatchHazards(
   graph: IRGraph,
   traceResult: TraceResult,
   moduleByName: ReadonlyMap<string, ModuleRecord>,
+  extracted: readonly ElixirDynamicDispatch[],
 ): void {
-  const seen = new Set<string>();
+  const extractedBySite = new Map<string, ElixirDynamicDispatch[]>();
+  for (const dispatch of extracted) {
+    const key = `${dispatch.file}\0${dispatch.line}`;
+    const bucket = extractedBySite.get(key);
+    if (bucket === undefined) extractedBySite.set(key, [dispatch]);
+    else bucket.push(dispatch);
+  }
+  const byFile = new Map<string, { mod: ModuleRecord; dispatches: ElixirDynamicDispatch[] }>();
   for (const ev of traceResult.events) {
     if (!ev.dyn) continue;
     if (ev.from_mod === null) continue;
     const mod = moduleByName.get(ev.from_mod);
     if (mod === undefined) continue; // the dispatch happened in a non-project module
-    if (seen.has(mod.file)) continue;
-    seen.add(mod.file);
+    const dispatches = extractedBySite.get(`${ev.file}\0${ev.line}`) ?? [
+      {
+        fromMod: ev.from_mod,
+        ...(ev.from_fun === undefined ? {} : { fromFun: ev.from_fun }),
+        file: ev.file,
+        line: ev.line,
+        kind: "opaque" as const,
+        targets: [],
+      },
+    ];
+    const current = byFile.get(mod.file);
+    if (current === undefined) byFile.set(mod.file, { mod, dispatches: [...dispatches] });
+    else current.dispatches.push(...dispatches);
+  }
+
+  for (const [file, { mod, dispatches }] of byFile) {
+    const opaque = dispatches.find((dispatch) => dispatch.kind === "opaque");
+    const bounded = dispatches.filter((dispatch) => dispatch.kind === "bounded");
+    if (opaque === undefined && bounded.length === 0) continue; // exact edges need no cap
+    const affectedSymbols =
+      opaque === undefined
+        ? [
+            ...new Set(
+              bounded.flatMap((dispatch) =>
+                dispatch.targets.map((target) =>
+                  symbolId(target.file, `${target.mod}.${target.name}/${target.arity}`),
+                ),
+              ),
+            ),
+          ].sort()
+        : undefined;
+    if (opaque === undefined && affectedSymbols?.length === 0) continue;
+    const source = opaque ?? bounded[0];
+    if (source === undefined) continue;
     graph.addHazard({
-      file: fileId(mod.file),
+      file: fileId(file),
       hazardClass: "elixir-dynamic-dispatch",
-      detail: `dynamic dispatch (\`apply\`/\`Module.concat\`) in \`${mod.mod}\` — the runtime target is not statically resolvable`,
-      site: siteAt(ev.file, ev.line),
+      detail:
+        affectedSymbols === undefined
+          ? `opaque dynamic dispatch (\`apply\`/\`Module.concat\`) in \`${mod.mod}\` — the runtime target is not statically resolvable`
+          : `bounded dynamic dispatch in \`${mod.mod}\` may select ${affectedSymbols.length} compiler-confirmed public function(s)`,
+      site: siteAt(source.file, source.line),
+      ...(affectedSymbols === undefined ? {} : { affectedSymbols }),
     });
   }
 }

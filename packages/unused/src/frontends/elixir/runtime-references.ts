@@ -1,5 +1,5 @@
 /**
- * Conservative extraction for two Elixir runtime-reference conventions that
+ * Conservative extraction for Elixir runtime-reference conventions that
  * the compiler tracer cannot express as ordinary call edges:
  *
  *  - an MFA value `{Module, :function, init}` consumed later by a runtime that
@@ -7,8 +7,13 @@
  *  - `use WebModule, :helper` where `WebModule.__using__/1` dispatches through
  *    `apply(__MODULE__, which, [])`.
  *
- * Both recognisers require literal module/function atoms. They only emit edges
- * to functions the compiler reported, so arbitrary atoms never manufacture IR.
+ *  - `apply/3` with literal arguments becomes an exact edge; when only the
+ *    module or function is literal, its candidate symbols are bounded for a
+ *    targeted confidence cap. Syntax outside the deliberately small recognizer
+ *    remains opaque and retains the whole-unit fallback.
+ *
+ * Literal recognisers only emit edges or targets for functions the compiler
+ * reported, so arbitrary atoms never manufacture IR.
  */
 
 import { readFileSync } from "node:fs";
@@ -23,7 +28,22 @@ export interface ElixirRuntimeReference {
   readonly toArity: number;
   readonly file: string;
   readonly line: number;
-  readonly convention: "runtime-mfa" | "use-helper";
+  readonly convention: "runtime-mfa" | "use-helper" | "dynamic-apply";
+}
+
+export interface ElixirDynamicDispatch {
+  readonly fromMod: string;
+  readonly fromFun?: string;
+  readonly file: string;
+  readonly line: number;
+  readonly kind: "exact" | "bounded" | "opaque";
+  /** Compiler-confirmed public functions that a bounded call may select. */
+  readonly targets: readonly FunctionRecord[];
+}
+
+export interface ElixirRuntimeConventions {
+  readonly references: readonly ElixirRuntimeReference[];
+  readonly dynamicDispatches: readonly ElixirDynamicDispatch[];
 }
 
 const MODULE = String.raw`[A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*`;
@@ -34,12 +54,24 @@ const MFA_RE = new RegExp(
 );
 const USE_RE = new RegExp(String.raw`\buse\s+(${MODULE})\s*,\s*:(${FUNCTION})\b`, "gu");
 const APPLY_SELF_RE = /\bapply\s*\(\s*__MODULE__\s*,\s*[a-z_][A-Za-z0-9_]*\s*,\s*\[\s*\]\s*\)/u;
+const SIMPLE_APPLY_RE = new RegExp(
+  String.raw`\b(?:(?:Kernel|:erlang)\.)?apply\s*\(\s*(${MODULE}|__MODULE__|[a-z_][A-Za-z0-9_]*)\s*,\s*(:${FUNCTION}|[a-z_][A-Za-z0-9_]*)\s*,\s*(\[\s*(?:[A-Za-z0-9_:.!?-]+\s*(?:,\s*[A-Za-z0-9_:.!?-]+\s*)*)?\])\s*\)`,
+  "gu",
+);
 
 /** Extract independently provable runtime references from traced project files. */
 export function extractElixirRuntimeReferences(
   projectDir: string,
   traceResult: TraceResult,
 ): ElixirRuntimeReference[] {
+  return [...extractElixirRuntimeConventions(projectDir, traceResult).references];
+}
+
+/** Extract exact runtime edges and bounded/opaque dynamic-dispatch facts once. */
+export function extractElixirRuntimeConventions(
+  projectDir: string,
+  traceResult: TraceResult,
+): ElixirRuntimeConventions {
   const functionsByModuleName = indexFunctions(traceResult.functions);
   const contents = readProjectSources(projectDir, traceResult);
   const dispatchModules = new Set<string>();
@@ -97,7 +129,177 @@ export function extractElixirRuntimeReferences(
       });
     }
   }
-  return references;
+
+  const dynamicDispatches = extractDynamicDispatches(
+    traceResult,
+    contents,
+    functionsByModuleName,
+    references,
+    seen,
+  );
+  return { references, dynamicDispatches };
+}
+
+function extractDynamicDispatches(
+  traceResult: TraceResult,
+  contents: ReadonlyMap<string, string>,
+  functionsByModuleName: ReadonlyMap<string, FunctionRecord[]>,
+  references: ElixirRuntimeReference[],
+  seenReferences: Set<string>,
+): ElixirDynamicDispatch[] {
+  const functionsByModule = new Map<string, FunctionRecord[]>();
+  for (const fn of traceResult.functions) {
+    const bucket = functionsByModule.get(fn.mod);
+    if (bucket === undefined) functionsByModule.set(fn.mod, [fn]);
+    else bucket.push(fn);
+  }
+
+  const parsedBySite = new Map<string, ParsedApply[]>();
+  for (const [file, content] of contents) {
+    const searchable = withoutComments(content);
+    for (const match of searchable.matchAll(SIMPLE_APPLY_RE)) {
+      const moduleExpr = match[1];
+      const functionExpr = match[2];
+      const argsExpr = match[3];
+      if (moduleExpr === undefined || functionExpr === undefined || argsExpr === undefined)
+        continue;
+      const line = lineAt(searchable, match.index ?? 0);
+      const parsed: ParsedApply = { moduleExpr, functionExpr, arity: listArity(argsExpr) };
+      const key = dispatchSiteKey(file, line);
+      const bucket = parsedBySite.get(key);
+      if (bucket === undefined) parsedBySite.set(key, [parsed]);
+      else bucket.push(parsed);
+    }
+  }
+
+  const dispatches: ElixirDynamicDispatch[] = [];
+  for (const event of traceResult.events) {
+    if (!event.dyn) continue;
+    const owner = ownerFromEvent(event);
+    const parsed = parsedBySite.get(dispatchSiteKey(event.file, event.line));
+    const isApply3 =
+      event.name === "apply" &&
+      event.arity === 3 &&
+      (event.to_mod === "Kernel" || event.to_mod === ":erlang");
+    if (!isApply3 || parsed?.length !== 1 || parsed[0] === undefined) {
+      dispatches.push({
+        ...owner,
+        file: event.file,
+        line: event.line,
+        kind: "opaque",
+        targets: [],
+      });
+      continue;
+    }
+
+    const call = parsed[0];
+    const targetModule = resolveTargetModule(
+      call.moduleExpr,
+      event,
+      traceResult.events,
+      functionsByModule,
+    );
+    const targetFunction = call.functionExpr.startsWith(":") ? call.functionExpr.slice(1) : null;
+    const targets = candidateFunctions(
+      traceResult.functions,
+      functionsByModule,
+      functionsByModuleName,
+      targetModule,
+      targetFunction,
+      call.arity,
+    );
+
+    if (targetModule !== null && targetFunction !== null && call.arity !== null) {
+      const target = targets[0];
+      if (target !== undefined) {
+        addReference(references, seenReferences, {
+          ...owner,
+          toMod: target.mod,
+          toName: target.name,
+          toArity: target.arity,
+          file: event.file,
+          line: event.line,
+          convention: "dynamic-apply",
+        });
+      }
+      dispatches.push({ ...owner, file: event.file, line: event.line, kind: "exact", targets });
+      continue;
+    }
+
+    if (targetModule !== null || (targetFunction !== null && call.arity !== null)) {
+      dispatches.push({ ...owner, file: event.file, line: event.line, kind: "bounded", targets });
+      continue;
+    }
+    dispatches.push({ ...owner, file: event.file, line: event.line, kind: "opaque", targets: [] });
+  }
+  return dispatches;
+}
+
+interface ParsedApply {
+  readonly moduleExpr: string;
+  readonly functionExpr: string;
+  readonly arity: number | null;
+}
+
+function candidateFunctions(
+  allFunctions: readonly FunctionRecord[],
+  functionsByModule: ReadonlyMap<string, FunctionRecord[]>,
+  functionsByModuleName: ReadonlyMap<string, FunctionRecord[]>,
+  module: string | null,
+  name: string | null,
+  arity: number | null,
+): FunctionRecord[] {
+  if (module !== null && name !== null) {
+    return (functionsByModuleName.get(`${module}\0${name}`) ?? []).filter(
+      (fn) => arity === null || fn.arity === arity,
+    );
+  }
+  const candidates = module === null ? allFunctions : (functionsByModule.get(module) ?? []);
+  return candidates.filter(
+    (fn) => (name === null || fn.name === name) && (arity === null || fn.arity === arity),
+  );
+}
+
+function moduleToken(value: string): boolean {
+  return /^[A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*$/u.test(value);
+}
+
+function resolveTargetModule(
+  expression: string,
+  event: TraceEvent,
+  events: readonly TraceEvent[],
+  functionsByModule: ReadonlyMap<string, FunctionRecord[]>,
+): string | null {
+  if (expression === "__MODULE__") return event.from_mod;
+  if (!moduleToken(expression)) return null;
+  if (functionsByModule.has(expression)) return expression;
+
+  // An alias may spell a project module differently at the source site. The
+  // compiler tracer supplies the expanded module atom on an alias event; only
+  // accept a unique project-module candidate. Ambiguity falls back to the
+  // conservative cross-unit name/arity candidate set below.
+  const expanded = new Set(
+    events
+      .filter(
+        (candidate) =>
+          candidate.kind === "alias" &&
+          candidate.file === event.file &&
+          candidate.line === event.line &&
+          candidate.from_mod === event.from_mod &&
+          functionsByModule.has(candidate.to_mod),
+      )
+      .map((candidate) => candidate.to_mod),
+  );
+  return expanded.size === 1 ? ([...expanded][0] ?? null) : null;
+}
+
+function listArity(value: string): number | null {
+  const body = value.slice(1, -1).trim();
+  return body === "" ? 0 : body.split(",").length;
+}
+
+function dispatchSiteKey(file: string, line: number): string {
+  return `${file}\0${line}`;
 }
 
 function indexFunctions(functions: readonly FunctionRecord[]): Map<string, FunctionRecord[]> {
