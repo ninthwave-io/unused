@@ -98,7 +98,7 @@ single-language behavior while replacing root-manifest dispatch incrementally.
 
 ### P2 — Unified TS + Elixir orchestration
 
-Status: pending
+Status: in progress
 
 Deliverables:
 
@@ -114,6 +114,21 @@ Acceptance:
 - A planted cross-fragment edge changes liveness before claims.
 - Existing single-language JSON is compatibility-tested.
 - Missing Mix fails explicitly when an Elixir boundary is detected.
+
+Progress:
+
+- The shared gitignore-aware inventory now records visible `package.json`,
+  `mix.exs`, and `Cargo.toml` project directories in its one bounded walk.
+- Deterministic boundary selection lets a root workspace/umbrella own nested
+  same-ecosystem manifests while retaining sibling nested projects.
+- Graph rebasing translates file/symbol/entrypoint ids, edges, hazard sites,
+  and subtree prefixes into repository-relative coordinates.
+- Focused verification: typecheck; 17 tests across discovery, registry,
+  boundaries, and rebasing; dependency boundaries (888 modules / 1,813 deps).
+
+Next action: expose frontend claim inputs, register TS/Elixir adapters, and make
+root dispatch discover nested boundaries. This remains a transitional merged-
+claim step until scoped global claim emission replaces concatenation.
 
 ### P3 — Rust frontend foundation
 
@@ -222,3 +237,5 @@ smokes are mandatory at P6 and before any release recommendation.
 - `c89954e` — corrected TS scaling, bounded config inventory, Elixir runtime MFA
   and dynamic-use reachability, deletion safety, and public benchmark evidence.
 - `b634c08` — accepted ADR 0013 and established this resumable delivery ledger.
+- `261070a` — added typed language/convention/bridge contracts and deterministic
+  plugin registry with attributed execution failures.

@@ -48,6 +48,8 @@ export interface ProjectInventory {
   readonly sourceFiles: readonly string[];
   readonly jsonFiles: readonly string[];
   readonly packageRootDirs: readonly string[];
+  readonly mixProjectDirs: readonly string[];
+  readonly cargoProjectDirs: readonly string[];
 }
 
 interface IgnoreContext {
@@ -68,15 +70,28 @@ export async function discoverProjectInventory(
   const sourceFiles: string[] = [];
   const jsonFiles: string[] = [];
   const packageRootDirs = new Set<string>();
+  const mixProjectDirs = new Set<string>();
+  const cargoProjectDirs = new Set<string>();
   const useGitignore = options.gitignore !== false;
   const inherited = useGitignore ? await ancestorIgnoreContexts(rootDir) : [];
-  await walk(rootDir, sourceFiles, jsonFiles, packageRootDirs, inherited, useGitignore);
+  await walk(
+    rootDir,
+    sourceFiles,
+    jsonFiles,
+    packageRootDirs,
+    mixProjectDirs,
+    cargoProjectDirs,
+    inherited,
+    useGitignore,
+  );
   sourceFiles.sort();
   jsonFiles.sort();
   return {
     sourceFiles,
     jsonFiles,
     packageRootDirs: [...packageRootDirs].sort(),
+    mixProjectDirs: [...mixProjectDirs].sort(),
+    cargoProjectDirs: [...cargoProjectDirs].sort(),
   };
 }
 
@@ -211,6 +226,8 @@ async function walk(
   sourceFiles: string[],
   jsonFiles: string[],
   packageRootDirs: Set<string>,
+  mixProjectDirs: Set<string>,
+  cargoProjectDirs: Set<string>,
   inherited: readonly IgnoreContext[],
   useGitignore: boolean,
 ): Promise<void> {
@@ -233,12 +250,23 @@ async function walk(
     if (entry.isDirectory()) {
       if (EXCLUDED_DIRS.has(entry.name)) continue;
       if (useGitignore && isGitIgnored(full, true, contexts)) continue;
-      await walk(full, sourceFiles, jsonFiles, packageRootDirs, contexts, useGitignore);
+      await walk(
+        full,
+        sourceFiles,
+        jsonFiles,
+        packageRootDirs,
+        mixProjectDirs,
+        cargoProjectDirs,
+        contexts,
+        useGitignore,
+      );
     } else if (entry.isFile()) {
       if (useGitignore && isGitIgnored(full, false, contexts)) continue;
       if (hasSourceExtension(entry.name)) sourceFiles.push(full);
       if (entry.name.toLowerCase().endsWith(".json")) jsonFiles.push(full);
       if (entry.name === "package.json") packageRootDirs.add(dir);
+      if (entry.name === "mix.exs") mixProjectDirs.add(dir);
+      if (entry.name === "Cargo.toml") cargoProjectDirs.add(dir);
     }
     // Symlinks (isSymbolicLink()) fall through here and are intentionally
     // neither descended nor collected.

@@ -130,12 +130,16 @@ describe("discover", () => {
     await mkdir(join(root, "generated", "member"), { recursive: true });
     await mkdir(join(root, "node_modules", "dependency"), { recursive: true });
     await mkdir(join(root, "cdk.out"), { recursive: true });
+    await mkdir(join(root, "apps", "backend"), { recursive: true });
+    await mkdir(join(root, "native", "bridge"), { recursive: true });
     await writeFile(join(root, ".gitignore"), "generated/\n");
     await writeFile(join(root, "package.json"), "{}\n");
     await writeFile(join(root, "src", "config.json"), "{}\n");
     await writeFile(join(root, "generated", "member", "package.json"), "{}\n");
     await writeFile(join(root, "node_modules", "dependency", "package.json"), "{}\n");
     await writeFile(join(root, "cdk.out", "manifest.json"), "{}\n");
+    await writeFile(join(root, "apps", "backend", "mix.exs"), "# neutral\n");
+    await writeFile(join(root, "native", "bridge", "Cargo.toml"), "[package]\nname='bridge'\n");
 
     const inventory = await discoverProjectInventory(root);
     expect(inventory.jsonFiles.map((path) => relative(root, path).split(sep).join("/"))).toEqual([
@@ -145,6 +149,8 @@ describe("discover", () => {
     expect(
       inventory.packageRootDirs.map((path) => relative(root, path).split(sep).join("/")),
     ).toEqual([""]);
+    expect(inventory.mixProjectDirs).toEqual([join(root, "apps", "backend")]);
+    expect(inventory.cargoProjectDirs).toEqual([join(root, "native", "bridge")]);
 
     const audit = await discoverProjectInventory(root, { gitignore: false });
     expect(audit.jsonFiles.map((path) => relative(root, path).split(sep).join("/"))).toEqual([

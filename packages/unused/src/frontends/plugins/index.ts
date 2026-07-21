@@ -1,3 +1,5 @@
+export { type BoundaryDescriptor, selectProjectBoundaries } from "./boundaries.js";
+export { prefixRepositoryPath, rebaseGraph } from "./rebase.js";
 export { PluginRegistry } from "./registry.js";
 export {
   type AnalyzerPlugin,
