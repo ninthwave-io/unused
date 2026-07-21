@@ -37,3 +37,9 @@ subsequent `mix compile --warnings-as-errors` regenerate consolidation output.
 A project whose dependency artifacts are not available from a prior clean
 compile is refused explicitly; the analyzer neither fetches nor silently builds
 dependencies into the consumer's tree.
+
+The isolated application layout also contains a link to the project's tracked
+`priv` directory before `compile.elixir` begins. This preserves conventional
+compile-time reads through `Application.app_dir/2` while keeping the resource
+and the consumer's `_build` unchanged; the link exists only for the lifetime of
+the analyzer's temporary directory.

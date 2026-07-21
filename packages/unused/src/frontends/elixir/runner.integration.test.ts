@@ -80,10 +80,13 @@ describe.skipIf(!MIX_AVAILABLE)("runTracer — isolated Mix build", () => {
     for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
   });
 
-  it("does not mutate compiler or consolidated-protocol artifacts", { timeout: 60_000 }, () => {
+  it("preserves build artifacts while exposing priv resources", { timeout: 60_000 }, () => {
     const projectDir = mkdtempSync(join(tmpdir(), "unused-ex-isolation-test-"));
     dirs.push(projectDir);
     mkdirSync(join(projectDir, "lib"));
+    mkdirSync(join(projectDir, "priv"));
+    const resourcePath = join(projectDir, "priv", "neutral-resource.txt");
+    writeFileSync(resourcePath, "tracked neutral resource\n");
     writeFileSync(
       join(projectDir, "mix.exs"),
       `defmodule NeutralIsolation.MixProject do
@@ -103,7 +106,11 @@ defimpl NeutralIsolation.Renderable, for: Integer do
 end
 
 defmodule NeutralIsolation do
+  @resource Application.app_dir(:neutral_isolation, "priv/neutral-resource.txt")
+  @resource_contents File.read!(@resource)
+
   def render(value), do: NeutralIsolation.Renderable.render(value)
+  def resource_contents, do: @resource_contents
   def unused_public, do: :unused
 end
 `,
@@ -116,10 +123,21 @@ end
     expect(initialCompile.status, initialCompile.stderr).toBe(0);
     const buildPath = join(projectDir, "_build");
     const before = snapshotTree(buildPath);
+    const resourceBefore = {
+      contents: readFileSync(resourcePath, "utf8"),
+      mtimeMs: lstatSync(resourcePath).mtimeMs,
+    };
 
     const trace = runTracer(projectDir);
     expect(trace.modules.some((module) => module.mod === "NeutralIsolation")).toBe(true);
+    expect(
+      trace.functions.some(
+        (fn) => fn.mod === "NeutralIsolation" && fn.name === "resource_contents" && fn.arity === 0,
+      ),
+    ).toBe(true);
     expect(snapshotTree(buildPath)).toEqual(before);
+    expect(readFileSync(resourcePath, "utf8")).toBe(resourceBefore.contents);
+    expect(lstatSync(resourcePath).mtimeMs).toBe(resourceBefore.mtimeMs);
 
     const subsequentCompile = spawnSync("mix", ["compile", "--warnings-as-errors"], {
       cwd: projectDir,

@@ -7,7 +7,8 @@
  * {@link TRACER_SCRIPT} + an output path there, run the script with Mix's
  * `--no-compile` option and `UNUSED_OUT` pointing at the output file, then parse the
  * JSON-lines it wrote back. The analyzed application's own `_build` artifacts
- * are never rewritten.
+ * are never rewritten; its tracked `priv` tree is linked into the temporary app
+ * layout so compiler-time `Application.app_dir/2` reads keep working.
  *
  * ## Refusal, never a silently-wrong answer (ADR 0011)
  * Every way the run can fail to produce a trustworthy graph is a *refusal* — a
@@ -109,7 +110,7 @@ export function runTracer(projectDir: string, options: RunTracerOptions = {}): T
       join(workDir, "layout-build"),
       options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     );
-    prepareIsolatedBuild(layout, isolatedBuildPath);
+    prepareIsolatedBuild(layout, isolatedBuildPath, projectDir);
 
     const result = spawnSync(
       command,
@@ -250,13 +251,31 @@ function resolveFromProject(projectDir: string, path: string): string {
 
 /**
  * Give the application a fresh build tree while reusing dependency artifacts
- * read-only. `compile.elixir` only compiles the current application, so these
- * dependency links are loaded but never passed to a compiler task.
+ * read-only and exposing its tracked `priv` resources. `compile.elixir` only
+ * compiles the current application, so dependency links are loaded but never
+ * passed to a compiler task.
  */
-function prepareIsolatedBuild(layout: MixLayout, isolatedBuildPath: string): void {
+function prepareIsolatedBuild(
+  layout: MixLayout,
+  isolatedBuildPath: string,
+  projectDir: string,
+): void {
   const sourceLib = join(layout.buildPath, "lib");
   const isolatedLib = join(isolatedBuildPath, "lib");
   mkdirSync(isolatedLib, { recursive: true });
+
+  // Mix resolves Application.app_dir(app, "priv/...") to this location even
+  // while the application's modules are still being compiled. Mirror Mix's
+  // ordinary priv link in the isolated app layout before compile.elixir runs.
+  // The link exposes tracked resources for reads without copying or writing
+  // anything into the consumer's build tree.
+  const sourcePriv = join(projectDir, "priv");
+  if (existsSync(sourcePriv)) {
+    const isolatedApp = join(isolatedLib, layout.app);
+    mkdirSync(isolatedApp, { recursive: true });
+    symlinkSync(sourcePriv, join(isolatedApp, "priv"), "dir");
+  }
+
   if (!existsSync(sourceLib)) return;
 
   for (const entry of readdirSync(sourceLib, { withFileTypes: true })) {

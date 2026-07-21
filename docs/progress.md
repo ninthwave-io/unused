@@ -11,9 +11,14 @@ temporary `MIX_BUILD_PATH`, reuses existing dependency artifacts read-only, and
 leaves the consumer's `_build` (including consolidated protocols) unchanged. A
 neutral generated regression snapshots the complete build tree and proves that
 an immediate `mix compile --warnings-as-errors` stays green without cleanup.
-The neutral basic fixture completes in 0.70–0.71s across three warm-toolchain
-runs; the added no-compile layout process is 0.23s on the same machine. This is
-a bounded process-startup cost, not repeated dependency compilation.
+The neutral basic fixture completes in 0.70–0.72s across three warm-toolchain
+runs (0.71s median, versus 0.70–0.71s before the resource link); the added
+no-compile layout process is 0.23s on the same machine. This is a bounded
+process-startup cost, not repeated dependency compilation, and the resource
+link adds no material overhead.
+The isolated app layout also exposes tracked `priv` resources through a
+temporary link, preserving compile-time `Application.app_dir/2` reads without
+mutating the resource tree or consumer build.
 
 ## What shipped (v1, private-beta ready)
 `@ninthwave-io/unused` — a liveness oracle for TS/JS. Tiers 1–2 fully implemented:
