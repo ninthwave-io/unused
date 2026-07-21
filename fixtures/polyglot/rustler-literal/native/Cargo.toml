@@ -1,0 +1,13 @@
+[package]
+name = "neutral_native"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rustler = { path = "rustler_stub" }
+
+[workspace]
+members = ["rustler_stub"]

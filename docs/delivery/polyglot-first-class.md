@@ -245,7 +245,7 @@ registration must create the narrowest no-claim hazard.
 
 ### P4 — Rustler/NIF bridge
 
-Status: in progress
+Status: complete
 
 Deliverables:
 
@@ -290,11 +290,35 @@ Progress:
 - Focused verification: 27 plugin/dispatch/Rust/hazard tests pass (2 Mix-skipped
   under the default shell); typecheck and dependency boundaries pass (907
   modules / 1,917 dependencies).
+- The independently constructed `fixtures/polyglot/rustler-literal` case runs
+  both real compilers without network access. Tiny local neutral macro crates
+  preserve the documented Rustler syntax; they do not copy or emulate a private
+  project. The case labels one live and one dead function on each language side.
+- `fixtures/scoreboard.polyglot.json` records 1 case / 4 subjects, precision
+  1.0, recall 1.0, two true-positive high-confidence claims, and zero false
+  positives, misses, confidence violations, or unlabelled claims.
+- Cross-language `why` renders the production application call, exact Elixir
+  stub line, and Rust NIF attribute line. Removing the planted caller makes
+  both exact functions dead while a separate loader marker keeps the containing
+  Elixir module live, proving the result is not a dead-file side effect.
+- `why --delete` refuses the live Rust function at its inbound runtime edge and
+  the live Elixir stub at its inbound static caller. The planner now applies
+  this safety rule to every reachable non-re-export reference; it no longer
+  reports a live statically called subject as supported without a caller edit.
+- Focused verification after fixture integration: 263 CLI/core/plugin/dispatch/
+  polyglot tests pass; typecheck and dependency boundaries pass (911 modules /
+  1,941 dependencies); the polyglot scoreboard gate passes under the explicitly
+  selected installed Mix toolchain.
 
-Next action: add a neutral, independently constructed bridge corpus fixture and
-scoreboard. Prove the paired live path in `why`, prove removing its caller makes
-both sides claimable, and prove `why --delete` refuses the live Rust NIF and
-Elixir stub without fetching private or consuming-project artifacts.
+P4 decision: the literal Rustler bridge is sufficient to enter P5. Renamed NIF
+exports, computed module registration, and duplicate registration remain
+explicit no-claim surfaces until independently evidenced syntax can be paired
+without guessing.
+
+Next action: begin P5 by extracting existing TypeScript convention/config root
+logic behind compiled-in `ConventionPlugin` implementations without changing
+claim output. Add an authoring guide and neutral plugin fixture template before
+migrating the narrower Elixir runtime conventions.
 
 ### P5 — Convention modularization
 
@@ -368,3 +392,5 @@ smokes are mandatory at P6 and before any release recommendation.
   plugin registry with attributed execution failures.
 - `0948d91` through `3542cf7` — completed polyglot discovery/orchestration and
   the stable Cargo/rustc Rust frontend with its precision corpus.
+- `9d7292a` and `0e37316` — extracted public Rustler conventions and joined
+  exact Elixir/Rust endpoints through the typed plugin phases.

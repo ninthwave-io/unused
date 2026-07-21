@@ -71,21 +71,26 @@ export function computeDeletionPlan(input: ComputeDeletionPlanInput): DeletionPl
     });
   }
 
-  const liveRuntimeReference = graph
+  const liveInboundReference = graph
     .edges()
     .find(
       (edge) =>
         edge.kind === "references" &&
-        edge.referenceKind === "runtime-resolved" &&
+        edge.referenceKind !== "re-export" &&
         selectedNodeIds.has(edge.to) &&
+        !selectedNodeIds.has(edge.from) &&
         isReachableNode(graph, reachability, edge.from),
     );
-  if (liveRuntimeReference !== undefined) {
+  if (liveInboundReference !== undefined) {
+    const reference =
+      liveInboundReference.referenceKind === "runtime-resolved"
+        ? "runtime"
+        : (liveInboundReference.referenceKind ?? "unclassified");
     return finish({
       schemaVersion: SCHEMA_VERSION,
       selected: subject,
       supported: false,
-      unsupportedReason: `selected subject has a live runtime reference at ${liveRuntimeReference.site.file}:${liveRuntimeReference.site.span.startLine}`,
+      unsupportedReason: `selected subject has a live ${reference} reference at ${liveInboundReference.site.file}:${liveInboundReference.site.span.startLine}`,
       reExportEdits: [],
       stages: [],
     });

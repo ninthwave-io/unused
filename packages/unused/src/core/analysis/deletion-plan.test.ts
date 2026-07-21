@@ -129,6 +129,34 @@ describe("computeDeletionPlan", () => {
     });
   });
 
+  it("refuses a subject with a reachable static caller that the plan cannot edit", () => {
+    const graph = new IRGraph();
+    addEntry(graph, "lib/application.ex");
+    addSymbol(graph, "lib/application.ex", "Application.start/2");
+    addSymbol(graph, "lib/native.ex", "Native.call/1");
+    reference(
+      graph,
+      symbolId("lib/application.ex", "Application.start/2"),
+      symbolId("lib/native.ex", "Native.call/1"),
+      5,
+      "static",
+      "Native.call/1",
+    );
+
+    const plan = computeDeletionPlan({
+      graph,
+      reachability: computePartitionedReachability(graph),
+      subject: { kind: "export", file: "lib/native.ex", name: "Native.call/1" },
+    });
+
+    expect(plan).toMatchObject({
+      supported: false,
+      unsupportedReason: "selected subject has a live static reference at lib/application.ex:5",
+      reExportEdits: [],
+      stages: [],
+    });
+  });
+
   it("groups a newly-dead reference chain into deterministic causal stages", () => {
     const graph = new IRGraph();
     addEntry(graph, "src/index.ts");
@@ -157,10 +185,18 @@ describe("computeDeletionPlan", () => {
   it("puts file-level descendants after the selected export's newly-dead owning file", () => {
     const graph = new IRGraph();
     addEntry(graph, "src/index.ts");
+    addSymbol(graph, "src/index.ts", "run", { local: false });
     addSymbol(graph, "src/feature.ts", "run");
     addSymbol(graph, "src/direct.ts", "direct");
     addFile(graph, "src/side-effect.ts");
-    reference(graph, fileId("src/index.ts"), symbolId("src/feature.ts", "run"));
+    reference(
+      graph,
+      symbolId("src/index.ts", "run"),
+      symbolId("src/feature.ts", "run"),
+      1,
+      "re-export",
+      "run",
+    );
     reference(graph, symbolId("src/feature.ts", "run"), symbolId("src/direct.ts", "direct"));
     reference(graph, fileId("src/feature.ts"), fileId("src/side-effect.ts"));
 
@@ -617,11 +653,9 @@ describe("computeDeletionPlan", () => {
 
   it("removing a file removes its exports and reports its newly orphaned target", () => {
     const graph = new IRGraph();
-    addEntry(graph, "src/index.ts");
-    addSymbol(graph, "src/index.ts", "run");
+    addEntry(graph, "src/feature.ts");
     addSymbol(graph, "src/feature.ts", "feature");
     addSymbol(graph, "src/support.ts", "support");
-    reference(graph, symbolId("src/index.ts", "run"), symbolId("src/feature.ts", "feature"));
     reference(graph, symbolId("src/feature.ts", "feature"), symbolId("src/support.ts", "support"));
 
     const plan = computeDeletionPlan({

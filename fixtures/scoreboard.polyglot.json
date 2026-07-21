@@ -1,0 +1,46 @@
+{
+  "analyzer": "polyglot-reference-graph",
+  "corpus": {
+    "cases": 1,
+    "subjects": 4
+  },
+  "precision": 1,
+  "recall": 1,
+  "falsePositives": 0,
+  "confidenceViolations": 0,
+  "misses": 0,
+  "unlabelledClaims": 0,
+  "byConfidenceTier": {
+    "high": {
+      "claims": 2,
+      "truePositives": 2,
+      "falsePositives": 0,
+      "confidenceViolations": 0
+    },
+    "medium": {
+      "claims": 0,
+      "truePositives": 0,
+      "falsePositives": 0,
+      "confidenceViolations": 0
+    },
+    "low": {
+      "claims": 0,
+      "truePositives": 0,
+      "falsePositives": 0,
+      "confidenceViolations": 0
+    }
+  },
+  "cases": [
+    {
+      "case": "rustler-literal",
+      "subjects": 4,
+      "deadLabels": 2,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    }
+  ]
+}

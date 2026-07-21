@@ -1,0 +1,34 @@
+case: rustler-literal
+description: >-
+  A neutral Mix application calls one generated-style NIF stub while a sibling
+  stub remains uncalled; literal Rustler registration pairs both with local
+  Rust functions across the language boundary.
+subjects:
+  - kind: export
+    name: NeutralBridge.Native.live_nif/2
+    file: beam/lib/neutral_bridge/native.ex
+    expected: alive
+    because: >-
+      The application entrypoint calls this Elixir stub directly.
+  - kind: export
+    name: live_nif
+    file: native/src/lib.rs
+    expected: alive
+    because: >-
+      The live Elixir stub reaches this exact Rust NIF through the literal
+      module, function, and arity bridge.
+  - kind: export
+    name: NeutralBridge.Native.dead_nif/1
+    file: beam/lib/neutral_bridge/native.ex
+    expected: dead
+    minConfidence: high
+    because: >-
+      The loader module is live but this stub has no caller.
+  - kind: export
+    name: dead_nif
+    file: native/src/lib.rs
+    expected: dead
+    minConfidence: high
+    because: >-
+      Its exact Elixir stub is present but unreachable, so the bridge does not
+      make the Rust NIF live.
