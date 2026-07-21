@@ -111,7 +111,11 @@ export async function analyzeRustProjectWithGraph(
   for (const [file, source] of sources) addPublicItems(graph, file, source);
   const compilerFacts = collectCompilerDeadFunctions(metadata, {
     ...(internal.cargoCommand === undefined ? {} : { cargoCommand: internal.cargoCommand }),
-  }).filter((fact) => fileSet.has(fact.file));
+  }).filter(
+    (fact) =>
+      fileSet.has(fact.file) &&
+      isClaimSafeFunction(fact.name, fact.site.span.startLine, sources.get(fact.file)),
+  );
   const uniqueFacts = uniqueFunctionFacts(compilerFacts);
   for (const fact of uniqueFacts) {
     const id = symbolId(fact.file, fact.name);
@@ -286,6 +290,36 @@ function uniqueFunctionFacts<T extends { readonly file: string; readonly name: s
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   return facts.filter((fact) => counts.get(`${fact.file}\0${fact.name}`) === 1);
+}
+
+/**
+ * Compiler truth supplies liveness; this source check supplies the exclusion
+ * boundary for runtime/linkage attributes that can make a symbol externally
+ * reachable outside ordinary Rust calls.
+ */
+function isClaimSafeFunction(name: string, startLine: number, source: string | undefined): boolean {
+  if (source === undefined) return false;
+  const lines = source.split(/\r?\n/u);
+  const declaration = lines[startLine - 1];
+  if (declaration === undefined) return false;
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  if (
+    !new RegExp(`^\\s*(?:(?:async|const|unsafe)\\s+)*fn\\s+${escapedName}\\b`, "u").test(
+      declaration,
+    )
+  ) {
+    return false;
+  }
+  for (let index = startLine - 2; index >= 0; index -= 1) {
+    const line = lines[index]?.trim() ?? "";
+    if (line === "") continue;
+    if (line.startsWith("///") || line.startsWith("//")) continue;
+    if (line.startsWith("#[")) return false;
+    break;
+  }
+  return !/\bextern\b|no_mangle|export_name|link_section|#\[used\]|proc_macro|rustler::nif/u.test(
+    declaration,
+  );
 }
 
 function cargoUnits(

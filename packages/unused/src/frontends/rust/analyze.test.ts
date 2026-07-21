@@ -61,4 +61,30 @@ describe("Rust frontend", () => {
       }),
     ).toMatchObject({ outcome: "alive", entrypointKind: "production" });
   });
+
+  it("keeps attributed runtime/linkage functions conservatively alive", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unused-rust-linkage-"));
+    roots.push(root);
+    await mkdir(join(root, "src"), { recursive: true });
+    await writeFile(
+      join(root, "Cargo.toml"),
+      '[package]\nname = "neutral-linkage"\nversion = "0.1.0"\nedition = "2024"\n',
+    );
+    await writeFile(
+      join(root, "src", "lib.rs"),
+      [
+        "#[allow(dead_code)]",
+        "#[unsafe(no_mangle)]",
+        'unsafe extern "C" fn runtime_entry() {}',
+        "",
+        "#[inline]",
+        "fn attributed_dead() {}",
+        "",
+      ].join("\n"),
+    );
+
+    const analysis = await analyzeRustProjectWithGraph(root, { now: new Date(0) });
+
+    expect(analysis.result.claims).toEqual([]);
+  });
 });

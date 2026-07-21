@@ -163,7 +163,7 @@ reachability claims.
 
 ### P3 — Rust frontend foundation
 
-Status: in progress
+Status: complete
 
 Deliverables:
 
@@ -223,12 +223,25 @@ Progress:
   `fixtures/scoreboard.rust.json`. The `scoreboard:rust` command regenerates it.
 - `why` integration checks both the rustc-evidenced dead function and a live
   public API path. Multi-package Rust claims carry the owning Cargo package.
+- Macro-expanded compiler spans are excluded. Any source attribute immediately
+  attached to a dead function also excludes it from the initial claim class;
+  `extern`/linkage/runtime/proc-macro/Rustler spellings are independently
+  guarded. Tests prove an attributed dead function remains unclaimed.
+- If all-features compilation fails (including mutually exclusive features),
+  `CargoCompileError` fails the boundary explicitly. Default-only diagnostics
+  never leak through as claims.
 
-Next action: finish P3 refusal/capability coverage for mutually exclusive
-all-features failures and macro/linkage exclusions, then decide whether the
-measured 0.8333 recall is sufficient to enter P4 or whether a bounded public-item
-reference prototype is required first. Do not broaden claims without retaining
-precision 1.0.
+P3 decision: the measured 0.8333 recall is sufficient to enter P4 because the
+only recorded miss is general unused public library API, while the founding
+consumer need is Rustler runtime pairing. Keep that miss visible; do not infer
+public-API death from absent in-repository calls. Revisit stronger compiler
+integration after Rustler corpus/consumer evidence, using the triggers in the
+Rust extraction decision.
+
+Next action: begin P4 with a neutral Rustler fixture and two isolated extractors:
+Elixir NIF stub/module setup and Rust `#[rustler::nif]`/registration inventory.
+Join only literal provable pairs in a `BridgePlugin`; dynamic or ambiguous
+registration must create the narrowest no-claim hazard.
 
 ### P4 — Rustler/NIF bridge
 

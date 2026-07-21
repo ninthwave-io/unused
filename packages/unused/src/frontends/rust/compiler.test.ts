@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { collectCompilerDeadFunctions } from "./compiler.js";
 import { loadCargoMetadata } from "./metadata.js";
+import { CargoCompileError } from "./runner.js";
 
 const roots: string[] = [];
 
@@ -52,5 +53,14 @@ describe("Cargo compiler diagnostic join", () => {
     const facts = collectCompilerDeadFunctions(loadCargoMetadata(root));
 
     expect(facts.some((fact) => fact.name === "feature_helper")).toBe(false);
+  });
+
+  it("refuses when mutually exclusive features make all-features compilation fail", async () => {
+    const root = await crate(
+      '#[cfg(all(feature = "a", feature = "b"))]\ncompile_error!("features a and b are exclusive");\n',
+      "\n[features]\na = []\nb = []\n",
+    );
+
+    expect(() => collectCompilerDeadFunctions(loadCargoMetadata(root))).toThrow(CargoCompileError);
   });
 });

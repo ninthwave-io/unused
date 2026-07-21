@@ -86,6 +86,9 @@ function deadFunctionFromMessage(
     .find((span) => span !== null && valueAt(span, "is_primary") === true);
   if (primary === undefined || primary === null) return null;
   const fileName = valueAt(primary, "file_name");
+  if (valueAt(primary, "expansion") !== null && valueAt(primary, "expansion") !== undefined) {
+    return null;
+  }
   const byteStart = valueAt(primary, "byte_start");
   const byteEnd = valueAt(primary, "byte_end");
   const lineStart = valueAt(primary, "line_start");
