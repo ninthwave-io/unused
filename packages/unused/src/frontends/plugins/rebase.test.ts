@@ -49,6 +49,7 @@ describe("rebaseGraph", () => {
       detail: "neutral dynamic dispatch",
       site: SITE,
       subtreePrefix: "lib/plugins/",
+      affectedSymbols: [symbolId("lib/callback.ex", "App.callback/1")],
     });
 
     const rebased = rebaseGraph(graph, "apps/backend");
@@ -78,6 +79,7 @@ describe("rebaseGraph", () => {
       file: fileId("apps/backend/lib/callback.ex"),
       site: { file: "apps/backend/lib/callback.ex" },
       subtreePrefix: "apps/backend/lib/plugins/",
+      affectedSymbols: [symbolId("apps/backend/lib/callback.ex", "App.callback/1")],
     });
   });
 
@@ -143,6 +145,7 @@ describe("rebaseGraph", () => {
             hazardClass: "elixir-dynamic-dispatch",
             detail: "neutral",
             site: SITE,
+            affectedSymbols: [symbolId("lib/callback.ex", "App.callback/1")],
           },
         ],
       },
@@ -158,6 +161,7 @@ describe("rebaseGraph", () => {
     expect(contribution.hazards?.[0]).toMatchObject({
       file: fileId("apps/backend/lib/callback.ex"),
       site: { file: "apps/backend/lib/callback.ex" },
+      affectedSymbols: [symbolId("apps/backend/lib/callback.ex", "App.callback/1")],
     });
   });
 });

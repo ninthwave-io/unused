@@ -269,7 +269,7 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
     finishClaimPerformance(input.performance, claimStarted, hazardBefore, evidenceBefore);
     return [];
   }
-  const { fileCap, exportCap, unitCap, ownerRootRelDir } = caps;
+  const { fileCap, fileOnlyCap, exportCap, symbolCap, unitCap, ownerRootRelDir } = caps;
 
   // Every root file (production, config, or test) — never itself flagged as a
   // file or export; a test root can only surface as a zombie `test` claim.
@@ -309,7 +309,7 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
       if (cls === undefined || cls === "alive") continue;
       // A symbol-set (export-only) cap never applies to a file claim (file
       // liveness is unaffected by a computed-CJS-export hazard).
-      const applied = fileCap.get(node.id);
+      const applied = strongerCap(fileCap.get(node.id), fileOnlyCap.get(node.id));
       if (applied?.cap === "no-claim") continue; // e.g. an unparseable file
       const confidence = confidenceForCap(applied);
       const span = spanForFile(node.id, input.fileLineCounts);
@@ -346,7 +346,10 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
       if (aliveSymbol(node.id)) continue; // used from production or config
       // An export claim is capped by the stronger of the file-scoped and the
       // export-only (symbol-set) hazard covering its file.
-      const applied = strongerCap(fileCap.get(fileNodeId), exportCap.get(fileNodeId));
+      const applied = strongerCap(
+        strongerCap(fileCap.get(fileNodeId), exportCap.get(fileNodeId)),
+        symbolCap.get(node.id),
+      );
       if (applied?.cap === "no-claim") continue;
       const confidence = confidenceForCap(applied);
       const span: Span = [node.span.startLine, node.span.endLine];
@@ -470,8 +473,12 @@ interface HazardCaps {
   readonly projectNoClaim: boolean;
   /** fileId → strongest cap on the file claim and its export claims. */
   readonly fileCap: ReadonlyMap<string, AppliedCap>;
+  /** fileId → strongest cap on only the whole-file deletion claim. */
+  readonly fileOnlyCap: ReadonlyMap<string, AppliedCap>;
   /** fileId → strongest cap on the file's export claims only (symbol-set). */
   readonly exportCap: ReadonlyMap<string, AppliedCap>;
+  /** symbolId → strongest cap on exactly that exported declaration. */
+  readonly symbolCap: ReadonlyMap<string, AppliedCap>;
   /**
    * unit `rootRelDir` → the strongest WHOLE-PACKAGE cap owned by that unit — a
    * `project`-scope hazard, or a `directory-subtree` hazard with an empty prefix
@@ -512,7 +519,9 @@ function buildHazardCaps(
 ): HazardCaps {
   const started = performance?.now();
   const fileCap = new Map<string, AppliedCap>();
+  const fileOnlyCap = new Map<string, AppliedCap>();
   const exportCap = new Map<string, AppliedCap>();
+  const symbolCap = new Map<string, AppliedCap>();
   let projectNoClaim = false;
   const warned = new Set<string>();
 
@@ -613,6 +622,15 @@ function buildHazardCaps(
   for (const { hazard, entry } of registeredHazards) {
     if (!activeHazards.has(hazard)) continue;
     const applied = appliedCap(hazard, entry.cap);
+    if (hazard.affectedSymbols !== undefined) {
+      for (const symbolId of hazard.affectedSymbols) {
+        const symbol = graph.getNode(symbolId);
+        if (symbol?.kind !== "symbol" || !isInScope(symbol.file, analysisFiles)) continue;
+        mergeCap(symbolCap, symbol.id, applied);
+        mergeCap(fileOnlyCap, fileId(symbol.file), applied);
+      }
+      continue;
+    }
     switch (entry.scope) {
       case "none":
         break; // provenance only
@@ -660,7 +678,15 @@ function buildHazardCaps(
     }
   }
 
-  const result = { projectNoClaim, fileCap, exportCap, unitCap, ownerRootRelDir };
+  const result = {
+    projectNoClaim,
+    fileCap,
+    fileOnlyCap,
+    exportCap,
+    symbolCap,
+    unitCap,
+    ownerRootRelDir,
+  };
   if (started !== undefined && performance !== undefined) {
     performance.finish("hazard-activation", started);
   }
@@ -675,6 +701,14 @@ function filesCoveredByScope(
   ownerRootRelDir: (path: string) => string,
   graph: IRGraph,
 ): readonly { readonly id: string; readonly path: string }[] {
+  if (hazard.affectedSymbols !== undefined) {
+    const affectedFiles = new Set<string>();
+    for (const id of hazard.affectedSymbols) {
+      const node = graph.getNode(id);
+      if (node?.kind === "symbol") affectedFiles.add(fileId(node.file));
+    }
+    return fileNodes.filter((file) => affectedFiles.has(file.id));
+  }
   const carrier = graph.getNode(hazard.file);
   const carrierPath = carrier?.kind === "file" ? carrier.path : hazard.site.file;
   switch (scope) {

@@ -362,6 +362,53 @@ describe("hazard registry — scoped effects (T3.1)", () => {
     expect(byFile["src/handlers/candidate.ts"]).toBe("medium");
   });
 
+  it("caps only explicit dynamic-dispatch targets while preserving the carrier", () => {
+    const g = new IRGraph();
+    addEntry(g, "lib/application.ex");
+    addSymbol(g, "lib/router.ex", "Neutral.Router.dispatch/1");
+    addSymbol(g, "lib/handlers.ex", "Neutral.Handlers.possible/0");
+    addSymbol(g, "lib/handlers.ex", "Neutral.Other.same_file/0");
+    addSymbol(g, "lib/unrelated.ex", "Neutral.Unrelated.dead/0");
+    ref(g, "lib/application.ex", fileId("lib/router.ex"), "side-effect");
+    ref(g, "lib/application.ex", fileId("lib/handlers.ex"), "side-effect");
+    ref(g, "lib/application.ex", fileId("lib/unrelated.ex"), "side-effect");
+    g.addHazard({
+      file: fileId("lib/router.ex"),
+      hazardClass: "elixir-dynamic-dispatch",
+      detail: "bounded neutral dispatch",
+      site: site("lib/router.ex"),
+      affectedSymbols: [symbolId("lib/handlers.ex", "Neutral.Handlers.possible/0")],
+    });
+
+    const byName = Object.fromEntries(run(g).map((claim) => [claim.subject.name, claim.confidence]));
+    expect(byName["Neutral.Handlers.possible/0"]).toBe("medium");
+    expect(byName["Neutral.Other.same_file/0"]).toBe("high");
+    expect(byName["Neutral.Unrelated.dead/0"]).toBe("high");
+  });
+
+  it("caps a whole-file deletion when it contains an explicit dynamic target", () => {
+    const g = new IRGraph();
+    addEntry(g, "lib/application.ex");
+    addSymbol(g, "lib/router.ex", "Neutral.Router.dispatch/1");
+    addSymbol(g, "lib/candidate.ex", "Neutral.Candidate.possible/0");
+    ref(g, "lib/application.ex", fileId("lib/router.ex"), "side-effect");
+    g.addHazard({
+      file: fileId("lib/router.ex"),
+      hazardClass: "elixir-dynamic-dispatch",
+      detail: "bounded neutral dispatch",
+      site: site("lib/router.ex"),
+      affectedSymbols: [symbolId("lib/candidate.ex", "Neutral.Candidate.possible/0")],
+    });
+
+    expect(shape(run(g))).toContainEqual(
+      expect.objectContaining({
+        kind: "file",
+        file: "lib/candidate.ex",
+        confidence: "medium",
+      }),
+    );
+  });
+
   it("config-referenced-file yields a file claim at medium (scoped, not suppressed)", () => {
     const g = new IRGraph();
     addEntry(g, "src/index.ts");

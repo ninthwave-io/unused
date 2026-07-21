@@ -148,7 +148,28 @@ function rebaseHazard(
     ...(hazard.subtreePrefix === undefined || hazard.subtreePrefix === ""
       ? {}
       : { subtreePrefix: prefixRepositoryPath(prefix, hazard.subtreePrefix) }),
+    ...(hazard.affectedSymbols === undefined
+      ? {}
+      : {
+          affectedSymbols: hazard.affectedSymbols.map(
+            (symbol) => ids.get(symbol) ?? prefixNodeId(symbol, prefix),
+          ),
+        }),
   };
+}
+
+function prefixNodeId(id: string, prefix: string): string {
+  if (id.startsWith("file:")) return fileId(prefixRepositoryPath(prefix, id.slice(5)));
+  if (id.startsWith("symbol:")) {
+    const separator = id.indexOf("#", 7);
+    if (separator !== -1) {
+      return symbolId(
+        prefixRepositoryPath(prefix, id.slice(7, separator)),
+        id.slice(separator + 1),
+      );
+    }
+  }
+  return id;
 }
 
 function rebaseSite(site: Site, prefix: string): Site {

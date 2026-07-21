@@ -277,7 +277,11 @@ export interface IREdge {
  * (keep-alive semantics land in T2.4/M3). Every annotation carries a {@link Site}.
  */
 export interface HazardAnnotation {
-  /** Node id of the file the hazard attaches to. */
+  /**
+   * Node id of the carrier file whose reachability activates the hazard. For
+   * ordinary file/directory/project hazards this is also the affected file.
+   * `affectedSymbols` separates those roles for bounded runtime dispatch.
+   */
   readonly file: string;
   /** Cited hazard class (closed enum; scope/cap in the M3 registry). */
   readonly hazardClass: HazardClass;
@@ -292,6 +296,14 @@ export interface HazardAnnotation {
    * other scopes and ignored there.
    */
   readonly subtreePrefix?: string;
+  /**
+   * Exact symbol node ids that this otherwise broader hazard can affect. When
+   * present, core caps only these symbols and their containing file claims;
+   * the registry's normal scope remains the conservative fallback when absent.
+   * This is intentionally a symbol-id set rather than a file scope because a
+   * single Elixir source file may define several modules.
+   */
+  readonly affectedSymbols?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------
