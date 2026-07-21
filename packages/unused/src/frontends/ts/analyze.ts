@@ -166,7 +166,11 @@ export interface AnalyzeOptions {
 export interface AnalyzeInternalOptions {
   /** Defer config-match diagnostics so mixed dispatch can evaluate the language union once. */
   readonly emitConfigMatchWarnings?: boolean;
+  /** Convention families owned by repository plugins instead of this composition path. */
+  readonly deferredConventions?: readonly TypeScriptConventionId[];
 }
+
+export type TypeScriptConventionId = "github-actions-run";
 
 /**
  * {@link analyzeProject}'s return value: the PRD §4 wire format plus one
@@ -591,7 +595,9 @@ export async function analyzeProjectWithGraph(
     }
   }
   const configCarrierHits = [
-    ...(await githubActionsRunRoots(root, analyzedFileSet, useGitignore)),
+    ...(internal.deferredConventions?.includes("github-actions-run") === true
+      ? []
+      : await githubActionsRunRoots(root, analyzedFileSet, useGitignore)),
     ...(await taskfileCommandRoots(root, analyzedFileSet, useGitignore)),
     ...(await nativeConfigScriptRoots(root, analyzedFileSet, useGitignore)),
   ];

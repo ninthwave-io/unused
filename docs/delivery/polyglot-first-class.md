@@ -322,7 +322,7 @@ migrating the narrower Elixir runtime conventions.
 
 ### P5 — Convention modularization
 
-Status: pending
+Status: in progress
 
 Deliverables:
 
@@ -335,6 +335,25 @@ Acceptance:
 - Adding a convention does not require editing the orchestrator.
 - Applicability, roots, edges, hazards, and diagnostics are fixture-testable in
   isolation.
+
+Progress:
+
+- `convention:typescript-github-actions` is the first convention family fully
+  transferred from frontend composition to the typed registry path. It reuses
+  the existing recognizer, emits rebased config entrypoints, and is tested both
+  in isolation and through nested repository dispatch.
+- The TypeScript language adapter explicitly defers only
+  `github-actions-run`; direct single-language analysis retains its established
+  frontend path. This prevents duplicate roots while preserving the public
+  compatibility fast path during incremental migration.
+- Focused verification: 37 convention/plugin/dispatch tests pass (2 Mix-skipped
+  under the default shell); typecheck and dependency boundaries pass (913
+  modules / 1,955 dependencies).
+
+Next action: document plugin authoring and add a neutral fixture template, then
+migrate the remaining external TypeScript carrier roots as one family before
+moving Elixir literal runtime references and OTP/Phoenix hazards behind their
+own convention plugins.
 
 ### P6 — Integrated acceptance and release decision
 
