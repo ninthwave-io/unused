@@ -59,6 +59,7 @@ export interface AnalyzeElixirWithGraph {
   readonly graph: IRGraph;
   readonly reachability: PartitionedReachability;
   readonly claimInputs: FrontendClaimInputs;
+  readonly provenance: Provenance;
 }
 
 /**
@@ -184,7 +185,7 @@ export async function analyzeElixirProjectWithGraph(
     units: [{ rootRelDir: "", name: appName }],
     gateThreshold: config.gate?.threshold ?? "high",
   };
-  return { result, graph, reachability, claimInputs };
+  return { result, graph, reachability, claimInputs, provenance };
 }
 
 /**

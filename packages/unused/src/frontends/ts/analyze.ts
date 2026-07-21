@@ -250,6 +250,7 @@ export interface AnalyzeWithGraph {
   readonly reachability: PartitionedReachability;
   /** Inputs needed to re-emit this frontend's claims after repository graph merge. */
   readonly claimInputs: FrontendClaimInputs;
+  readonly provenance: Provenance;
 }
 
 /**
@@ -769,7 +770,7 @@ export async function analyzeProjectWithGraph(
     units: units.map((u) => ({ rootRelDir: u.rootRelDir, name: u.name })),
     gateThreshold: config.gate?.threshold ?? "high",
   };
-  return { result, graph, reachability, claimInputs };
+  return { result, graph, reachability, claimInputs, provenance };
 }
 
 // ---------------------------------------------------------------------------

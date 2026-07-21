@@ -40,10 +40,18 @@ export interface ProjectBoundary {
 export interface RepositoryAnalysisContext {
   readonly rootDir: string;
   readonly gitignore: boolean;
+  /** One shared, gitignore-bounded manifest inventory for all plugins. */
+  readonly manifests: RepositoryManifestInventory;
   readonly now: Date;
   readonly toolVersion: string;
   readonly configPath?: string;
   readonly performance?: PerformanceTracker;
+}
+
+export interface RepositoryManifestInventory {
+  readonly packageJsonDirs: readonly string[];
+  readonly mixExsDirs: readonly string[];
+  readonly cargoTomlDirs: readonly string[];
 }
 
 /** Capability declaration is descriptive and test/audit-visible, not marketing text. */
@@ -91,6 +99,14 @@ export interface FrontendGraphFragment {
   readonly boundary: ProjectBoundary;
   readonly graph: IRGraph;
   readonly provenance: Provenance;
+  /** Frontend display/counter metadata retained without embedding wire-format claims. */
+  readonly metadata: {
+    readonly projectName: string;
+    readonly fileCount: number;
+    readonly workspaceCount: number;
+    readonly configHash: string;
+    readonly gateThreshold: "high" | "medium" | "low";
+  };
   readonly claimInputs: FrontendClaimInputs;
   readonly diagnostics: readonly PluginDiagnostic[];
 }

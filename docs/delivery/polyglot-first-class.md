@@ -132,13 +132,19 @@ Progress:
   after graph merge: line counts, dependencies, self-package ids, units,
   analysis files, and claimable files. The rebasing layer translates all
   path-bearing inputs together with the graph.
-- Focused verification: typecheck; 53 core claim tests plus 48 TS/Elixir/rebase
-  tests (2 skipped); dependency boundaries (888 modules / 1,816 deps); lint with
-  the existing 2 warnings and 48 informational diagnostics.
+- Compiled-in TypeScript and Elixir language adapters now implement the typed
+  contract, declare auditable capabilities, select nested boundaries from one
+  shared manifest inventory, suppress duplicate per-boundary diagnostics, and
+  return repository-relative fragments with frontend-neutral metadata.
+- Focused verification: typecheck; 53 core claim tests, 48 TS/Elixir/rebase
+  tests (2 skipped), and 8 plugin tests; dependency boundaries (890 modules /
+  1,830 deps); lint with the existing 2 warnings and 48 informational
+  diagnostics.
 
-Next action: register TypeScript and Elixir language adapters, then replace
-root-manifest dispatch with nested-boundary orchestration using one merged graph
-and one partitioned-reachability computation.
+Next action: replace root-manifest dispatch with the built-in registry and
+nested-boundary orchestration using one merged graph and one partitioned-
+reachability computation. Preserve the no-manifest TypeScript fallback and
+single-root output compatibility.
 
 ### P3 — Rust frontend foundation
 

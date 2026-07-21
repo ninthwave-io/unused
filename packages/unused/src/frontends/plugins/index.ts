@@ -1,5 +1,10 @@
 export { type BoundaryDescriptor, selectProjectBoundaries } from "./boundaries.js";
-export { prefixRepositoryPath, rebaseGraph } from "./rebase.js";
+export {
+  BUILT_IN_LANGUAGE_PLUGINS,
+  elixirLanguagePlugin,
+  typescriptLanguagePlugin,
+} from "./builtins.js";
+export { prefixRepositoryPath, rebaseClaimInputs, rebaseGraph } from "./rebase.js";
 export { PluginRegistry } from "./registry.js";
 export {
   type AnalyzerPlugin,
@@ -21,5 +26,6 @@ export {
   type PluginKind,
   type ProjectBoundary,
   type RepositoryAnalysisContext,
+  type RepositoryManifestInventory,
   type RepositoryRelativePath,
 } from "./types.js";
