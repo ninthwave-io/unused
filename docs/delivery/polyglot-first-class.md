@@ -189,10 +189,19 @@ Progress:
   degrade toward alive or fail explicitly.
 - Compiler/build-script/proc-macro execution and the no-silent-partial refusal
   rule are explicit.
+- The Rust frontend foundation now executes Cargo without a shell, caps captured
+  output, distinguishes missing-toolchain from invalid-project failures, and
+  validates the machine-readable workspace/package/target/feature subset.
+- Workspace members and target source paths are required to remain inside the
+  detected Cargo workspace. Canonical filesystem paths avoid macOS `/var` versus
+  `/private/var` identity drift.
+- Focused verification: typecheck; 3 Cargo metadata/refusal tests; dependency
+  boundaries (894 modules / 1,847 dependencies).
 
-Next action: implement Cargo metadata parsing and attributed refusal errors,
-register the Rust language plugin, and add neutral boundary/toolchain tests. Do
-not emit item claims until the two-mode compiler-diagnostic join is corpus-tested.
+Next action: extend the shared bounded inventory with Rust sources, emit Cargo
+package/target/file/root graph facts, and implement the default/all-features
+compiler JSON diagnostic intersection. Register the Rust language plugin only
+when those facts and explicit compiler refusal tests land together.
 
 ### P4 — Rustler/NIF bridge
 
