@@ -1,0 +1,23 @@
+export { PluginRegistry } from "./registry.js";
+export {
+  type AnalyzerPlugin,
+  type BoundaryAnalysisRecord,
+  type BridgePlugin,
+  type BridgePluginContext,
+  type ConventionPlugin,
+  type ConventionPluginContext,
+  executePluginOperation,
+  type FrontendClaimInputs,
+  type FrontendGraphFragment,
+  type GraphContribution,
+  type LanguageCapabilities,
+  type LanguageFrontendPlugin,
+  type LanguageId,
+  type PluginDiagnostic,
+  type PluginDiagnosticSeverity,
+  PluginExecutionError,
+  type PluginKind,
+  type ProjectBoundary,
+  type RepositoryAnalysisContext,
+  type RepositoryRelativePath,
+} from "./types.js";

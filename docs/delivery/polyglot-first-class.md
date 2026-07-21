@@ -66,7 +66,7 @@ Next action: implement P1 contract types and deterministic registry tests.
 
 ### P1 — Typed plugin contracts and registry
 
-Status: pending
+Status: complete
 
 Deliverables:
 
@@ -80,6 +80,21 @@ Acceptance:
 - Registry order is deterministic; duplicate ids fail loudly.
 - Plugin failures identify plugin and boundary.
 - Contracts depend only on core/public frontend-neutral types.
+
+Delivered:
+
+- `frontends/plugins/types.ts` defines boundaries, repository context, graph
+  fragments, claim inputs, capabilities, diagnostics, completeness records, and
+  the three plugin contracts.
+- `frontends/plugins/registry.ts` provides a deterministic static registry,
+  globally unique validated ids, and kind-filtered views.
+- `PluginExecutionError` and `executePluginOperation` preserve plugin/boundary
+  attribution on failures.
+- Focused verification: typecheck; 3 registry tests; dependency boundaries
+  (884 modules / 1,802 dependencies).
+
+Next action: P2 boundary discovery and TS/Elixir plugin adapters. Preserve
+single-language behavior while replacing root-manifest dispatch incrementally.
 
 ### P2 — Unified TS + Elixir orchestration
 
@@ -206,3 +221,4 @@ smokes are mandatory at P6 and before any release recommendation.
 
 - `c89954e` — corrected TS scaling, bounded config inventory, Elixir runtime MFA
   and dynamic-use reachability, deletion safety, and public benchmark evidence.
+- `b634c08` — accepted ADR 0013 and established this resumable delivery ledger.
