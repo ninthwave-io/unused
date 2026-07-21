@@ -22,8 +22,7 @@ it("retains the public schema-1.3 CompletedAnalysisBoundary shape", () => {
 
   expectTypeOf(legacy.status).toEqualTypeOf<"complete">();
   expectTypeOf(legacy.partitions).toEqualTypeOf<
-    | { production: "complete"; config: "complete"; test: "complete" }
-    | undefined
+    { production: "complete"; config: "complete"; test: "complete" } | undefined
   >();
   expectTypeOf(current).toMatchTypeOf<AnalysisBoundary>();
 });
