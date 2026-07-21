@@ -163,7 +163,7 @@ reachability claims.
 
 ### P3 — Rust frontend foundation
 
-Status: pending
+Status: in progress
 
 Deliverables:
 
@@ -178,6 +178,21 @@ Acceptance:
   members, modules, tests, features/build-script hazards, and planted dead code.
 - Rust corpus precision is 1.0; recall and toolchain skips are explicit.
 - `why` works for live and dead Rust subjects.
+
+Progress:
+
+- `docs/research/rust-frontend-stack-2026-07.md` records the measured stable
+  Cargo/rustc extraction boundary and rejected alternatives.
+- Initial precision contract: a private function must receive the same compiler
+  `dead_code` diagnostic in all-target default and all-features checks. Public,
+  generated, macro-ambiguous, FFI/linkage, and incomplete feature configurations
+  degrade toward alive or fail explicitly.
+- Compiler/build-script/proc-macro execution and the no-silent-partial refusal
+  rule are explicit.
+
+Next action: implement Cargo metadata parsing and attributed refusal errors,
+register the Rust language plugin, and add neutral boundary/toolchain tests. Do
+not emit item claims until the two-mode compiler-diagnostic join is corpus-tested.
 
 ### P4 — Rustler/NIF bridge
 
