@@ -17,7 +17,7 @@ import type {
   LanguageFrontendPlugin,
   RepositoryAnalysisContext,
 } from "./types.js";
-import { typescriptGithubActionsConventionPlugin } from "./typescript-conventions.js";
+import { typescriptConfigCarriersConventionPlugin } from "./typescript-conventions.js";
 
 const PLUGIN_VERSION = "0.1.0";
 
@@ -106,7 +106,7 @@ export const typescriptLanguagePlugin: LanguageFrontendPlugin = {
   async analyze(context, boundary) {
     const analysis = await analyzeProjectWithGraph(boundary.rootDir, analyzeOptions(context), {
       emitConfigMatchWarnings: false,
-      deferredConventions: ["github-actions-run"],
+      deferredConventions: ["github-actions-run", "taskfile-command", "native-config-script"],
     });
     return fragment(this.id, this.language, boundary, analysis);
   },
@@ -183,6 +183,6 @@ export const BUILT_IN_PLUGINS: readonly AnalyzerPlugin[] = [
   ...BUILT_IN_LANGUAGE_PLUGINS,
   rustlerElixirConventionPlugin,
   rustlerRustConventionPlugin,
-  typescriptGithubActionsConventionPlugin,
+  typescriptConfigCarriersConventionPlugin,
   rustlerBridgePlugin,
 ];

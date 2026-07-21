@@ -1,16 +1,20 @@
 /** Compiled-in TypeScript convention plugins migrated from frontend composition. */
 
 import { entrypointId } from "../../core/ir/index.js";
-import { githubActionsRunRoots } from "../ts/convention-references.js";
+import {
+  githubActionsRunRoots,
+  nativeConfigScriptRoots,
+  taskfileCommandRoots,
+} from "../ts/convention-references.js";
 import { prefixRepositoryPath } from "./rebase.js";
 import type { ConventionPlugin } from "./types.js";
 
 const PLUGIN_VERSION = "0.1.0";
 
-/** Source files executed by repository-local GitHub Actions `run` steps. */
-export const typescriptGithubActionsConventionPlugin: ConventionPlugin = {
+/** Source files executed by workflow, task-runner, or native-build config. */
+export const typescriptConfigCarriersConventionPlugin: ConventionPlugin = {
   kind: "convention",
-  id: "convention:typescript-github-actions",
+  id: "convention:typescript-config-carriers",
   version: PLUGIN_VERSION,
   languages: ["ts"],
   applies(context) {
@@ -23,11 +27,23 @@ export const typescriptGithubActionsConventionPlugin: ConventionPlugin = {
         boundaryRelativePath(boundary.rootRelDir, file),
       ),
     );
-    const hits = await githubActionsRunRoots(
-      boundary.rootDir,
-      analyzedFiles,
-      context.repository.gitignore,
-    );
+    const hits = [
+      ...(await githubActionsRunRoots(
+        boundary.rootDir,
+        analyzedFiles,
+        context.repository.gitignore,
+      )),
+      ...(await taskfileCommandRoots(
+        boundary.rootDir,
+        analyzedFiles,
+        context.repository.gitignore,
+      )),
+      ...(await nativeConfigScriptRoots(
+        boundary.rootDir,
+        analyzedFiles,
+        context.repository.gitignore,
+      )),
+    ];
     return {
       nodes: hits.map((hit) => {
         const file = prefixRepositoryPath(boundary.rootRelDir, hit.file);

@@ -170,7 +170,10 @@ export interface AnalyzeInternalOptions {
   readonly deferredConventions?: readonly TypeScriptConventionId[];
 }
 
-export type TypeScriptConventionId = "github-actions-run";
+export type TypeScriptConventionId =
+  | "github-actions-run"
+  | "taskfile-command"
+  | "native-config-script";
 
 /**
  * {@link analyzeProject}'s return value: the PRD §4 wire format plus one
@@ -598,8 +601,12 @@ export async function analyzeProjectWithGraph(
     ...(internal.deferredConventions?.includes("github-actions-run") === true
       ? []
       : await githubActionsRunRoots(root, analyzedFileSet, useGitignore)),
-    ...(await taskfileCommandRoots(root, analyzedFileSet, useGitignore)),
-    ...(await nativeConfigScriptRoots(root, analyzedFileSet, useGitignore)),
+    ...(internal.deferredConventions?.includes("taskfile-command") === true
+      ? []
+      : await taskfileCommandRoots(root, analyzedFileSet, useGitignore)),
+    ...(internal.deferredConventions?.includes("native-config-script") === true
+      ? []
+      : await nativeConfigScriptRoots(root, analyzedFileSet, useGitignore)),
   ];
   for (const hit of configCarrierHits) {
     seedConfigEntrypoint(graph, hit.file, hit.reason);

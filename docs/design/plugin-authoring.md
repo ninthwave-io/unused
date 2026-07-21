@@ -65,11 +65,12 @@ pure recognizer, add a narrow internal deferral flag to the language adapter,
 and transfer ownership only in registry-driven analysis. Preserve the direct
 single-language path until compatibility evidence permits removing it.
 
-The first example is `github-actions-run`:
+The first example is the external config-carrier family:
 
 - direct `analyzeProjectWithGraph` still emits the established config roots;
-- `typescriptLanguagePlugin` defers that exact family;
-- `convention:typescript-github-actions` invokes the shared recognizer and
+- `typescriptLanguagePlugin` defers the GitHub Actions, Taskfile, and native
+  build-script recognizers;
+- `convention:typescript-config-carriers` invokes the shared recognizers and
   emits the rebased roots;
 - isolated and repository-dispatch tests prove there is neither a gap nor a
   duplicate implementation.

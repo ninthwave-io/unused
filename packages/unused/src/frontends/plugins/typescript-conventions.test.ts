@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { entrypointId, IRGraph } from "../../core/ir/index.js";
 import { analyzeProjectAuto } from "../dispatch.js";
 import type { FrontendGraphFragment, RepositoryAnalysisContext } from "./types.js";
-import { typescriptGithubActionsConventionPlugin } from "./typescript-conventions.js";
+import { typescriptConfigCarriersConventionPlugin } from "./typescript-conventions.js";
 
 const temporaryRoots: string[] = [];
 
@@ -16,26 +16,42 @@ afterEach(async () => {
 });
 
 describe("TypeScript convention plugins", () => {
-  it("emits a rebased config root from a nested boundary workflow", async () => {
+  it("emits rebased roots from nested workflow, task, and native config carriers", async () => {
     const root = await projectFixture();
     const project = join(root, "services/web");
     const context = repository(root, project);
     const fragment = tsFragment(project);
 
-    const contribution = await typescriptGithubActionsConventionPlugin.analyze({
+    const contribution = await typescriptConfigCarriersConventionPlugin.analyze({
       repository: context,
       fragment,
     });
 
-    expect(contribution.nodes).toEqual([
-      {
-        kind: "entrypoint",
-        id: entrypointId("config", "services/web/scripts/release.ts"),
-        entryKind: "config",
-        file: "services/web/scripts/release.ts",
-        reason: "config:github-actions:run",
-      },
-    ]);
+    expect(contribution.nodes).toEqual(
+      expect.arrayContaining([
+        {
+          kind: "entrypoint",
+          id: entrypointId("config", "services/web/scripts/native.ts"),
+          entryKind: "config",
+          file: "services/web/scripts/native.ts",
+          reason: "config:native-build-script",
+        },
+        {
+          kind: "entrypoint",
+          id: entrypointId("config", "services/web/scripts/release.ts"),
+          entryKind: "config",
+          file: "services/web/scripts/release.ts",
+          reason: "config:github-actions:run",
+        },
+        {
+          kind: "entrypoint",
+          id: entrypointId("config", "services/web/scripts/task.ts"),
+          entryKind: "config",
+          file: "services/web/scripts/task.ts",
+          reason: "config:taskfile:cmd",
+        },
+      ]),
+    );
   });
 
   it("owns the deferred convention in repository dispatch without changing liveness", async () => {
@@ -44,6 +60,8 @@ describe("TypeScript convention plugins", () => {
     const subjects = analysis.claims.map((claim) => claim.subject.loc.file);
 
     expect(subjects).not.toContain("services/web/scripts/release.ts");
+    expect(subjects).not.toContain("services/web/scripts/task.ts");
+    expect(subjects).not.toContain("services/web/scripts/native.ts");
     expect(subjects).toContain("services/web/src/dead.ts");
   });
 });
@@ -53,6 +71,7 @@ async function projectFixture(): Promise<string> {
   temporaryRoots.push(root);
   const project = join(root, "services/web");
   await mkdir(join(project, ".github/workflows"), { recursive: true });
+  await mkdir(join(project, "android"), { recursive: true });
   await mkdir(join(project, "scripts"), { recursive: true });
   await mkdir(join(project, "src"), { recursive: true });
   await writeFile(
@@ -62,9 +81,19 @@ async function projectFixture(): Promise<string> {
   await writeFile(join(project, "src/index.ts"), "export const live = true;\n");
   await writeFile(join(project, "src/dead.ts"), "export const dead = true;\n");
   await writeFile(join(project, "scripts/release.ts"), "export const release = true;\n");
+  await writeFile(join(project, "scripts/task.ts"), "export const task = true;\n");
+  await writeFile(join(project, "scripts/native.ts"), "export const native = true;\n");
   await writeFile(
     join(project, ".github/workflows/release.yml"),
     "jobs:\n  release:\n    steps:\n      - run: node scripts/release.ts\n",
+  );
+  await writeFile(
+    join(project, "Taskfile.yml"),
+    "tasks:\n  build:\n    cmds:\n      - node scripts/task.ts\n",
+  );
+  await writeFile(
+    join(project, "android/build.gradle"),
+    'tasks.register("neutral") { commandLine("node", "../scripts/native.ts") }\n',
   );
   return root;
 }
@@ -100,7 +129,7 @@ function tsFragment(rootDir: string): FrontendGraphFragment {
     provenance: { analyzer: "ts-test", version: "0.1.0", generatedAt: new Date(0).toISOString() },
     metadata: {
       projectName: "neutral-web",
-      fileCount: 3,
+      fileCount: 5,
       workspaceCount: 1,
       configHash: "test",
       gateThreshold: "high",
@@ -110,11 +139,15 @@ function tsFragment(rootDir: string): FrontendGraphFragment {
       units: [{ rootRelDir: "services/web", name: "neutral-web" }],
       analysisFiles: new Set([
         "services/web/scripts/release.ts",
+        "services/web/scripts/task.ts",
+        "services/web/scripts/native.ts",
         "services/web/src/dead.ts",
         "services/web/src/index.ts",
       ]),
       claimableFiles: new Set([
         "services/web/scripts/release.ts",
+        "services/web/scripts/task.ts",
+        "services/web/scripts/native.ts",
         "services/web/src/dead.ts",
         "services/web/src/index.ts",
       ]),

@@ -338,14 +338,15 @@ Acceptance:
 
 Progress:
 
-- `convention:typescript-github-actions` is the first convention family fully
+- `convention:typescript-config-carriers` is the first convention family fully
   transferred from frontend composition to the typed registry path. It reuses
-  the existing recognizer, emits rebased config entrypoints, and is tested both
-  in isolation and through nested repository dispatch.
-- The TypeScript language adapter explicitly defers only
-  `github-actions-run`; direct single-language analysis retains its established
-  frontend path. This prevents duplicate roots while preserving the public
-  compatibility fast path during incremental migration.
+  the existing GitHub Actions, Taskfile, and native build-script recognizers,
+  emits rebased config entrypoints, and is tested both in isolation and through
+  nested repository dispatch.
+- The TypeScript language adapter explicitly defers only those three carrier
+  families; direct single-language analysis retains its established frontend
+  path. This prevents duplicate roots while preserving the public compatibility
+  fast path during incremental migration.
 - Focused verification: 37 convention/plugin/dispatch tests pass (2 Mix-skipped
   under the default shell); typecheck and dependency boundaries pass (913
   modules / 1,955 dependencies).
@@ -358,9 +359,9 @@ Progress:
   derivation boundary. The corpus README now documents active language and
   polyglot scoreboards instead of its obsolete pre-analyzer state.
 
-Next action: migrate the remaining external TypeScript carrier roots as one
-family before moving Elixir literal runtime references and OTP/Phoenix hazards
-behind their own convention plugins.
+Next action: move Elixir literal runtime references and OTP/Phoenix hazards
+behind their own convention plugins, using frontend deferral and the existing
+extractor/tracer facts rather than rescanning or recompiling the project.
 
 ### P6 — Integrated acceptance and release decision
 

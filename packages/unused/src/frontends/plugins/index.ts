@@ -36,4 +36,4 @@ export {
   type RepositoryManifestInventory,
   type RepositoryRelativePath,
 } from "./types.js";
-export { typescriptGithubActionsConventionPlugin } from "./typescript-conventions.js";
+export { typescriptConfigCarriersConventionPlugin } from "./typescript-conventions.js";

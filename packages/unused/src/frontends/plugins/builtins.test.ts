@@ -34,7 +34,7 @@ describe("built-in language plugins", () => {
     expect(registry.conventionPlugins().map((plugin) => plugin.id)).toEqual([
       "convention:rustler-elixir",
       "convention:rustler-rust",
-      "convention:typescript-github-actions",
+      "convention:typescript-config-carriers",
     ]);
     expect(registry.bridgePlugins().map((plugin) => plugin.id)).toEqual(["bridge:rustler"]);
   });
