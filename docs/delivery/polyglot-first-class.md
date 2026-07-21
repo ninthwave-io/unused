@@ -489,7 +489,7 @@ marker.
 
 ### P8 — Elixir test-partition completeness
 
-Status: verification complete; independent review pending
+Status: complete (`af6d953`)
 
 Objective: preserve useful production compiler facts when isolated ExUnit
 compilation is incomplete without allowing any potentially test-reachable
@@ -531,8 +531,107 @@ Verification:
 - the privacy scan finds no added absolute user paths, credential/private-key
   markers, or paths outside the neutral public fixture/docs/package scope.
 
-Next exact action: independent review of the uncommitted diff. Correct any
-evidenced findings, rerun affected gates, then commit one focused checkpoint.
+Independent review approved the complete diff. The accepted checkpoint is
+`af6d953` (`feat: expose incomplete analysis partitions`).
+
+### P9 — Isolated `MIX_ENV=test` support tracing
+
+Status: implementation verified; independent review approved
+
+Objective: trace modules selected by effective test-only `elixirc_paths`
+without starting the application or allowing test-environment compilation to
+contaminate production facts.
+
+Confirmed public reproduction:
+
+- an independently generated Mix application configures
+  `elixirc_paths(:test) == ["lib", "test/support"]`;
+- a test uses a macro defined in `test/support`, and normal `mix test` passes;
+- the accepted `af6d953` analyzer runs its manual ExUnit compile inside the
+  development tracer, cannot load that macro, and publishes a conservative
+  partial test partition.
+
+Approved design:
+
+- keep strict production tracing in the caller's original Mix environment and
+  existing isolated build;
+- run a second phase-aware child with explicit `MIX_ENV=test`, `--no-start`, a
+  distinct isolated build, and dependency links only from the matching test
+  environment;
+- compile the effective test environment, retain facts only from the
+  non-production `elixirc_paths` delta and sorted `test/**/*_test.exs`, and
+  ignore compatible re-emission from production-inventory files;
+- never run `mix test`, require `test_helper.exs`, start the target application,
+  fetch dependencies, or write consumer build artifacts;
+- require an exit-zero child and exactly one complete phase terminal before
+  merging any test facts; exact-dedupe and stable-sort the merged records;
+- discard all test records and mark partial for missing same-environment
+  artifacts, layout/output/protocol failures, timeouts, support/test compile or
+  runtime failures, and novel/conflicting module/file ownership; and
+- retain the schema-1.4 partial diagnostic and production-surface/bridge safety
+  roots unchanged for every incomplete case.
+
+Acceptance before review:
+
+- neutral standard and custom support-path coverage proves correct test-only
+  reachability and complete metadata;
+- tests prove the target app/test helper never starts and both consumer build
+  trees are unchanged;
+- missing test artifacts, support/runtime failure, malformed/partial output,
+  and ownership collision are explicit partial results, never throws or silent
+  completeness;
+- deterministic merge, no-test completeness, JSON stdout purity, existing
+  incomplete `why`/delete behavior, and Rustler bridge safety remain green;
+- update this ledger/progress/ADR/assumption disclosure, run all public gates,
+  then send design/diff/results for independent review before any commit.
+
+Implementation and verification:
+
+- the runner is now a bounded orchestrator over dedicated error, Mix-isolation,
+  phase-protocol, and ownership/merge modules;
+- the phase decoder rejects null, unknown, foreign, malformed, missing, and
+  duplicate records; trace reads are size-bounded before allocation;
+- production/test module and function re-emission must be semantically equal,
+  and production-owned test edges are discarded only when an equivalent
+  production edge exists; novel facts make the test partition partial;
+- effective dependency build paths and `:app` resource contracts come from
+  `Mix.Dep` in each phase: required resources are validated, absent optional or
+  `compile: false, app: false` artifacts remain optional, `app: false` requires
+  no `.app`, and a binary custom `app:` path is followed exactly;
+- caller build semantics are preserved for `MIX_BUILD_ROOT`, `MIX_BUILD_PATH`,
+  `MIX_TARGET`, per-environment and shared builds. An exact `MIX_BUILD_PATH` is
+  shared across phases because Mix defines it as an exact override; otherwise
+  dev/test provenance remains distinct, and all source build trees remain
+  byte/timestamp stable;
+- neutral generated integration cases cover a support macro plus a custom
+  support path, target application and `test_helper` non-start, discovery and
+  timeout failures, missing/optional/app-less/custom-resource artifacts,
+  support/test runtime failure, compiler rejection and direct ownership
+  collision, reflection failure, no-tests completeness, exact/root/target/shared
+  Mix build layouts, provenance, and build non-mutation;
+- `fixtures/elixir/test-support-paths` independently locks macro-expanded
+  standard support and custom effective support-path `why` evidence; ordinary
+  `mix test` passes;
+- focused runner, real-Mix, and analysis coverage passes 64/64;
+- the full Elixir-equipped suite passes 83 files / 1,130 tests with no skips;
+  typecheck, lint (the established 2 warnings / 48 infos), dependency boundaries
+  (923 modules / 2,010 dependencies), assumption-set 1.9 sync, build, and diff
+  checks pass; and
+- all corpus gates retain zero false positives, confidence violations, and
+  unlabelled claims: TypeScript 52 cases / 237 subjects (precision 1.0, recall
+  0.826530612244898), Elixir 12 / 31 (precision 1.0, recall
+  0.9090909090909091), Rust 4 / 12 (precision 1.0, recall
+  0.8333333333333334), and polyglot 1 / 4 (precision/recall 1.0).
+- a packed tarball installs into a fresh npm project; its installed CLI emits
+  diagnostic-free schema-1.4 JSON with boundary metadata, and the archive
+  contains the CLI, claim schema, README, LICENSE, and package metadata; and
+- the privacy scan finds zero consuming-project identifiers, absolute user
+  paths, credential/private-key markers, or non-neutral source material in the
+  tracked diff and untracked delivery files.
+
+Next exact action: checkpoint the independently approved public correction,
+then run the consuming-project verification separately without importing any
+private evidence into this repository.
 
 ## Verification commands
 

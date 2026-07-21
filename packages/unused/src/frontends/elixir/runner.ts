@@ -2,72 +2,67 @@
  * Runs the generated compiler-tracer script against an Elixir project (ADR 0011).
  *
  * The one place `unused` executes user code (disclosed in the assumption set).
- * The flow: inspect Mix without compiling, prepare an isolated temporary build
- * path that reuses the project's already-compiled dependency artifacts, write
- * {@link TRACER_SCRIPT} + an output path there, run the script with Mix's
- * `--no-compile` option and `UNUSED_OUT` pointing at the output file, then parse the
- * JSON-lines it wrote back. The analyzed application's own `_build` artifacts
- * are never rewritten; its tracked `priv` tree is linked into the temporary app
- * layout so compiler-time `Application.app_dir/2` reads keep working.
+ * The flow has two phase-selected child invocations. Production is inspected
+ * and compiled first in the caller's Mix environment. When ExUnit sources
+ * exist, a second child inspects and compiles the effective `MIX_ENV=test`
+ * roots. Each uses a separate temporary build, exact dependency artifact links,
+ * the same generated {@link TRACER_SCRIPT}, and its own phase-delimited output.
+ * The analyzed application's own build artifacts are never rewritten; its
+ * tracked `priv` tree is linked into each temporary app layout so compile-time
+ * `Application.app_dir/2` reads keep working.
  *
  * ## Refusal, never a silently-wrong answer (ADR 0011)
- * Every way the run can fail to produce a trustworthy graph is a *refusal* — a
- * thrown {@link ElixirFrontendError} the CLI maps to a non-zero (exit-2 family)
- * with a clear message, never a partial/empty result mistaken for "nothing is
- * dead":
+ * Production must be complete: a production failure is a *refusal* — a thrown
+ * {@link ElixirFrontendError} the CLI maps to a non-zero (exit-2 family), never
+ * an empty result mistaken for "nothing is dead":
  *  - `mix`/`elixir` not on PATH (spawn `ENOENT`) ⇒ {@link ElixirToolchainError}.
  *  - `mix run` exits non-zero, or the tracer reported a compile error, or the
  *    project's deps are not fetched or not already compiled ⇒ {@link ElixirCompileError}.
  *  - the output file is missing/empty/unparseable ⇒ {@link ElixirCompileError}.
+ *
+ * Test tracing is additive. Discovery, layout, artifact, timeout, execution,
+ * output, compile, or ownership failures discard every test fact and return an
+ * explicit incomplete test partition while preserving verified production
+ * facts. The analyzer then installs conservative completeness roots.
  */
 
 import { spawnSync } from "node:child_process";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { join } from "node:path";
+import { ElixirCompileError, ElixirToolchainError } from "./errors.js";
 import type {
   AppModRecord,
   DepsRecord,
   FunctionRecord,
   ModuleRecord,
+  TestPartitionIncompleteReason,
+  TestTraceResult,
   TraceEvent,
   TraceRecord,
   TraceResult,
 } from "./events.js";
+import {
+  discoverTestFiles,
+  inspectMixLayout,
+  type MixLayout,
+  prepareIsolatedBuild,
+  readBoundedTrace,
+  resolveTestOnlyRoots,
+  type TestInventory,
+} from "./mix-isolation.js";
+import {
+  incompleteTestTrace,
+  mergeTraceResults,
+  stableTraceResult,
+  validateProductionTraceOwnership,
+  validateTestTraceOwnership,
+} from "./trace-merge.js";
+import { decodeTraceRecord, hasConflictingDefinitions, hasValidPhase } from "./trace-protocol.js";
 import { TRACER_SCRIPT } from "./tracer-script.js";
 
-/** Base class for every Elixir-frontend refusal — the CLI prints these plainly (exit 2). */
-export class ElixirFrontendError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ElixirFrontendError";
-  }
-}
-
-/** `elixir`/`mix` is not installed or not on PATH. */
-export class ElixirToolchainError extends ElixirFrontendError {
-  constructor(message: string) {
-    super(message);
-    this.name = "ElixirToolchainError";
-  }
-}
-
-/** The project could not be compiled (deps unfetched, syntax error, tracer failure). */
-export class ElixirCompileError extends ElixirFrontendError {
-  constructor(message: string) {
-    super(message);
-    this.name = "ElixirCompileError";
-  }
-}
+export { ElixirCompileError, ElixirFrontendError, ElixirToolchainError } from "./errors.js";
+export { mergeTraceResults } from "./trace-merge.js";
 
 export interface RunTracerOptions {
   /** Milliseconds before the child `mix` process is killed (default 300_000). */
@@ -83,34 +78,38 @@ export interface RunTracerOptions {
 const DEFAULT_TIMEOUT_MS = 300_000;
 /** The tracer output of a large app can be many MB of JSON-lines. */
 const MAX_BUFFER = 256 * 1024 * 1024;
-const LAYOUT_MARKER = "__UNUSED_MIX_LAYOUT__";
-
-interface MixLayout {
-  readonly app: string;
-  readonly buildPath: string;
-}
 
 /**
  * Run the tracer against the Elixir project rooted at `projectDir` (the
  * directory holding `mix.exs`) and return the parsed {@link TraceResult}.
- * Throws an {@link ElixirFrontendError} on any refusal path.
+ * Throws an {@link ElixirFrontendError} on a production refusal path; returns
+ * an incomplete test partition for a bounded test-phase failure.
  */
 export function runTracer(projectDir: string, options: RunTracerOptions = {}): TraceResult {
   const workDir = mkdtempSync(join(tmpdir(), "unused-ex-"));
   const scriptPath = join(workDir, "unused_tracer.exs");
-  const outPath = join(workDir, "trace.jsonl");
-  const isolatedBuildPath = join(workDir, "build");
+  const productionOutPath = join(workDir, "production-trace.jsonl");
+  const productionBuildPath = join(workDir, "production-build");
   writeFileSync(scriptPath, TRACER_SCRIPT, "utf8");
 
   try {
     const command = options.command ?? "mix";
-    const layout = inspectMixLayout(
+    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const productionLayout = inspectMixLayout(
       command,
       projectDir,
-      join(workDir, "layout-build"),
-      options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      join(workDir, "production-layout-build"),
+      timeoutMs,
     );
-    prepareIsolatedBuild(layout, isolatedBuildPath, projectDir);
+    try {
+      prepareIsolatedBuild(productionLayout, productionBuildPath, projectDir);
+    } catch {
+      throw new ElixirCompileError(
+        "cannot analyze Elixir project: required dependency build artifacts do not exist for " +
+          "this Mix environment. Ensure dependency build artifacts exist from a clean project " +
+          "compile, then retry.",
+      );
+    }
 
     const result = spawnSync(
       command,
@@ -118,12 +117,13 @@ export function runTracer(projectDir: string, options: RunTracerOptions = {}): T
       {
         cwd: projectDir,
         encoding: "utf8",
-        timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        timeout: timeoutMs,
         maxBuffer: MAX_BUFFER,
         env: {
           ...process.env,
-          UNUSED_OUT: outPath,
-          MIX_BUILD_PATH: isolatedBuildPath,
+          UNUSED_OUT: productionOutPath,
+          UNUSED_PHASE: "production",
+          MIX_BUILD_PATH: productionBuildPath,
           MIX_QUIET: "1",
         },
       },
@@ -140,7 +140,7 @@ export function runTracer(projectDir: string, options: RunTracerOptions = {}): T
       if (err.code === "ETIMEDOUT") {
         throw new ElixirCompileError(
           `cannot analyze Elixir project: \`mix compile\` timed out after ${
-            (options.timeoutMs ?? DEFAULT_TIMEOUT_MS) / 1000
+            timeoutMs / 1000
           }s in ${projectDir}.`,
         );
       }
@@ -161,7 +161,7 @@ export function runTracer(projectDir: string, options: RunTracerOptions = {}): T
 
     let raw: string;
     try {
-      raw = readFileSync(outPath, "utf8");
+      raw = readBoundedTrace(productionOutPath);
     } catch {
       throw new ElixirCompileError(
         "cannot analyze Elixir project: the tracer produced no output (the compile may have " +
@@ -169,164 +169,156 @@ export function runTracer(projectDir: string, options: RunTracerOptions = {}): T
       );
     }
 
-    return parseTraceOutput(raw);
+    const production = validateProductionTraceOwnership(
+      parseTraceOutput(raw),
+      productionLayout.sourcePaths,
+    );
+    let testFiles: readonly string[];
+    try {
+      testFiles = discoverTestFiles(projectDir);
+    } catch {
+      return mergeTraceResults(production, incompleteTestTrace("layout"));
+    }
+    if (testFiles.length === 0) return stableTraceResult(production);
+
+    const test = runTestTrace({
+      command,
+      projectDir,
+      workDir,
+      scriptPath,
+      timeoutMs,
+      production,
+      productionLayout,
+      testFiles,
+    });
+    return mergeTraceResults(production, test);
   } finally {
     rmSync(workDir, { recursive: true, force: true });
   }
 }
 
-/**
- * Ask Mix for the effective build path and application name without compiling
- * the project. Loading `mix.exs` still executes the project's Mix configuration
- * (already part of ADR 0011's disclosed trust boundary), but `--no-compile`
- * guarantees this discovery step does not update compiler manifests.
- */
-function inspectMixLayout(
-  command: string,
-  projectDir: string,
-  inspectionBuildPath: string,
-  timeoutMs: number,
-): MixLayout {
-  const expression =
-    'payload = %{app: to_string(Mix.Project.config()[:app] || ""), ' +
-    'build_root: to_string(Mix.Project.config()[:build_path] || ""), ' +
-    "mix_env: to_string(Mix.env())}; " +
-    `IO.puts("${LAYOUT_MARKER}" <> IO.iodata_to_binary(:json.encode(payload)))`;
+function runTestTrace(input: {
+  readonly command: string;
+  readonly projectDir: string;
+  readonly workDir: string;
+  readonly scriptPath: string;
+  readonly timeoutMs: number;
+  readonly production: TraceResult;
+  readonly productionLayout: MixLayout;
+  readonly testFiles: readonly string[];
+}): TestTraceResult {
+  let testLayout: MixLayout;
+  try {
+    testLayout = inspectMixLayout(
+      input.command,
+      input.projectDir,
+      join(input.workDir, "test-layout-build"),
+      input.timeoutMs,
+      "test",
+    );
+  } catch {
+    return incompleteTestTrace("layout");
+  }
+
+  const testOnlyRoots = resolveTestOnlyRoots(
+    input.productionLayout.sourcePaths,
+    testLayout.sourcePaths,
+  );
+  if (testOnlyRoots === null) return incompleteTestTrace("ownership");
+
+  const testBuildPath = join(input.workDir, "test-build");
+  try {
+    prepareIsolatedBuild(testLayout, testBuildPath, input.projectDir);
+  } catch {
+    return incompleteTestTrace("artifacts");
+  }
+
+  let inventory: TestInventory;
+  let inventoryPath: string;
+  let outPath: string;
+  try {
+    inventory = {
+      productionFiles: [...new Set(input.production.modules.map((module) => module.file))].sort(),
+      testOnlyRoots,
+      testFiles: [...input.testFiles].sort(),
+    };
+    inventoryPath = join(input.workDir, "test-inventory.json");
+    outPath = join(input.workDir, "test-trace.jsonl");
+    writeFileSync(inventoryPath, JSON.stringify(inventory), "utf8");
+  } catch {
+    return incompleteTestTrace("output");
+  }
+
   const result = spawnSync(
-    command,
-    ["run", "--no-start", "--no-compile", "--no-deps-check", "-e", expression],
+    input.command,
+    ["run", "--no-start", "--no-compile", "--no-deps-check", input.scriptPath],
     {
-      cwd: projectDir,
+      cwd: input.projectDir,
       encoding: "utf8",
-      timeout: timeoutMs,
+      timeout: input.timeoutMs,
       maxBuffer: MAX_BUFFER,
-      env: { ...process.env, MIX_BUILD_PATH: inspectionBuildPath, MIX_QUIET: "1" },
+      env: {
+        ...process.env,
+        MIX_ENV: "test",
+        MIX_BUILD_PATH: testBuildPath,
+        MIX_QUIET: "1",
+        UNUSED_OUT: outPath,
+        UNUSED_PHASE: "test",
+        UNUSED_INVENTORY: inventoryPath,
+      },
     },
   );
-
-  if (result.error !== undefined) throwSpawnError(result.error, projectDir, timeoutMs);
-  if (result.status !== 0) {
-    const tail = tailLines(result.stderr ?? result.stdout ?? "", 12);
-    throw new ElixirCompileError(
-      `cannot analyze Elixir project: failed to inspect the Mix build in ${projectDir} (exit ${result.status}). ` +
-        "Ensure dependencies are fetched and their build artifacts exist from a clean project compile.\n" +
-        tail,
-    );
+  if (result.error !== undefined) {
+    const reason: TestPartitionIncompleteReason =
+      (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT" ? "timeout" : "execution";
+    return incompleteTestTrace(reason);
   }
-
-  const markerLine = (result.stdout ?? "")
-    .split("\n")
-    .find((line) => line.startsWith(LAYOUT_MARKER));
-  if (markerLine === undefined) {
-    throw new ElixirCompileError(
-      "cannot analyze Elixir project: Mix did not report its build layout.",
-    );
-  }
+  if (result.status !== 0) return incompleteTestTrace("execution");
 
   try {
-    const parsed = JSON.parse(markerLine.slice(LAYOUT_MARKER.length)) as {
-      app?: unknown;
-      build_root?: unknown;
-      mix_env?: unknown;
-    };
-    if (typeof parsed.app !== "string" || parsed.app === "") throw new Error("missing app");
-    if (typeof parsed.build_root !== "string") throw new Error("invalid build root");
-    if (typeof parsed.mix_env !== "string" || parsed.mix_env === "") throw new Error("missing env");
-
-    const { MIX_BUILD_PATH: configuredPath } = process.env;
-    const buildPath = configuredPath
-      ? resolveFromProject(projectDir, configuredPath)
-      : join(resolveFromProject(projectDir, parsed.build_root || "_build"), parsed.mix_env);
-    return { app: parsed.app, buildPath };
+    return validateTestTraceOwnership(
+      input.production,
+      parseTestTraceOutput(readBoundedTrace(outPath)),
+      inventory,
+    );
   } catch {
-    throw new ElixirCompileError(
-      "cannot analyze Elixir project: Mix reported an invalid build layout.",
-    );
+    return incompleteTestTrace("output");
   }
 }
 
-function resolveFromProject(projectDir: string, path: string): string {
-  return isAbsolute(path) ? path : resolve(projectDir, path);
-}
-
-/**
- * Give the application a fresh build tree while reusing dependency artifacts
- * read-only and exposing its tracked `priv` resources. `compile.elixir` only
- * compiles the current application, so dependency links are loaded but never
- * passed to a compiler task.
- */
-function prepareIsolatedBuild(
-  layout: MixLayout,
-  isolatedBuildPath: string,
-  projectDir: string,
-): void {
-  const sourceLib = join(layout.buildPath, "lib");
-  const isolatedLib = join(isolatedBuildPath, "lib");
-  mkdirSync(isolatedLib, { recursive: true });
-
-  // Mix resolves Application.app_dir(app, "priv/...") to this location even
-  // while the application's modules are still being compiled. Mirror Mix's
-  // ordinary priv link in the isolated app layout before compile.elixir runs.
-  // The link exposes tracked resources for reads without copying or writing
-  // anything into the consumer's build tree.
-  const sourcePriv = join(projectDir, "priv");
-  if (existsSync(sourcePriv)) {
-    const isolatedApp = join(isolatedLib, layout.app);
-    mkdirSync(isolatedApp, { recursive: true });
-    symlinkSync(sourcePriv, join(isolatedApp, "priv"), "dir");
-  }
-
-  if (!existsSync(sourceLib)) return;
-
-  for (const entry of readdirSync(sourceLib, { withFileTypes: true })) {
-    if (entry.name === layout.app) continue;
-    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
-    symlinkSync(join(sourceLib, entry.name), join(isolatedLib, entry.name), "dir");
-  }
-}
-
-function throwSpawnError(error: Error, projectDir: string, timeoutMs: number): never {
-  const err = error as NodeJS.ErrnoException;
-  if (err.code === "ENOENT") {
-    throw new ElixirToolchainError(
-      "cannot analyze Elixir project: `mix` was not found on PATH. Install Elixir/OTP " +
-        "(https://elixir-lang.org/install.html) and ensure `mix` is runnable, then retry.",
-    );
-  }
-  if (err.code === "ETIMEDOUT") {
-    throw new ElixirCompileError(
-      `cannot analyze Elixir project: \`mix compile\` timed out after ${timeoutMs / 1000}s in ${projectDir}.`,
-    );
-  }
-  throw new ElixirCompileError(
-    `cannot analyze Elixir project: failed to run \`mix\` in ${projectDir}: ${err.message}`,
-  );
-}
-
-/** Parse the JSON-lines the tracer wrote into a structured {@link TraceResult}. */
 export function parseTraceOutput(raw: string): TraceResult {
   const events: TraceEvent[] = [];
   const modules: ModuleRecord[] = [];
   const functions: FunctionRecord[] = [];
+  const records: TraceRecord[] = [];
   let appMod: string | null = null;
   let deps: readonly string[] = [];
   let compileOk = true;
   let sawCompileError = false;
-  let testPartition: TraceResult["testPartition"] = "complete";
+  const testPartition: TraceResult["testPartition"] = "complete";
   const compileErrorDetails: string[] = [];
+  let malformed = false;
+  let metaCount = 0;
+  let depsCount = 0;
+  let appModCount = 0;
+  let compileErrorCount = 0;
 
   const lines = raw.split("\n");
   for (const line of lines) {
     const trimmed = line.trim();
     if (trimmed === "") continue;
-    let record: TraceRecord;
+    let record: TraceRecord | null;
     try {
-      record = JSON.parse(trimmed) as TraceRecord;
+      record = decodeTraceRecord(JSON.parse(trimmed), "production");
     } catch {
-      // A stray non-JSON line (a warning leaked into the file) is ignored — the
-      // tracer writes only JSON, but degrade rather than abort on noise.
+      malformed = true;
       continue;
     }
+    if (record === null) {
+      malformed = true;
+      continue;
+    }
+    records.push(record);
     switch (record.k) {
       case "event":
         events.push(record);
@@ -338,15 +330,19 @@ export function parseTraceOutput(raw: string): TraceResult {
         functions.push(record);
         break;
       case "app_mod":
+        appModCount += 1;
         appMod = (record as AppModRecord).mod;
         break;
       case "deps":
+        depsCount += 1;
         deps = (record as DepsRecord).names;
         break;
       case "meta":
+        metaCount += 1;
         compileOk = record.compile_ok;
         break;
       case "compile_error":
+        compileErrorCount += 1;
         sawCompileError = true;
         if ("details" in record && Array.isArray(record.details)) {
           compileErrorDetails.push(
@@ -354,20 +350,37 @@ export function parseTraceOutput(raw: string): TraceResult {
           );
         }
         break;
-      case "test_compile_error":
-        testPartition = "incomplete";
-        break;
       default:
         break;
     }
   }
 
+  const productionComplete = hasValidPhase(records, "production", "complete");
+  const productionIncomplete = hasValidPhase(records, "production", "incomplete");
+  if (
+    malformed ||
+    (!productionComplete && !productionIncomplete) ||
+    metaCount !== 1 ||
+    depsCount !== 1 ||
+    appModCount > 1 ||
+    compileErrorCount > 1 ||
+    hasConflictingDefinitions(modules, functions)
+  ) {
+    throw new ElixirCompileError(
+      "cannot analyze Elixir project: the production tracer emitted an incomplete or malformed phase protocol.",
+    );
+  }
   if (sawCompileError || !compileOk) {
     const details = compileErrorDetails.length > 0 ? `\n${compileErrorDetails.join("\n")}` : "";
     throw new ElixirCompileError(
       "cannot analyze Elixir project: `mix compile` reported errors. Fix the compile errors " +
         "and ensure dependency build artifacts exist from a clean project compile, then retry." +
         details,
+    );
+  }
+  if (!productionComplete) {
+    throw new ElixirCompileError(
+      "cannot analyze Elixir project: the production tracer did not complete.",
     );
   }
   if (modules.length === 0) {
@@ -378,6 +391,59 @@ export function parseTraceOutput(raw: string): TraceResult {
   }
 
   return { events, modules, functions, appMod, deps, compileOk, testPartition };
+}
+
+/** Parse one isolated test child. Invalid/partial output is bounded, never thrown. */
+export function parseTestTraceOutput(raw: string): TestTraceResult {
+  const events: TraceEvent[] = [];
+  const modules: ModuleRecord[] = [];
+  const functions: FunctionRecord[] = [];
+  const records: TraceRecord[] = [];
+  let malformed = false;
+  let sawCompileError = false;
+
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed === "") continue;
+    let record: TraceRecord | null;
+    try {
+      record = decodeTraceRecord(JSON.parse(trimmed), "test");
+    } catch {
+      malformed = true;
+      continue;
+    }
+    if (record === null) {
+      malformed = true;
+      continue;
+    }
+    records.push(record);
+    switch (record.k) {
+      case "event":
+        if (record.partition === "test") events.push(record);
+        break;
+      case "module":
+        if (record.partition === "test") modules.push(record);
+        break;
+      case "function":
+        if (record.partition === "test") functions.push(record);
+        break;
+      case "test_compile_error":
+        sawCompileError = true;
+        break;
+      default:
+        break;
+    }
+  }
+
+  if (
+    malformed ||
+    !hasValidPhase(records, "test", "complete") ||
+    hasConflictingDefinitions(modules, functions)
+  ) {
+    return incompleteTestTrace(sawCompileError ? "compile" : "output");
+  }
+  if (sawCompileError) return incompleteTestTrace("compile");
+  return { events, modules, functions, testPartition: "complete" };
 }
 
 function tailLines(text: string, n: number): string {

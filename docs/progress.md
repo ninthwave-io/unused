@@ -2,6 +2,23 @@
 
 Updated: 2026-07-21. **Pre-v0.1.0 scaling, runtime reachability, and first-class polyglot delivery are technically accepted; the founder release action remains.** No semver release tag has been created.
 
+Active public checkpoint — isolated Mix test environment: the approved
+phase-delimited production plus explicit `MIX_ENV=test` correction is implemented
+and verified; fresh independent re-review reports no residual findings. Effective
+standard/custom support paths and sorted tests contribute bounded test facts
+without starting the analyzed application or requiring `test_helper`; matching
+dependency artifacts are linked read-only from their own environment. Strict
+protocol, reflection, artifact, and ownership failures discard every test fact
+and retain the schema-1.4 partial boundary and safety roots. Focused runner,
+real-Mix, and analysis coverage passes 64/64, and the full Elixir-equipped suite
+passes 83 files / 1,130 tests with no skips. Assumption set 1.9 and all four
+scoreboards are synchronized; Elixir is 12 cases / 31 subjects, precision 1.0,
+recall 0.9090909090909091, with zero false positives, confidence violations, or
+unlabelled claims. Typecheck, lint (the established 2 warnings / 48 infos),
+boundaries (923 modules / 2,010 dependencies), build, installed-tarball, diff,
+and privacy smokes pass. The exact resume state and private-rerun handoff are P9 in
+`docs/delivery/polyglot-first-class.md`.
+
 Completed programme: ADR 0013 first-class TypeScript/Elixir/Rust orchestration
 and Rustler/NIF bridging. The authoritative acceptance and resume state lives in
 `docs/delivery/polyglot-first-class.md`; chat history is not authoritative.
@@ -14,7 +31,7 @@ three languages. Claim ids and `idVersion: 1` are unchanged. Full verification
 passes at 81 test files / 1,066 tests, and the installed-package and privacy
 smokes pass.
 
-Elixir test-partition completeness (verification complete; review pending,
+Elixir test-partition completeness (accepted in `af6d953`,
 2026-07-21): the tracer's
 existing best-effort test compile failure is now an explicit schema 1.4.0
 partial boundary with production/config/test status. A conservative safety
@@ -27,8 +44,8 @@ lint (the established 2 warnings / 48 informational diagnostics), boundaries
 (917 modules / 1,982 dependencies), assumptions 1.8, build, installed-package,
 diff, and privacy gates pass. Elixir corpus is 11 cases / 29 subjects at
 precision 1.0 and recall 0.9090909090909091; its one deliberate miss records
-the fail-closed incomplete partition. Independent review is required before
-commit.
+the fail-closed incomplete partition. Independent review approved the committed
+completeness/schema contract.
 
 Elixir compiler-boundary hardening (2026-07-21): tracer compilation now uses a
 temporary `MIX_BUILD_PATH`, reuses existing dependency artifacts read-only, and

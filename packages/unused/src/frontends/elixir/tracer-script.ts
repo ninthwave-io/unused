@@ -5,7 +5,7 @@
  * target project's directory (see `runner.ts`). It is the one place `unused`
  * executes user code — disclosed in the assumption set, never hidden.
  *
- * What it does, in order:
+ * What it does for the phase selected by `UNUSED_PHASE`:
  *  1. Defines `Unused.Tracer`, a compiler tracer (`Code` moduledoc contract:
  *     `trace/2`) that records `remote_function`/`remote_macro`/
  *     `imported_function`/`local_function`/`alias_reference`/`struct_expansion`
@@ -13,9 +13,9 @@
  *     site's file/line, plus a `dyn` flag for `apply`/`Module.concat`-style
  *     dynamic-dispatch call sites.
  *  2. Registers the tracer via `Code.put_compiler_option(:tracers, …)` and
- *     force-compiles the project's lib with `Mix.Task.rerun("compile.elixir",
- *     ["--force", "--return-errors"])` inside a temporary build path prepared
- *     by the runner. `compile.elixir` (not the umbrella
+ *     force-compiles the phase's effective `elixirc_paths` with
+ *     `Mix.Task.rerun("compile.elixir", ["--force", "--return-errors"])`
+ *     inside a temporary build path prepared by the runner. `compile.elixir` (not the umbrella
  *     `compile` task) is the task that merges the runtime-set tracer option
  *     (verified: the umbrella task drops it).
  *  3. Reflects the compiled BEAM modules for the public-function surface
@@ -23,15 +23,13 @@
  *     reflection helpers), source file, definition lines (`Code.fetch_docs`),
  *     and behaviour/protocol/impl markers (`__info__(:attributes)`,
  *     `__protocol__/1`, `__impl__/1`) — the hazard-classification inputs.
- *  4. Best-effort compiles the ExUnit test files (under `test/`, `_test.exs`) with the
- *     same tracer to capture the test partition (test → lib references), tagged
- *     `partition: "test"`. Wrapped so a test-compile failure never aborts the
- *     production analysis.
- *  5. Reads the OTP application callback (`:application.get_key(app, :mod)`) and
- *     the declared dependency app names, for entrypoint/Phoenix detection.
+ *  4. In the production child, reads the OTP application callback and declared
+ *     dependency names. In the separate test child, compiles only the runner's
+ *     sorted ExUnit inventory after the effective test support paths, without
+ *     requiring `test_helper.exs` or starting the target application.
  *
  * Output: JSON-lines to the file named by the `UNUSED_OUT` env var — one object
- * per event / module / function / meta record, each tagged with a `k` kind.
+ * per phase/event/module/function/meta record, each tagged with a `k` kind.
  * `:json.encode/1` (OTP 27+) does the encoding; Elixir 1.20/OTP 29 is the
  * verified floor (ADR 0011).
  */
@@ -90,12 +88,14 @@ defmodule Unused.Reflect do
 
   # Emit one module record + one record per public, non-generated function.
   def dump_module(emit, mod, root, partition) do
-    src = try do to_string(mod.module_info(:compile)[:source]) rescue _ -> "" end
-    rel = Path.relative_to(src, root)
-    cond do
-      src == "" or String.starts_with?(rel, "..") or String.starts_with?(rel, "/") -> :ok
-      true ->
-        attrs = try do mod.__info__(:attributes) rescue _ -> [] end
+    try do
+      src = to_string(mod.module_info(:compile)[:source])
+      rel = Path.relative_to(src, root)
+      cond do
+        src == "" or String.starts_with?(rel, "..") or String.starts_with?(rel, "/") ->
+          {:error, :external_source}
+        true ->
+        attrs = mod.__info__(:attributes)
         behaviours = Keyword.get_values(attrs, :behaviour) |> List.flatten() |> Enum.map(&inspect/1)
         impl = function_exported?(mod, :__impl__, 1)
         proto = function_exported?(mod, :__protocol__, 1)
@@ -110,7 +110,7 @@ defmodule Unused.Reflect do
         emit.(%{"k" => "module", "mod" => inspect(mod), "file" => rel, "line" => modline,
                 "behaviours" => behaviours, "protocol" => proto, "impl" => impl,
                 "partition" => partition})
-        funs = try do mod.__info__(:functions) rescue _ -> [] end
+        funs = mod.__info__(:functions)
         Enum.each(funs, fn {n, a} ->
           unless generated?(n) do
             emit.(%{"k" => "function", "mod" => inspect(mod), "name" => to_string(n),
@@ -118,7 +118,32 @@ defmodule Unused.Reflect do
                     "partition" => partition})
           end
         end)
+        :ok
+      end
+    rescue
+      _ -> {:error, :reflection}
+    catch
+      _, _ -> {:error, :reflection}
     end
+  end
+end
+
+defmodule Unused.Output do
+  @moduledoc false
+
+  def dump_events(emit, root, partition) do
+    :ets.tab2list(:unused_events)
+    |> Enum.map(fn {event} -> event end)
+    |> Enum.sort()
+    |> Enum.each(fn {kind, file, line, from_mod, from_fun, to_mod, name, arity, dyn} ->
+      base = %{"k" => "event", "kind" => kind, "file" => Path.relative_to(file, root),
+               "line" => line, "from_mod" => from_mod, "to_mod" => to_mod, "dyn" => dyn,
+               "partition" => partition}
+      base = if from_fun, do: Map.put(base, "from_fun", from_fun), else: base
+      base = if name, do: Map.put(base, "name", name), else: base
+      base = if arity != nil, do: Map.put(base, "arity", arity), else: base
+      emit.(base)
+    end)
   end
 end
 
@@ -127,126 +152,142 @@ out = System.get_env("UNUSED_OUT")
 {:ok, io} = File.open(out, [:write, :utf8])
 emit = fn map -> IO.puts(io, IO.iodata_to_binary(:json.encode(map))) end
 root = File.cwd!()
+phase = System.get_env("UNUSED_PHASE") || "production"
+emit.(%{"k" => "phase", "phase" => phase, "status" => "started"})
 
-# --- compile lib with the tracer -------------------------------------------
 :ets.new(:unused_events, [:public, :named_table, :duplicate_bag, write_concurrency: true])
 Code.put_compiler_option(:tracers, [Unused.Tracer])
 
-compile_ok =
-  case Mix.Task.rerun("compile.elixir", ["--force", "--return-errors"]) do
-    {:error, diagnostics} when is_list(diagnostics) and diagnostics != [] ->
-      emit.(%{"k" => "compile_error", "count" => length(diagnostics),
-              "details" => Enum.map(diagnostics, &inspect/1)})
-      false
-    _ -> true
-  end
-
-# The runner deliberately entered with no application artifacts in
-# the isolated build. Generate the .app resource there so application callback
-# discovery below remains compiler-backed without touching the project's build.
-if compile_ok, do: Mix.Task.rerun("compile.app", ["--force"])
-
-emit.(%{"k" => "meta", "compile_ok" => compile_ok})
-
-# --- application callback + dependency app names ----------------------------
-app = Mix.Project.config()[:app]
-
-case app && :application.get_key(app, :mod) do
-  {:ok, {mod, _args}} -> emit.(%{"k" => "app_mod", "mod" => inspect(mod)})
-  _ -> :ok
-end
-
-deps =
-  (Mix.Project.config()[:deps] || [])
-  |> Enum.map(fn t -> elem(t, 0) end)
-  |> Enum.map(&to_string/1)
-
-emit.(%{"k" => "deps", "names" => deps})
-
-# --- production events + module/function definitions ------------------------
-:ets.tab2list(:unused_events)
-|> Enum.map(fn {t} -> t end)
-|> Enum.each(fn {kind, file, line, from_mod, from_fun, to_mod, name, arity, dyn} ->
-  base = %{"k" => "event", "kind" => kind, "file" => Path.relative_to(file, root),
-           "line" => line, "from_mod" => from_mod, "to_mod" => to_mod, "dyn" => dyn,
-           "partition" => "prod"}
-  base = if from_fun, do: Map.put(base, "from_fun", from_fun), else: base
-  base = if name, do: Map.put(base, "name", name), else: base
-  base = if arity != nil, do: Map.put(base, "arity", arity), else: base
-  emit.(base)
-end)
-
-ebin = Mix.Project.compile_path()
-lib_mods =
-  Path.wildcard(Path.join(ebin, "*.beam"))
-  |> Enum.map(fn p -> p |> Path.basename(".beam") |> String.to_atom() end)
-
-Enum.each(lib_mods, fn mod ->
-  Code.ensure_loaded(mod)
-  Unused.Reflect.dump_module(emit, mod, root, "prod")
-end)
-
-# --- test partition (best effort, fully isolated) --------------------------
-# ExUnit test files are compiled in MIX_ENV=test and NOT part of mix compile,
-# so compile them separately with the same tracer. This is STRICTLY best
-# effort: a real app's test file often runs module-level code (a factory
-# calling a GenServer) that, under --no-start, EXITS rather than raises. An
-# exit from a linked ParallelCompiler worker would kill this whole process and
-# fail the analysis — so the test compile runs inside a MONITORED child
-# process. A crash there sends us a :DOWN we absorb; production analysis
-# (already fully emitted above) always stands.
-test_files = Path.wildcard("test/**/*_test.exs")
-
-if test_files != [] do
-  :ets.delete_all_objects(:unused_events)
-  parent = self()
-  {pid, ref} =
-    spawn_monitor(fn ->
-      try do
-        Application.ensure_all_started(:ex_unit)
-        helper = "test/test_helper.exs"
-        if File.exists?(helper), do: Code.require_file(helper)
-        result = Kernel.ParallelCompiler.compile(test_files, tracers: [Unused.Tracer])
-        send(parent, {:test_result, result})
-      catch
-        _kind, _reason -> send(parent, {:test_result, :error})
+case phase do
+  "production" ->
+    compile_ok =
+      case Mix.Task.rerun("compile.elixir", ["--force", "--return-errors"]) do
+        {:error, diagnostics} when is_list(diagnostics) and diagnostics != [] ->
+          emit.(%{"k" => "compile_error", "count" => length(diagnostics),
+                  "details" => Enum.map(diagnostics, &inspect/1)})
+          false
+        _ -> true
       end
-    end)
 
-  {mods, ok} =
-    receive do
-      {:test_result, {:ok, test_mods, _warnings}} -> {test_mods, true}
-      {:test_result, _} -> {[], false}
-      {:DOWN, ^ref, :process, ^pid, _reason} -> {[], false}
-    after
-      120_000 -> {[], false}
+    # Generate the isolated .app resource for compiler-backed callback lookup.
+    if compile_ok, do: Mix.Task.rerun("compile.app", ["--force"])
+
+    app = Mix.Project.config()[:app]
+    case app && :application.get_key(app, :mod) do
+      {:ok, {mod, _args}} -> emit.(%{"k" => "app_mod", "mod" => inspect(mod)})
+      _ -> :ok
     end
 
-  if ok do
-    :ets.tab2list(:unused_events)
-    |> Enum.map(fn {t} -> t end)
-    |> Enum.each(fn {kind, file, line, from_mod, from_fun, to_mod, name, arity, dyn} ->
-      base = %{"k" => "event", "kind" => kind, "file" => Path.relative_to(file, root),
-               "line" => line, "from_mod" => from_mod, "to_mod" => to_mod, "dyn" => dyn,
-               "partition" => "test"}
-      base = if from_fun, do: Map.put(base, "from_fun", from_fun), else: base
-      base = if name, do: Map.put(base, "name", name), else: base
-      base = if arity != nil, do: Map.put(base, "arity", arity), else: base
-      emit.(base)
-    end)
-    Enum.each(mods, fn mod ->
-      try do
-        Code.ensure_loaded(mod)
-        Unused.Reflect.dump_module(emit, mod, root, "test")
-      catch
-        _k, _r -> :ok
-      rescue
-        _ -> :ok
+    deps =
+      (Mix.Project.config()[:deps] || [])
+      |> Enum.map(fn t -> elem(t, 0) end)
+      |> Enum.map(&to_string/1)
+    emit.(%{"k" => "deps", "names" => deps})
+
+    reflection_ok =
+      if compile_ok do
+        Unused.Output.dump_events(emit, root, "prod")
+        Mix.Project.compile_path()
+        |> Path.join("*.beam")
+        |> Path.wildcard()
+        |> Enum.sort()
+        |> Enum.map(fn path -> path |> Path.basename(".beam") |> String.to_atom() end)
+        |> Enum.reduce_while(true, fn mod, _acc ->
+          with {:module, ^mod} <- Code.ensure_loaded(mod),
+               :ok <- Unused.Reflect.dump_module(emit, mod, root, "prod") do
+            {:cont, true}
+          else
+            _ -> {:halt, false}
+          end
+        end)
+      else
+        false
       end
-    end)
-  else
-    emit.(%{"k" => "test_compile_error"})
-  end
+
+    complete = compile_ok and reflection_ok
+    if compile_ok and not reflection_ok do
+      emit.(%{"k" => "compile_error", "count" => 1,
+              "details" => ["module reflection incomplete"]})
+    end
+    emit.(%{"k" => "meta", "compile_ok" => complete})
+    emit.(%{"k" => "phase", "phase" => "production",
+            "status" => if(complete, do: "complete", else: "incomplete")})
+
+  "test" ->
+    inventory =
+      System.fetch_env!("UNUSED_INVENTORY")
+      |> File.read!()
+      |> :json.decode()
+    test_files = Map.fetch!(inventory, "testFiles") |> Enum.sort()
+
+    support_ok =
+      case Mix.Task.rerun("compile.elixir", ["--force", "--return-errors"]) do
+        {:error, _diagnostics} -> false
+        _ -> true
+      end
+
+    {test_mods, tests_ok} =
+      if support_ok do
+        parent = self()
+        {pid, ref} =
+          spawn_monitor(fn ->
+            try do
+              Application.ensure_all_started(:ex_unit)
+              ExUnit.start(autorun: false)
+              result = Kernel.ParallelCompiler.compile(test_files, tracers: [Unused.Tracer])
+              send(parent, {:test_result, result})
+            catch
+              _kind, _reason -> send(parent, {:test_result, :error})
+            end
+          end)
+
+        receive do
+          {:test_result, {:ok, modules, _warnings}} -> {modules, true}
+          {:test_result, _} -> {[], false}
+          {:DOWN, ^ref, :process, ^pid, _reason} -> {[], false}
+        after
+          120_000 -> {[], false}
+        end
+      else
+        {[], false}
+      end
+
+    compile_complete = support_ok and tests_ok
+    reflection_ok =
+      if compile_complete do
+      support_mods =
+        Mix.Project.compile_path()
+        |> Path.join("*.beam")
+        |> Path.wildcard()
+        |> Enum.sort()
+        |> Enum.map(fn path -> path |> Path.basename(".beam") |> String.to_atom() end)
+
+      (support_mods ++ test_mods)
+      |> Enum.uniq()
+      |> Enum.sort()
+      |> Enum.reduce_while(true, fn mod, _acc ->
+        with {:module, ^mod} <- Code.ensure_loaded(mod),
+             :ok <- Unused.Reflect.dump_module(emit, mod, root, "test") do
+          {:cont, true}
+        else
+          _ -> {:halt, false}
+        end
+      end)
+      else
+        false
+      end
+
+    complete = compile_complete and reflection_ok
+    if complete do
+      Unused.Output.dump_events(emit, root, "test")
+    else
+      emit.(%{"k" => "test_compile_error"})
+    end
+    emit.(%{"k" => "phase", "phase" => "test",
+            "status" => if(complete, do: "complete", else: "incomplete")})
+
+  _ ->
+    emit.(%{"k" => "phase", "phase" => phase, "status" => "incomplete"})
 end
 
 File.close(io)

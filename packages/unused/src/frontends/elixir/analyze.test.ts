@@ -17,6 +17,9 @@ const completeTestFixture = fileURLToPath(
 const incompleteTestFixture = fileURLToPath(
   new URL("../../../../../fixtures/elixir/incomplete-test-partition", import.meta.url),
 );
+const testSupportFixture = fileURLToPath(
+  new URL("../../../../../fixtures/elixir/test-support-paths", import.meta.url),
+);
 const temporaryProjects: string[] = [];
 const MIX_AVAILABLE = isMixAvailable();
 
@@ -145,6 +148,55 @@ describe("Elixir analysis policy", () => {
         unsupportedReason:
           "selected subject has a live analysis-completeness reference at mix.exs:1",
       });
+    },
+    30_000,
+  );
+
+  it.skipIf(!MIX_AVAILABLE)(
+    "traces standard and custom effective test-support paths with why evidence",
+    async () => {
+      const analysis = await analyzeElixirProjectWithGraph(testSupportFixture, {
+        now: new Date(0),
+      });
+      expect(analysis.result.run.boundaries).toEqual([
+        {
+          status: "complete",
+          pluginId: "language:elixir",
+          boundaryId: "ex:.",
+          language: "ex",
+          fileCount: 4,
+          workspaceCount: 1,
+          partitions: { production: "complete", config: "complete", test: "complete" },
+        },
+      ]);
+      expect(analysis.result.diagnostics).toBeUndefined();
+      expect(analysis.result.claims).toEqual([]);
+
+      for (const [query, supportFile] of [
+        ["NeutralSupport.Subject.reached_from_standard_support/0", "test/subject_test.exs"],
+        [
+          "NeutralSupport.Subject.reached_from_custom_support/0",
+          "test/custom_helpers/custom_case.ex",
+        ],
+      ] as const) {
+        const why = whyAlive({
+          graph: analysis.graph,
+          reachability: analysis.reachability,
+          claims: analysis.result.claims,
+          query,
+        });
+        expect(why).toMatchObject({
+          outcome: "alive",
+          entrypointKind: "test",
+          testOnly: true,
+          paths: [{ entrypointReason: "exunit-test" }],
+        });
+        if (why.outcome !== "alive") throw new Error("expected test-only liveness");
+        expect(why.paths[0]?.hops.map((hop) => hop.file)).toEqual([
+          supportFile,
+          "lib/neutral_support/subject.ex",
+        ]);
+      }
     },
     30_000,
   );

@@ -78,10 +78,18 @@ export interface MetaRecord {
 export interface CompileErrorRecord {
   readonly k: "compile_error";
   readonly count: number;
+  readonly details?: readonly string[];
 }
 
 export interface TestCompileErrorRecord {
   readonly k: "test_compile_error";
+}
+
+/** Delimits one child trace so truncated/cross-phase output is never merged. */
+export interface PhaseRecord {
+  readonly k: "phase";
+  readonly phase: "production" | "test";
+  readonly status: "started" | "complete" | "incomplete";
 }
 
 /** Completeness of the separately compiled ExUnit source partition. */
@@ -95,7 +103,8 @@ export type TraceRecord =
   | DepsRecord
   | MetaRecord
   | CompileErrorRecord
-  | TestCompileErrorRecord;
+  | TestCompileErrorRecord
+  | PhaseRecord;
 
 /** The runner's structured result: every record, plus the compile-ok signal. */
 export interface TraceResult {
@@ -114,4 +123,24 @@ export interface TraceResult {
    * complete while this partition is incomplete.
    */
   readonly testPartition: TestPartitionStatus;
+  /** Sanitized internal reason for an incomplete test partition. */
+  readonly testPartitionReason?: TestPartitionIncompleteReason;
+}
+
+export type TestPartitionIncompleteReason =
+  | "layout"
+  | "artifacts"
+  | "timeout"
+  | "execution"
+  | "output"
+  | "compile"
+  | "ownership";
+
+/** Structured facts accepted from the isolated test-phase child. */
+export interface TestTraceResult {
+  readonly events: readonly TraceEvent[];
+  readonly modules: readonly ModuleRecord[];
+  readonly functions: readonly FunctionRecord[];
+  readonly testPartition: TestPartitionStatus;
+  readonly testPartitionReason?: TestPartitionIncompleteReason;
 }

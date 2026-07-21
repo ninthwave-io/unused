@@ -59,3 +59,37 @@ and public function alive, including exact cross-language bridge descendants.
 Potentially test-reachable subjects therefore produce neither claims nor
 supported deletion plans. One deterministic diagnostic is emitted on stderr;
 canonical JSON stdout contains only structured completeness metadata.
+
+## Implementation amendment — separate Mix test environment (2026-07-21)
+
+Production and test facts are traced by separate child invocations. Production
+keeps the caller's original Mix environment and strict refusal contract. The
+test partition runs under explicit `MIX_ENV=test`, `--no-start`, and a distinct
+temporary build whose dependency links come only from the consumer's matching
+test-environment build. Neither child writes to the consumer build, and the
+test child never starts the analyzed application, runs `mix test`, or requires
+`test/test_helper.exs`.
+
+Dependency artifacts are derived from each cached `Mix.Dep` rather than an
+assumed `_build/<env>/lib/<app>` layout. The runner preserves Mix's
+`MIX_BUILD_ROOT`, exact `MIX_BUILD_PATH`, `MIX_TARGET`, and
+`build_per_environment` semantics, follows each dependency's actual build path,
+and validates its default or custom `.app` resource unless `app: false`.
+Absent optional dependencies and `compile: false, app: false` data dependencies
+do not make an otherwise complete partition partial.
+
+The test child compiles the effective test environment, but retains facts only
+from the non-production `elixirc_paths` delta (conventionally `test/support`)
+and deterministically sorted ExUnit source files. Compatible re-emission from
+production-inventory files is ignored, so production facts remain solely those
+observed in the original environment. Novel/conflicting module identity or
+file ownership is incomplete rather than merged speculatively.
+
+Each child writes a phase-delimited structured trace. Test facts are merged only
+after an exit-zero child produces exactly one complete terminal record; partial
+or malformed output is discarded. Missing same-environment dependency
+artifacts, layout failures, timeouts, support/test compilation failures,
+runtime exits, and module/file ownership collisions all produce the existing
+explicit partial boundary, sanitized diagnostic, and production-surface safety
+roots. They never abort already-complete production analysis or masquerade as a
+complete test partition.

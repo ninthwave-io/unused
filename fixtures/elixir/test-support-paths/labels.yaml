@@ -1,0 +1,18 @@
+case: test-support-paths
+description: >-
+  Standard and custom paths selected by elixirc_paths(:test) are compiled in
+  the isolated test environment, so production code reached through either
+  support module is never falsely claimed unused.
+subjects:
+  - kind: export
+    name: NeutralSupport.Subject.reached_from_standard_support/0
+    file: lib/neutral_support/subject.ex
+    expected: alive
+    because: >-
+      The function is reached through the conventional test/support module.
+  - kind: export
+    name: NeutralSupport.Subject.reached_from_custom_support/0
+    file: lib/neutral_support/subject.ex
+    expected: alive
+    because: >-
+      The function is reached through the custom effective test support path.
