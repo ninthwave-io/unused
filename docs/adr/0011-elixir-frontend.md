@@ -93,3 +93,22 @@ runtime exits, and module/file ownership collisions all produce the existing
 explicit partial boundary, sanitized diagnostic, and production-surface safety
 roots. They never abort already-complete production analysis or masquerade as a
 complete test partition.
+
+## Implementation amendment — load-free BEAM reflection (2026-07-22)
+
+After compilation, both phases enumerate sorted BEAM paths in the isolated
+application compile directory. Reflection reads the module identity, compile
+source, attributes, and exports through `:beam_lib`, and reads EEP-48
+documentation by file path for optional line evidence. It does not call
+`Code.ensure_loaded`, `module_info`, `__info__`, or `function_exported?` on a
+project module. A compiled module whose native `@on_load` hook cannot run in the
+isolated application can therefore still be analyzed without executing that
+hook.
+
+The persisted attribute shapes provide behaviour, protocol, and implementation
+markers. The export surface excludes VM/Elixir reflection helpers and raw
+`MACRO-*` implementation exports. Missing documentation is valid and yields
+line zero; a missing or malformed module identity, compile source, attributes,
+exports, behaviour shape, or BEAM container remains a production refusal or a
+bounded incomplete test partition. Test files use `compile_to_path` so their
+BEAM metadata is available inside the same temporary, non-consumer build.

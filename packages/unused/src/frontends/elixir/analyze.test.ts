@@ -1,4 +1,6 @@
-import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { cp, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +9,7 @@ import { computeDeletionPlan, whyAlive } from "../../core/analysis/index.js";
 import { isMixAvailable } from "../../testing/corpus/elixir-corpus.js";
 import { ConfigError } from "../ts/config.js";
 import { analyzeElixirProject, analyzeElixirProjectWithGraph } from "./analyze.js";
+import { runTracer } from "./runner.js";
 
 const sourceFixture = fileURLToPath(
   new URL("../../../../../fixtures/elixir/basic-dead-function", import.meta.url),
@@ -20,6 +23,9 @@ const incompleteTestFixture = fileURLToPath(
 const testSupportFixture = fileURLToPath(
   new URL("../../../../../fixtures/elixir/test-support-paths", import.meta.url),
 );
+const onLoadFixture = fileURLToPath(
+  new URL("../../../../../fixtures/elixir/on-load-beam-reflection", import.meta.url),
+);
 const temporaryProjects: string[] = [];
 const MIX_AVAILABLE = isMixAvailable();
 
@@ -27,6 +33,13 @@ async function copyFixture(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "unused-elixir-policy-"));
   temporaryProjects.push(root);
   await cp(sourceFixture, root, { recursive: true });
+  return root;
+}
+
+async function copyFixtureFrom(source: string): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), "unused-elixir-policy-"));
+  temporaryProjects.push(root);
+  await cp(source, root, { recursive: true });
   return root;
 }
 
@@ -45,6 +58,97 @@ describe("Elixir analysis policy", () => {
 
     await expect(analyzeElixirProject(root)).rejects.toBeInstanceOf(ConfigError);
   });
+
+  it.skipIf(!MIX_AVAILABLE)(
+    "reflects failing-on-load modules from BEAM paths without executing their hooks",
+    async () => {
+      const root = await copyFixtureFrom(onLoadFixture);
+      const marker = join(root, ".neutral-on-load-ran");
+      const compile = spawnSync("mix", ["compile"], { cwd: root, encoding: "utf8" });
+      expect(compile.status, compile.stderr || compile.stdout).toBe(0);
+      expect(existsSync(marker)).toBe(false);
+
+      const explicitLoad = spawnSync(
+        "mix",
+        [
+          "run",
+          "--no-start",
+          "-e",
+          "case Code.ensure_loaded(NeutralOnLoad.NativeBoundary) do " +
+            "{:error, :on_load_failure} -> System.halt(0); " +
+            "other -> IO.inspect(other); System.halt(1) end",
+        ],
+        { cwd: root, encoding: "utf8" },
+      );
+      expect(explicitLoad.status, explicitLoad.stderr || explicitLoad.stdout).toBe(0);
+      expect(existsSync(marker)).toBe(true);
+      await unlink(marker);
+
+      const trace = runTracer(root);
+      expect(trace.testPartition).toBe("complete");
+      expect(trace.modules).toContainEqual(
+        expect.objectContaining({
+          mod: "NeutralOnLoad.NativeBoundary",
+          behaviours: ["NeutralOnLoad.Callback"],
+          protocol: false,
+          impl: false,
+        }),
+      );
+      const nativeFunctions = trace.functions.filter(
+        (fn) => fn.mod === "NeutralOnLoad.NativeBoundary",
+      );
+      expect(nativeFunctions.map((fn) => `${fn.name}/${fn.arity}`)).toEqual([
+        "perform/0",
+        "reachable/0",
+        "unused_sibling/0",
+        "with_default/0",
+        "with_default/1",
+      ]);
+      const defaultWrappers = nativeFunctions.filter((fn) => fn.name === "with_default");
+      expect(defaultWrappers).toHaveLength(2);
+      expect(defaultWrappers[0]?.line).toBeGreaterThan(0);
+      expect(defaultWrappers[0]?.line).toBe(defaultWrappers[1]?.line);
+      expect(existsSync(marker)).toBe(false);
+
+      const analysis = await analyzeElixirProjectWithGraph(root, { now: new Date(0) });
+      expect(analysis.result.run.boundaries).toEqual([
+        expect.objectContaining({
+          status: "complete",
+          partitions: { production: "complete", config: "complete", test: "complete" },
+        }),
+      ]);
+      const why = whyAlive({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        claims: analysis.result.claims,
+        query: "NeutralOnLoad.NativeBoundary.reachable/0",
+      });
+      expect(why).toMatchObject({ outcome: "alive", entrypointKind: "production" });
+      if (why.outcome !== "alive") throw new Error("expected production liveness");
+      expect(why.paths[0]?.hops.map((hop) => hop.file)).toEqual([
+        "lib/neutral_on_load/application.ex",
+        "lib/neutral_on_load/native_boundary.ex",
+      ]);
+
+      const callbackWhy = whyAlive({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        claims: analysis.result.claims,
+        query: "NeutralOnLoad.NativeBoundary.perform/0",
+      });
+      expect(callbackWhy).toMatchObject({ outcome: "alive", entrypointKind: "production" });
+      if (callbackWhy.outcome !== "alive") throw new Error("expected behaviour callback liveness");
+      expect(
+        computeDeletionPlan({
+          graph: analysis.graph,
+          reachability: analysis.reachability,
+          subject: callbackWhy.subject,
+        }),
+      ).toMatchObject({ supported: false });
+      expect(existsSync(marker)).toBe(false);
+    },
+    60_000,
+  );
 
   it.skipIf(!MIX_AVAILABLE)(
     "uses shared project suppression, provenance, config hash, and gate semantics",

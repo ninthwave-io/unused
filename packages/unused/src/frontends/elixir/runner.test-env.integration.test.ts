@@ -19,6 +19,7 @@ import { dirname, join, relative } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { inspectMixLayout } from "./mix-isolation.js";
 import { runTracer } from "./runner.js";
+import { TRACER_SCRIPT } from "./tracer-script.js";
 
 const MIX_AVAILABLE = spawnSync("mix", ["--version"], { encoding: "utf8" }).status === 0;
 
@@ -237,6 +238,141 @@ end
     const trace = runTracer(root);
     expect(trace.testPartition).toBe("complete");
     expect(trace.modules.some((module) => module.mod === "NeutralNoTests")).toBe(true);
+    expect(existsSync(join(root, "_build"))).toBe(false);
+  });
+
+  it("reflects docs-disabled BEAM exports with zero fallback lines", {
+    timeout: 60_000,
+  }, () => {
+    const root = project("unused-ex-docs-disabled-");
+    roots.push(root);
+    write(root, "mix.exs", basicMix("neutral_docs_disabled", ", elixirc_options: [docs: false]"));
+    write(
+      root,
+      "lib/neutral_docs_disabled.ex",
+      "defmodule NeutralDocsDisabled do\n  def value, do: :ok\nend\n",
+    );
+
+    const trace = runTracer(root);
+    expect(trace.testPartition).toBe("complete");
+    expect(trace.modules).toContainEqual(
+      expect.objectContaining({ mod: "NeutralDocsDisabled", line: 0 }),
+    );
+    expect(trace.functions).toContainEqual(
+      expect.objectContaining({ mod: "NeutralDocsDisabled", name: "value", arity: 0, line: 0 }),
+    );
+    expect(existsSync(join(root, "_build"))).toBe(false);
+  });
+
+  it.each([
+    ["compile-info chunk is missing", "missing_compile_info"],
+    ["exports chunk is malformed", "malformed_exports"],
+    ["behaviour attribute shape is malformed", "malformed_behaviour"],
+    ["protocol attribute shape is malformed", "malformed_protocol"],
+    ["implementation attribute shape is malformed", "malformed_impl"],
+  ])("fails closed when %s", { timeout: 60_000 }, (_label, mutation) => {
+    const root = project("unused-ex-malformed-beam-");
+    roots.push(root);
+    write(root, "mix.exs", basicMix("neutral_malformed_beam"));
+    write(
+      root,
+      "lib/neutral_malformed_beam.ex",
+      "defmodule NeutralMalformedBeam do\n  def value, do: :ok\nend\n",
+    );
+    expectMix(root, ["compile"]);
+
+    const beam = join(
+      root,
+      "_build",
+      "dev",
+      "lib",
+      "neutral_malformed_beam",
+      "ebin",
+      "Elixir.NeutralMalformedBeam.beam",
+    );
+    const mutateBeam = spawnSync(
+      "elixir",
+      [
+        "-e",
+        "[path, mutation] = System.argv(); " +
+          "{:ok, _, chunks} = :beam_lib.all_chunks(String.to_charlist(path)); " +
+          "replace = fn chunks, id, data -> Enum.map(chunks, fn {chunk_id, old} -> " +
+          "if chunk_id == id, do: {chunk_id, data}, else: {chunk_id, old} end) end; " +
+          "chunks = case mutation do " +
+          '"missing_compile_info" -> Enum.reject(chunks, fn {id, _} -> id == ~c"CInf" end); ' +
+          '"malformed_exports" -> replace.(chunks, ~c"ExpT", <<0>>); ' +
+          '"malformed_behaviour" -> replace.(chunks, ~c"Attr", :erlang.term_to_binary([behaviour: NeutralMalformed])); ' +
+          '"malformed_protocol" -> replace.(chunks, ~c"Attr", :erlang.term_to_binary([__protocol__: [fallback_to_any: :invalid]])); ' +
+          '"malformed_impl" -> replace.(chunks, ~c"Attr", :erlang.term_to_binary([__impl__: [protocol: NeutralMalformed, for: "invalid"]])) ' +
+          "end; " +
+          "{:ok, binary} = :beam_lib.build_module(chunks); " +
+          "File.write!(path, binary)",
+        beam,
+        mutation,
+      ],
+      { cwd: root, encoding: "utf8", env: process.env },
+    );
+    expect(mutateBeam.status, mutateBeam.stderr || mutateBeam.stdout).toBe(0);
+
+    const reflectStart = TRACER_SCRIPT.indexOf("defmodule Unused.Reflect do");
+    const reflectEnd = TRACER_SCRIPT.indexOf("defmodule Unused.Output do");
+    expect(reflectStart).toBeGreaterThanOrEqual(0);
+    expect(reflectEnd).toBeGreaterThan(reflectStart);
+    const reflector = TRACER_SCRIPT.slice(reflectStart, reflectEnd);
+    const script = join(root, "reflect_malformed_beam.exs");
+    write(
+      root,
+      "reflect_malformed_beam.exs",
+      `${reflector}
+result = Unused.Reflect.dump_beam(fn _record -> :ok end, System.fetch_env!("BEAM_PATH"), File.cwd!(), "prod")
+if result == {:error, :reflection}, do: System.halt(0), else: System.halt(1)
+`,
+    );
+    const reflected = spawnSync("elixir", [script], {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...process.env, BEAM_PATH: beam },
+    });
+    expect(reflected.status, reflected.stderr || reflected.stdout).toBe(0);
+  });
+
+  it("reflects protocol and implementation markers from persisted BEAM attributes", {
+    timeout: 60_000,
+  }, () => {
+    const root = project("unused-ex-protocol-attributes-");
+    roots.push(root);
+    write(root, "mix.exs", basicMix("neutral_protocol_attributes"));
+    write(
+      root,
+      "lib/neutral_protocol.ex",
+      `defprotocol NeutralProtocol do
+  def render(value)
+end
+
+defimpl NeutralProtocol, for: Atom do
+  def render(value), do: Atom.to_string(value)
+end
+`,
+    );
+
+    const trace = runTracer(root);
+    expect(trace.testPartition).toBe("complete");
+    expect(trace.modules).toContainEqual(
+      expect.objectContaining({
+        mod: "NeutralProtocol",
+        behaviours: ["Protocol"],
+        protocol: true,
+        impl: false,
+      }),
+    );
+    expect(trace.modules).toContainEqual(
+      expect.objectContaining({
+        mod: "NeutralProtocol.Atom",
+        behaviours: ["NeutralProtocol"],
+        protocol: false,
+        impl: true,
+      }),
+    );
     expect(existsSync(join(root, "_build"))).toBe(false);
   });
 
@@ -554,7 +690,7 @@ end
     expect(trace.modules.every((module) => module.partition === "prod")).toBe(true);
   });
 
-  it("marks the partition partial when an expected test module cannot be reflected", {
+  it("reflects a test BEAM even when the compiled module purges itself from the code server", {
     timeout: 60_000,
   }, () => {
     const root = project("unused-ex-test-reflection-");
@@ -580,7 +716,15 @@ end
     );
 
     const trace = runTracer(root);
-    expect(trace.testPartition).toBe("incomplete");
+    expect(trace.testPartition).toBe("complete");
+    expect(trace.modules).toContainEqual(
+      expect.objectContaining({
+        mod: "NeutralReflectionTest",
+        file: "test/reflection_test.exs",
+        partition: "test",
+      }),
+    );
+    expect(existsSync(join(root, "_build"))).toBe(false);
   });
 
   it("uses distinct MIX_BUILD_ROOT dev/test artifacts without mutating either", {

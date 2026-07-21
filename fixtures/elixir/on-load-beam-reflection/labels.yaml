@@ -1,0 +1,19 @@
+case: on-load-beam-reflection
+description: >-
+  Compiler output is reflected from BEAM paths without loading a module whose
+  deliberately failing on-load hook models an unavailable native library.
+subjects:
+  - kind: export
+    name: NeutralOnLoad.NativeBoundary.reachable/0
+    file: lib/neutral_on_load/native_boundary.ex
+    expected: alive
+    because: >-
+      The OTP application callback calls the function, so path-based BEAM
+      reflection must retain the real production reachability edge.
+  - kind: export
+    name: NeutralOnLoad.NativeBoundary.perform/0
+    file: lib/neutral_on_load/native_boundary.ex
+    expected: alive
+    because: >-
+      The module implements a compiler-recorded behaviour, so its runtime
+      callback remains conservatively alive.

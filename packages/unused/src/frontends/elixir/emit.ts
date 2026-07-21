@@ -16,8 +16,10 @@
  *    *referenced* symbol (the `to_mod.name/arity` function, or the module for an
  *    alias/struct or a call to a function we do not model). Deduped.
  *  - **function → its module** → so a used function keeps its module alive
- *    without keeping the module's *other* functions alive (no module → function
- *    edge, deliberately: aliasing a module is not using all of it).
+ *    without keeping the module's *other* functions alive. Compiler-proven
+ *    behaviour/protocol/impl carriers additionally get bounded module → public
+ *    function runtime edges: reflective callbacks become live only when their
+ *    carrier module is itself live.
  *
  * `exports`/`contains` edges tie each file to its symbols so an entrypoint file
  * (surface-live) roots its whole module + function surface.
@@ -98,9 +100,13 @@ export function emitElixirIR(input: EmitElixirInput): IRGraph {
     if (!moduleByName.has(mod.mod)) moduleByName.set(mod.mod, mod);
   }
   const fnByKey = new Map<string, FunctionRecord>();
+  const functionsByModule = new Map<string, FunctionRecord[]>();
   for (const fn of traceResult.functions) {
     const key = `${fn.mod}.${fn.name}/${fn.arity}`;
     if (!fnByKey.has(key)) fnByKey.set(key, fn);
+    const moduleFunctions = functionsByModule.get(fn.mod);
+    if (moduleFunctions === undefined) functionsByModule.set(fn.mod, [fn]);
+    else moduleFunctions.push(fn);
   }
 
   // --- file + symbol nodes ---------------------------------------------------
@@ -242,7 +248,7 @@ export function emitElixirIR(input: EmitElixirInput): IRGraph {
   for (const fn of traceResult.functions) {
     if (fn.name === "child_spec" && fn.arity === 1) supervisableModules.add(fn.mod);
   }
-  emitModuleHazards(graph, traceResult.modules, supervisableModules);
+  emitModuleHazards(graph, traceResult.modules, functionsByModule, supervisableModules);
   emitDynamicDispatchHazards(graph, traceResult, moduleByName, dynamicDispatches);
 
   // --- entrypoints -----------------------------------------------------------
@@ -356,13 +362,16 @@ export function emitElixirIR(input: EmitElixirInput): IRGraph {
 
 /**
  * Behaviour / protocol / impl / OTP-supervisable keep-alive hazards, one per
- * module's file. These suppress the module's function claims (its callbacks are
- * reflectively dispatched) but NEVER its file claim — an unreferenced such
- * module is still a dead-file candidate (the published rationale).
+ * carrier module. Each compiler-proven carrier gets bounded runtime edges to
+ * its public functions. Those functions therefore become live only when the
+ * carrier is live; this never roots an otherwise-unreferenced module. The
+ * matching hazard remains narrowly scoped to that same public surface for
+ * conservative claim confidence and NEVER suppresses its file claim.
  */
 function emitModuleHazards(
   graph: IRGraph,
   modules: readonly ModuleRecord[],
+  functionsByModule: ReadonlyMap<string, readonly FunctionRecord[]>,
   supervisableModules: ReadonlySet<string>,
 ): void {
   const seen = new Set<string>();
@@ -388,15 +397,36 @@ function emitModuleHazards(
       detail = `module \`${mod.mod}\` defines child_spec/1 — an OTP-supervisable module whose lifecycle callbacks (child_spec/start_link/init) the supervisor invokes reflectively`;
     }
     if (hazardClass === null) continue;
-    const key = `${mod.file} ${hazardClass}`;
+    const key = `${mod.mod} ${hazardClass}`;
     if (seen.has(key)) continue;
     seen.add(key);
+    // A persisted behaviour/protocol/impl attribute proves that this module is
+    // a reflective dispatch carrier. `child_spec/1` alone keeps its existing
+    // confidence hazard, but is not promoted to a module-wide runtime relation.
+    const reflectiveCarrier = phoenix || behaviour;
+    const affectedFunctions = reflectiveCarrier ? (functionsByModule.get(mod.mod) ?? []) : [];
+    const affectedSymbols = affectedFunctions.map((fn) =>
+      symbolId(fn.file, `${fn.mod}.${fn.name}/${fn.arity}`),
+    );
     graph.addHazard({
       file: fileId(mod.file),
       hazardClass,
       detail,
       site: siteAt(mod.file, mod.line),
+      ...(reflectiveCarrier ? { affectedSymbols } : {}),
     });
+    const carrierId = symbolId(mod.file, mod.mod);
+    for (const fn of affectedFunctions) {
+      const exportedName = `${fn.mod}.${fn.name}/${fn.arity}`;
+      graph.addEdge({
+        kind: "references",
+        referenceKind: "runtime-resolved",
+        from: carrierId,
+        to: symbolId(fn.file, exportedName),
+        site: siteAt(mod.file, mod.line),
+        name: exportedName,
+      });
+    }
   }
 }
 

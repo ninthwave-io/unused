@@ -18,11 +18,11 @@
  *     inside a temporary build path prepared by the runner. `compile.elixir` (not the umbrella
  *     `compile` task) is the task that merges the runtime-set tracer option
  *     (verified: the umbrella task drops it).
- *  3. Reflects the compiled BEAM modules for the public-function surface
- *     (`__info__(:functions)`, minus generated `__foo__`/`module_info`
- *     reflection helpers), source file, definition lines (`Code.fetch_docs`),
- *     and behaviour/protocol/impl markers (`__info__(:attributes)`,
- *     `__protocol__/1`, `__impl__/1`) — the hazard-classification inputs.
+ *  3. Reads each compiled BEAM path without loading it: `:beam_lib` supplies
+ *     module/compile-info/attribute/export metadata and `Code.fetch_docs/1`
+ *     reads the path's EEP-48 docs chunk for definition lines. This recovers
+ *     the public-function surface and behaviour/protocol/impl markers without
+ *     executing module `@on_load` hooks.
  *  4. In the production child, reads the OTP application callback and declared
  *     dependency names. In the separate test child, compiles only the runner's
  *     sorted ExUnit inventory after the effective test support paths, without
@@ -86,45 +86,109 @@ defmodule Unused.Reflect do
     s in ["module_info", "behaviour_info", "__struct__"] or Regex.match?(~r/^__.*__$/, s)
   end
 
-  # Emit one module record + one record per public, non-generated function.
-  def dump_module(emit, mod, root, partition) do
+  # Emit one module record + one record per public, non-generated function by
+  # reading the BEAM file only. Nothing in this function loads module code.
+  def dump_beam(emit, path, root, partition) do
     try do
-      src = to_string(mod.module_info(:compile)[:source])
-      rel = Path.relative_to(src, root)
-      cond do
-        src == "" or String.starts_with?(rel, "..") or String.starts_with?(rel, "/") ->
-          {:error, :external_source}
-        true ->
-        attrs = mod.__info__(:attributes)
-        behaviours = Keyword.get_values(attrs, :behaviour) |> List.flatten() |> Enum.map(&inspect/1)
-        impl = function_exported?(mod, :__impl__, 1)
-        proto = function_exported?(mod, :__protocol__, 1)
-        {modline, flines} =
-          case Code.fetch_docs(mod) do
-            {:docs_v1, anno, _, _, _, _, docs} ->
-              fl = for {{:function, n, a}, fa, _, _, _} <- docs, into: %{},
-                do: {"#{n}/#{a}", line_of(fa)}
-              {line_of(anno), fl}
-            _ -> {0, %{}}
-          end
+      with {:ok, {mod, chunks}} <-
+             :beam_lib.chunks(String.to_charlist(path), [:compile_info, :attributes, :exports]),
+           compile_info when is_list(compile_info) <- Keyword.fetch!(chunks, :compile_info),
+           attrs when is_list(attrs) <- Keyword.fetch!(chunks, :attributes),
+           exports when is_list(exports) <- Keyword.fetch!(chunks, :exports),
+           source when is_list(source) or is_binary(source) <- Keyword.fetch!(compile_info, :source),
+           src when src != "" <- source |> to_string() |> Path.expand(),
+           rel <- Path.relative_to(src, Path.expand(root)),
+           false <- rel == "." or rel == ".." or String.starts_with?(rel, "../") or
+                    String.starts_with?(rel, "/"),
+           {:ok, {behaviours, protocol, impl}} <- attributes(attrs),
+           true <- is_atom(mod),
+           true <- valid_exports?(exports) do
+        {modline, flines} = docs(path)
         emit.(%{"k" => "module", "mod" => inspect(mod), "file" => rel, "line" => modline,
-                "behaviours" => behaviours, "protocol" => proto, "impl" => impl,
+                "behaviours" => Enum.map(behaviours, &inspect/1),
+                "protocol" => protocol,
+                "impl" => impl,
                 "partition" => partition})
-        funs = mod.__info__(:functions)
-        Enum.each(funs, fn {n, a} ->
-          unless generated?(n) do
-            emit.(%{"k" => "function", "mod" => inspect(mod), "name" => to_string(n),
-                    "arity" => a, "file" => rel, "line" => Map.get(flines, "#{n}/#{a}", modline),
+        exports
+        |> Enum.sort()
+        |> Enum.each(fn {name, arity} ->
+          unless generated?(name) or String.starts_with?(to_string(name), "MACRO-") do
+            emit.(%{"k" => "function", "mod" => inspect(mod), "name" => to_string(name),
+                    "arity" => arity, "file" => rel,
+                    "line" => Map.get(flines, "#{name}/#{arity}", modline),
                     "partition" => partition})
           end
         end)
         :ok
+      else
+        _ -> {:error, :reflection}
       end
     rescue
       _ -> {:error, :reflection}
     catch
       _, _ -> {:error, :reflection}
     end
+  end
+
+  defp attributes(attrs) do
+    with true <- Keyword.keyword?(attrs),
+         behaviour_groups <-
+           Keyword.get_values(attrs, :behaviour) ++ Keyword.get_values(attrs, :behavior),
+         true <- Enum.all?(behaviour_groups, &is_list/1),
+         behaviours <- List.flatten(behaviour_groups),
+         true <- Enum.all?(behaviours, &is_atom/1),
+         {:ok, protocol} <- protocol_attribute(Keyword.get_values(attrs, :__protocol__)),
+         {:ok, impl} <- impl_attribute(Keyword.get_values(attrs, :__impl__)) do
+      {:ok, {behaviours, protocol, impl}}
+    else
+      _ -> {:error, :attributes}
+    end
+  end
+
+  defp protocol_attribute([]), do: {:ok, false}
+  defp protocol_attribute([[fallback_to_any: fallback]]) when is_boolean(fallback), do: {:ok, true}
+  defp protocol_attribute(_), do: {:error, :protocol_attribute}
+
+  defp impl_attribute([]), do: {:ok, false}
+  defp impl_attribute([[protocol: protocol, for: target]])
+       when is_atom(protocol) and is_atom(target), do: {:ok, true}
+  defp impl_attribute(_), do: {:error, :impl_attribute}
+
+  defp docs(path) do
+    case Code.fetch_docs(path) do
+      {:docs_v1, anno, _, _, _, _, docs} when is_list(docs) ->
+        flines =
+          Enum.reduce(docs, %{}, fn
+            {{:function, name, arity}, function_anno, _, _, metadata}, acc
+                when is_atom(name) and is_integer(arity) and is_map(metadata) ->
+              line = definition_line(function_anno, metadata)
+              defaults = Map.get(metadata, :defaults, 0)
+              if is_integer(defaults) and defaults >= 0 and defaults <= arity do
+                Enum.reduce((arity - defaults)..arity, acc, fn actual_arity, lines ->
+                  Map.put(lines, "#{name}/#{actual_arity}", line)
+                end)
+              else
+                acc
+              end
+            _, acc ->
+              acc
+          end)
+        {line_of(anno), flines}
+      _ ->
+        {0, %{}}
+    end
+  end
+
+  defp definition_line(_fallback, %{source_annos: [source_anno | _]}) do
+    line_of(source_anno)
+  end
+  defp definition_line(fallback, _metadata), do: line_of(fallback)
+
+  defp valid_exports?(exports) do
+    Enum.all?(exports, fn
+      {name, arity} when is_atom(name) and is_integer(arity) and arity >= 0 -> true
+      _ -> false
+    end)
   end
 end
 
@@ -191,10 +255,8 @@ case phase do
         |> Path.join("*.beam")
         |> Path.wildcard()
         |> Enum.sort()
-        |> Enum.map(fn path -> path |> Path.basename(".beam") |> String.to_atom() end)
-        |> Enum.reduce_while(true, fn mod, _acc ->
-          with {:module, ^mod} <- Code.ensure_loaded(mod),
-               :ok <- Unused.Reflect.dump_module(emit, mod, root, "prod") do
+        |> Enum.reduce_while(true, fn path, _acc ->
+          with :ok <- Unused.Reflect.dump_beam(emit, path, root, "prod") do
             {:cont, true}
           else
             _ -> {:halt, false}
@@ -226,7 +288,7 @@ case phase do
         _ -> true
       end
 
-    {test_mods, tests_ok} =
+    {_test_mods, tests_ok} =
       if support_ok do
         parent = self()
         {pid, ref} =
@@ -234,7 +296,8 @@ case phase do
             try do
               Application.ensure_all_started(:ex_unit)
               ExUnit.start(autorun: false)
-              result = Kernel.ParallelCompiler.compile(test_files, tracers: [Unused.Tracer])
+              result = Kernel.ParallelCompiler.compile_to_path(
+                test_files, Mix.Project.compile_path(), tracers: [Unused.Tracer])
               send(parent, {:test_result, result})
             catch
               _kind, _reason -> send(parent, {:test_result, :error})
@@ -255,19 +318,12 @@ case phase do
     compile_complete = support_ok and tests_ok
     reflection_ok =
       if compile_complete do
-      support_mods =
-        Mix.Project.compile_path()
-        |> Path.join("*.beam")
-        |> Path.wildcard()
-        |> Enum.sort()
-        |> Enum.map(fn path -> path |> Path.basename(".beam") |> String.to_atom() end)
-
-      (support_mods ++ test_mods)
-      |> Enum.uniq()
+      Mix.Project.compile_path()
+      |> Path.join("*.beam")
+      |> Path.wildcard()
       |> Enum.sort()
-      |> Enum.reduce_while(true, fn mod, _acc ->
-        with {:module, ^mod} <- Code.ensure_loaded(mod),
-             :ok <- Unused.Reflect.dump_module(emit, mod, root, "test") do
+      |> Enum.reduce_while(true, fn path, _acc ->
+        with :ok <- Unused.Reflect.dump_beam(emit, path, root, "test") do
           {:cont, true}
         else
           _ -> {:halt, false}

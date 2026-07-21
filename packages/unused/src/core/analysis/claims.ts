@@ -627,7 +627,11 @@ function buildHazardCaps(
         const symbol = graph.getNode(symbolId);
         if (symbol?.kind !== "symbol" || !isInScope(symbol.file, analysisFiles)) continue;
         mergeCap(symbolCap, symbol.id, applied);
-        mergeCap(fileOnlyCap, fileId(symbol.file), applied);
+        // A symbol-set hazard protects exports without changing whether the
+        // containing file itself is dead. Other bounded hazards (notably a
+        // dynamic-dispatch target) must also cap whole-file deletion because
+        // deleting that file would remove a possible runtime target.
+        if (entry.scope !== "symbol-set") mergeCap(fileOnlyCap, fileId(symbol.file), applied);
       }
       continue;
     }

@@ -430,6 +430,48 @@ describe("hazard registry — scoped effects (T3.1)", () => {
     );
   });
 
+  it("bounds a symbol-set hazard without suppressing its owning file", () => {
+    const dead = new IRGraph();
+    addEntry(dead, "lib/application.ex");
+    addSymbol(dead, "lib/orphan_server.ex", "Neutral.OrphanServer.handle_call/3");
+    dead.addHazard({
+      file: fileId("lib/orphan_server.ex"),
+      hazardClass: "elixir-behaviour-callback",
+      detail: "bounded neutral callback surface",
+      site: site("lib/orphan_server.ex"),
+      affectedSymbols: [symbolId("lib/orphan_server.ex", "Neutral.OrphanServer.handle_call/3")],
+    });
+
+    expect(shape(run(dead))).toContainEqual({
+      kind: "file",
+      name: "lib/orphan_server.ex",
+      file: "lib/orphan_server.ex",
+      verdict: "unused",
+      confidence: "high",
+    });
+
+    const reachable = new IRGraph();
+    addEntry(reachable, "lib/application.ex");
+    addSymbol(reachable, "lib/server.ex", "Neutral.Server.handle_call/3");
+    addSymbol(reachable, "lib/server.ex", "Neutral.Server.ordinary/0");
+    ref(reachable, "lib/application.ex", fileId("lib/server.ex"), "side-effect");
+    reachable.addHazard({
+      file: fileId("lib/server.ex"),
+      hazardClass: "elixir-behaviour-callback",
+      detail: "bounded neutral callback surface",
+      site: site("lib/server.ex"),
+      affectedSymbols: [symbolId("lib/server.ex", "Neutral.Server.handle_call/3")],
+    });
+
+    const reachableClaims = run(reachable);
+    expect(reachableClaims.find((claim) => claim.subject.name.endsWith("handle_call/3"))).toBe(
+      undefined,
+    );
+    expect(
+      reachableClaims.find((claim) => claim.subject.name.endsWith("ordinary/0")),
+    ).toMatchObject({ verdict: "unused", confidence: "high" });
+  });
+
   it("config-referenced-file yields a file claim at medium (scoped, not suppressed)", () => {
     const g = new IRGraph();
     addEntry(g, "src/index.ts");

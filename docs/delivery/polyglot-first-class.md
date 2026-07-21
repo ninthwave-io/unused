@@ -629,9 +629,50 @@ Implementation and verification:
   paths, credential/private-key markers, or non-neutral source material in the
   tracked diff and untracked delivery files.
 
-Next exact action: checkpoint the independently approved public correction,
-then run the consuming-project verification separately without importing any
-private evidence into this repository.
+#### Load-free BEAM reflection follow-up
+
+Status: implementation verified; independent review pending
+
+Objective: retain compiler-backed Elixir precision when a compiled module has
+an unavailable native `@on_load` hook, without loading or executing that module
+during reflection.
+
+Design and acceptance:
+
+- enumerate sorted production and test BEAM paths in their isolated compile
+  directories; test sources compile with `Kernel.ParallelCompiler.compile_to_path`;
+- derive module/source, behaviours, protocol/implementation markers, and the
+  public export surface from validated BEAM metadata, with path-based EEP-48
+  docs used only for optional line evidence;
+- exclude `module_info`, `behaviour_info`, generated `__*__` helpers, struct
+  helpers, and raw `MACRO-*` exports while retaining ordinary/default-wrapper
+  functions;
+- valid docs-disabled output remains complete with line-zero evidence; missing
+  or malformed core metadata fails closed under the existing production/test
+  completeness contracts;
+- the neutral `on-load-beam-reflection` corpus case proves compile success,
+  explicit load failure, behaviour/function accuracy (including default-arity
+  wrappers), production callback `why` evidence, deletion refusal, and zero
+  analyzer-created hook marker;
+- persisted behaviour/protocol/implementation carrier facts add bounded
+  carrier-to-public-function runtime edges: callbacks become explainably live
+  only when their carrier module is reachable, while an unreachable carrier
+  remains a high-confidence dead-file candidate; and
+- preserve source build trees, JSON purity, corpus precision, and the disclosed
+  compiler-only execution boundary.
+
+Current focused evidence: the Elixir frontend passes 8 files / 101 tests; the
+real-Mix environment file passes 23/23; the Elixir corpus passes 13 cases / 33
+subjects at precision 1.0 and recall 0.9090909090909091 with no skipped cases,
+false positives, confidence violations, or unlabelled claims.
+
+Full verification passes 83 files / 1,141 tests, typecheck, lint (the established
+2 warnings / 48 infos), boundaries (923 modules / 2,014 dependencies),
+assumption-set 1.10 sync, all four corpus gates, build, installed-tarball JSON,
+build-tree non-mutation, diff, and privacy checks.
+
+Next exact action: run the complete public gate matrix, freeze the diff and
+evidence, and obtain independent approval before committing.
 
 ## Verification commands
 

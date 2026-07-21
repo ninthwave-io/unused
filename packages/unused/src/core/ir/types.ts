@@ -301,8 +301,10 @@ export interface HazardAnnotation {
   readonly subtreePrefix?: string;
   /**
    * Exact symbol node ids that this otherwise broader hazard can affect. When
-   * present, core caps only these symbols and their containing file claims;
-   * the registry's normal scope remains the conservative fallback when absent.
+   * present, core always caps only these symbols; it also caps their containing
+   * file claims when the registry scope is not `symbol-set` (for example, a
+   * bounded dynamic-dispatch target whose whole file cannot be deleted safely).
+   * The registry's normal scope remains the conservative fallback when absent.
    * This is intentionally a symbol-id set rather than a file scope because a
    * single Elixir source file may define several modules.
    */

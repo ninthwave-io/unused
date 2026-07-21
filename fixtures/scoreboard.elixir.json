@@ -1,8 +1,8 @@
 {
   "analyzer": "elixir-reference-graph",
   "corpus": {
-    "cases": 12,
-    "subjects": 31
+    "cases": 13,
+    "subjects": 33
   },
   "precision": 1,
   "recall": 0.9090909090909091,
@@ -95,6 +95,17 @@
       "falsePositives": 0,
       "confidenceViolations": 0,
       "misses": 1,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "on-load-beam-reflection",
+      "subjects": 2,
+      "deadLabels": 0,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
       "unlabelledClaims": 0
     },
     {

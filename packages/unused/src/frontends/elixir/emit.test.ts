@@ -145,6 +145,24 @@ describe("emitElixirIR — clean scenario", () => {
     expect(claim(claims, "App.Worker.start_link/1")).toBeUndefined();
   });
 
+  it("explains a reachable behaviour callback and refuses its deletion", () => {
+    const graph = emitElixirIR({ traceResult: CLEAN, configReferencedModules: new Set() });
+    const reachability = computePartitionedReachability(graph);
+    const callbackId = symbolId("lib/app/worker.ex", "App.Worker.handle_call/3");
+    expect(reachability.production.reachableSymbols.has(callbackId)).toBe(true);
+    const why = whyAlive({ graph, reachability, claims, query: "App.Worker.handle_call/3" });
+    expect(why).toMatchObject({ outcome: "alive", testOnly: false });
+    if (why.outcome !== "alive") throw new Error("expected behaviour callback liveness");
+    expect(why.paths[0]?.hops.at(-1)).toMatchObject({
+      file: "lib/app/worker.ex",
+      symbol: "App.Worker.handle_call/3",
+    });
+    expect(computeDeletionPlan({ graph, reachability, subject: why.subject })).toMatchObject({
+      supported: false,
+      stages: [],
+    });
+  });
+
   it("keeps a supervision-tree child module alive (aliased in the children list)", () => {
     expect(claim(claims, "App.Worker")).toBeUndefined();
     expect(claims.some((c) => c.subject.loc.file === "lib/app/worker.ex")).toBe(false);
@@ -236,6 +254,56 @@ describe("emitElixirIR — incomplete test partition", () => {
       unsupportedReason: "selected subject has a live analysis-completeness reference at mix.exs:1",
       stages: [],
     });
+  });
+});
+
+describe("emitElixirIR — unreachable behaviour carrier", () => {
+  const trace: TraceResult = {
+    appMod: "App.Application",
+    deps: [],
+    compileOk: true,
+    testPartition: "complete",
+    modules: [
+      mod("App.Application", "lib/app/application.ex"),
+      mod("App.OrphanServer", "lib/app/orphan_server.ex", { behaviours: ["GenServer"] }),
+    ],
+    functions: [
+      fn("start", 2, "lib/app/application.ex", "App.Application"),
+      fn("handle_call", 3, "lib/app/orphan_server.ex", "App.OrphanServer"),
+    ],
+    events: [],
+  };
+  const graph = emitElixirIR({ traceResult: trace, configReferencedModules: new Set() });
+  const reachability = computePartitionedReachability(graph);
+  const claims = claimsFor(trace);
+
+  it("does not root the carrier or its callback", () => {
+    expect(
+      reachability.production.reachableSymbols.has(
+        symbolId("lib/app/orphan_server.ex", "App.OrphanServer"),
+      ),
+    ).toBe(false);
+    expect(
+      reachability.production.reachableSymbols.has(
+        symbolId("lib/app/orphan_server.ex", "App.OrphanServer.handle_call/3"),
+      ),
+    ).toBe(false);
+    // The callback hazard protects only the bounded public surface; it neither
+    // creates false reachability nor suppresses the carrier's dead-file claim.
+    expect(claim(claims, "lib/app/orphan_server.ex")).toMatchObject({
+      verdict: "unused",
+      confidence: "high",
+      subject: { kind: "file" },
+    });
+    expect(claim(claims, "App.OrphanServer.handle_call/3")).toBeUndefined();
+    expect(graph.hazards()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          hazardClass: "elixir-behaviour-callback",
+          affectedSymbols: [symbolId("lib/app/orphan_server.ex", "App.OrphanServer.handle_call/3")],
+        }),
+      ]),
+    );
   });
 });
 
