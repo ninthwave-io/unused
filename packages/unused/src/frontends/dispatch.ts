@@ -74,6 +74,7 @@ export async function analyzeProjectAutoWithGraph(
       packageJsonDirs: inventory.packageRootDirs,
       mixExsDirs: inventory.mixProjectDirs,
       cargoTomlDirs: inventory.cargoProjectDirs,
+      rustSourceFiles: inventory.rustSourceFiles,
     },
     now: options.now ?? new Date(),
     toolVersion: options.toolVersion ?? "0.1.0",
@@ -112,7 +113,11 @@ export async function analyzeProjectAutoWithGraph(
       ],
     };
   }
-  if (discovered.length === 1 && discovered[0]?.boundary.rootRelDir === "") {
+  if (
+    discovered.length === 1 &&
+    discovered[0]?.boundary.rootRelDir === "" &&
+    (discovered[0].plugin.language === "ts" || discovered[0].plugin.language === "ex")
+  ) {
     const selected = discovered[0];
     const analysis = await (selected.plugin.language === "ex"
       ? analyzeElixirProjectWithGraph(root, options)
@@ -204,6 +209,8 @@ export async function analyzeProjectAutoWithGraph(
   const rootTypeScript = fragments.find(
     (fragment) => fragment.language === "ts" && fragment.boundary.rootRelDir === "",
   );
+  const rootProject =
+    rootTypeScript ?? fragments.find((fragment) => fragment.boundary.rootRelDir === "");
   options.performance?.set("files", analyzedFiles.length);
   options.performance?.set(
     "symbols",
@@ -226,7 +233,7 @@ export async function analyzeProjectAutoWithGraph(
     productionEntrypointCount: reachability.production.productionEntrypointFiles.size,
     fileCount: analyzedFiles.length,
     workspaceCount: units.length,
-    repoName: rootTypeScript?.metadata.projectName ?? basename(root),
+    repoName: rootProject?.metadata.projectName ?? basename(root),
     units,
     gateThreshold: config.gate?.threshold ?? "high",
   };
@@ -312,6 +319,7 @@ function applyClaimAnnotation(claim: Claim, fragment: FrontendGraphFragment): Cl
   return {
     ...claim,
     ...(annotation.suppression === undefined ? {} : { suppression: annotation.suppression }),
+    ...(annotation.evidence === undefined ? {} : { evidence: annotation.evidence }),
     subject: {
       ...claim.subject,
       loc: {

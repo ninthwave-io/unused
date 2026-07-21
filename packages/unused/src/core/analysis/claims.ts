@@ -332,7 +332,10 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
       // Only a symbol in an alive file is individually claimable: a test-only /
       // unused file already emitted one whole-file claim that subsumes it; a
       // entrypoint / declaration files yield no export claim.
-      if (fileClass.get(fileNodeId) !== "alive") continue;
+      // Entrypoint files may contain private, contains-only symbols (Rust crate
+      // roots). Public/exported entrypoint symbols are already surface-live;
+      // an unreachable private symbol remains claimable.
+      if (fileClass.get(fileNodeId) !== "alive" && !entrypointFiles.has(fileNodeId)) continue;
       if (aliveSymbol(node.id)) continue; // used from production or config
       // An export claim is capped by the stronger of the file-scoped and the
       // export-only (symbol-set) hazard covering its file.

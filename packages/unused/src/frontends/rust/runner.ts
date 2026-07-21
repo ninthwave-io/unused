@@ -25,6 +25,13 @@ export class CargoMetadataError extends RustFrontendError {
   }
 }
 
+export class CargoCompileError extends RustFrontendError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "CargoCompileError";
+  }
+}
+
 export interface CargoCommandResult {
   readonly stdout: string;
   readonly stderr: string;
@@ -35,6 +42,7 @@ export function runCargo(
   projectDir: string,
   args: readonly string[],
   cargoCommand = "cargo",
+  operation: "metadata" | "compile" = "metadata",
 ): CargoCommandResult {
   const result = spawnSync(cargoCommand, [...args], {
     cwd: projectDir,
@@ -51,8 +59,9 @@ export function runCargo(
   }
   if (result.status !== 0) {
     const detail = firstMeaningfulLine(result.stderr || result.stdout);
-    throw new CargoMetadataError(
-      `Cargo command failed (${cargoCommand} ${args.join(" ")}, exit ${result.status ?? "unknown"})${detail === "" ? "" : `: ${detail}`}`,
+    const ErrorClass = operation === "compile" ? CargoCompileError : CargoMetadataError;
+    throw new ErrorClass(
+      `Cargo ${operation} failed (${cargoCommand} ${args.join(" ")}, exit ${result.status ?? "unknown"})${detail === "" ? "" : `: ${detail}`}`,
     );
   }
   return { stdout: result.stdout, stderr: result.stderr };

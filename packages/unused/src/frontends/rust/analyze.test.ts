@@ -1,0 +1,43 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { symbolId } from "../../core/ir/index.js";
+import { analyzeRustProjectWithGraph } from "./analyze.js";
+
+const roots: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+describe("Rust frontend", () => {
+  it("claims only the compiler-confirmed private function and keeps public API alive", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unused-rust-analyze-"));
+    roots.push(root);
+    await mkdir(join(root, "src"), { recursive: true });
+    await writeFile(
+      join(root, "Cargo.toml"),
+      '[package]\nname = "neutral-rust"\nversion = "0.1.0"\nedition = "2024"\n',
+    );
+    await writeFile(join(root, "src", "lib.rs"), "pub fn public_api() {}\nfn dead_helper() {}\n");
+
+    const analysis = await analyzeRustProjectWithGraph(root, { now: new Date(0) });
+
+    expect(analysis.result.claims).toMatchObject([
+      {
+        subject: { kind: "export", name: "dead_helper", loc: { file: "src/lib.rs", span: [2, 2] } },
+        verdict: "unused",
+        confidence: "high",
+        evidence: [{ source: "rustc-dead-code" }],
+        provenance: { analyzer: "rust-reference-graph" },
+      },
+    ]);
+    expect(
+      analysis.reachability.production.reachableSymbols.has(symbolId("src/lib.rs", "public_api")),
+    ).toBe(true);
+    expect(
+      analysis.reachability.production.reachableSymbols.has(symbolId("src/lib.rs", "dead_helper")),
+    ).toBe(false);
+  });
+});

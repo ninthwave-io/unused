@@ -140,6 +140,7 @@ describe("discover", () => {
     await writeFile(join(root, "cdk.out", "manifest.json"), "{}\n");
     await writeFile(join(root, "apps", "backend", "mix.exs"), "# neutral\n");
     await writeFile(join(root, "native", "bridge", "Cargo.toml"), "[package]\nname='bridge'\n");
+    await writeFile(join(root, "native", "bridge", "lib.rs"), "pub fn bridge() {}\n");
 
     const inventory = await discoverProjectInventory(root);
     expect(inventory.jsonFiles.map((path) => relative(root, path).split(sep).join("/"))).toEqual([
@@ -151,6 +152,7 @@ describe("discover", () => {
     ).toEqual([""]);
     expect(inventory.mixProjectDirs).toEqual([join(root, "apps", "backend")]);
     expect(inventory.cargoProjectDirs).toEqual([join(root, "native", "bridge")]);
+    expect(inventory.rustSourceFiles).toEqual([join(root, "native", "bridge", "lib.rs")]);
 
     const audit = await discoverProjectInventory(root, { gitignore: false });
     expect(audit.jsonFiles.map((path) => relative(root, path).split(sep).join("/"))).toEqual([

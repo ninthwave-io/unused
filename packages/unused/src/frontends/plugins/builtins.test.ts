@@ -20,6 +20,7 @@ describe("built-in language plugins", () => {
     const registry = new PluginRegistry(BUILT_IN_LANGUAGE_PLUGINS);
     expect(registry.languagePlugins().map((plugin) => plugin.id)).toEqual([
       "language:elixir",
+      "language:rust",
       "language:typescript",
     ]);
   });
@@ -42,6 +43,7 @@ describe("built-in language plugins", () => {
         packageJsonDirs: [project],
         mixExsDirs: [],
         cargoTomlDirs: [],
+        rustSourceFiles: [],
       },
       now: new Date(0),
       toolVersion: "0.1.0",

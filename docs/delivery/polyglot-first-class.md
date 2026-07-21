@@ -197,11 +197,28 @@ Progress:
   `/private/var` identity drift.
 - Focused verification: typecheck; 3 Cargo metadata/refusal tests; dependency
   boundaries (894 modules / 1,847 dependencies).
+- Shared discovery now records visible `.rs` sources and excludes Cargo
+  `target/` output in the same bounded gitignore-aware traversal.
+- The registered Rust plugin emits Cargo package/target/source roots and public
+  item graph facts. Non-target source files are conservatively rooted until a
+  compiler-derived module graph exists, so the frontend cannot produce unsafe
+  whole-file claims.
+- High-confidence Rust item claims are limited to unique private functions that
+  rustc reports as `dead_code` in both default and all-features, all-target
+  checks. Their exact compiler span/evidence survives nested fragment rebasing
+  and repository-wide claim emission.
+- Core now permits unreachable contains-only private symbols in an entrypoint
+  file while retaining the existing rule that exported entrypoint surfaces are
+  alive. A focused regression locks both halves.
+- Focused verification: typecheck; 73 Rust/compiler/discovery/core/plugin/
+  dispatch tests pass (2 Mix-skipped under the default shell); dependency
+  boundaries (898 modules / 1,879 dependencies).
 
-Next action: extend the shared bounded inventory with Rust sources, emit Cargo
-package/target/file/root graph facts, and implement the default/all-features
-compiler JSON diagnostic intersection. Register the Rust language plugin only
-when those facts and explicit compiler refusal tests land together.
+Next action: add the neutral labelled Rust corpus and scoreboard/gate harness.
+Cover workspace members, library/binary/test targets, default-versus-feature
+use, compiler failure, build-script/proc-macro disclosure, public API kept alive,
+and planted private dead functions. Report precision/recall before widening the
+claim class or beginning the Rustler bridge.
 
 ### P4 — Rustler/NIF bridge
 

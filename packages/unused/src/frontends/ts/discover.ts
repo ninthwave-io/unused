@@ -32,7 +32,7 @@ const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx",
 // bundled copy of the app's JS) — a build artifact, never source, excluded like
 // `dist`. The CDK preset (presets.ts) reads `cdk.json#app` directly to seed the
 // real `bin/app.ts` entrypoint; nothing under `cdk.out` should be analyzed.
-const EXCLUDED_DIRS = new Set(["node_modules", "dist", "cdk.out"]);
+const EXCLUDED_DIRS = new Set(["node_modules", "dist", "cdk.out", "target"]);
 
 export interface DiscoverOptions {
   /** Respect every applicable nested `.gitignore` by default. */
@@ -46,6 +46,7 @@ export interface DiscoverOptions {
  */
 export interface ProjectInventory {
   readonly sourceFiles: readonly string[];
+  readonly rustSourceFiles: readonly string[];
   readonly jsonFiles: readonly string[];
   readonly packageRootDirs: readonly string[];
   readonly mixProjectDirs: readonly string[];
@@ -68,6 +69,7 @@ export async function discoverProjectInventory(
   options: DiscoverOptions = {},
 ): Promise<ProjectInventory> {
   const sourceFiles: string[] = [];
+  const rustSourceFiles: string[] = [];
   const jsonFiles: string[] = [];
   const packageRootDirs = new Set<string>();
   const mixProjectDirs = new Set<string>();
@@ -77,6 +79,7 @@ export async function discoverProjectInventory(
   await walk(
     rootDir,
     sourceFiles,
+    rustSourceFiles,
     jsonFiles,
     packageRootDirs,
     mixProjectDirs,
@@ -85,9 +88,11 @@ export async function discoverProjectInventory(
     useGitignore,
   );
   sourceFiles.sort();
+  rustSourceFiles.sort();
   jsonFiles.sort();
   return {
     sourceFiles,
+    rustSourceFiles,
     jsonFiles,
     packageRootDirs: [...packageRootDirs].sort(),
     mixProjectDirs: [...mixProjectDirs].sort(),
@@ -224,6 +229,7 @@ async function enclosingGitRoot(start: string): Promise<string | null> {
 async function walk(
   dir: string,
   sourceFiles: string[],
+  rustSourceFiles: string[],
   jsonFiles: string[],
   packageRootDirs: Set<string>,
   mixProjectDirs: Set<string>,
@@ -253,6 +259,7 @@ async function walk(
       await walk(
         full,
         sourceFiles,
+        rustSourceFiles,
         jsonFiles,
         packageRootDirs,
         mixProjectDirs,
@@ -263,6 +270,7 @@ async function walk(
     } else if (entry.isFile()) {
       if (useGitignore && isGitIgnored(full, false, contexts)) continue;
       if (hasSourceExtension(entry.name)) sourceFiles.push(full);
+      if (entry.name.endsWith(".rs")) rustSourceFiles.push(full);
       if (entry.name.toLowerCase().endsWith(".json")) jsonFiles.push(full);
       if (entry.name === "package.json") packageRootDirs.add(dir);
       if (entry.name === "mix.exs") mixProjectDirs.add(dir);

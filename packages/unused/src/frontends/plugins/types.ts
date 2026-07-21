@@ -10,7 +10,7 @@
 
 import type { DependencyClaimInput } from "../../core/analysis/claims.js";
 import type { PerformanceTracker } from "../../core/analysis/index.js";
-import type { Provenance, Suppression } from "../../core/claims/index.js";
+import type { Evidence, Provenance, Suppression } from "../../core/claims/index.js";
 import type { HazardAnnotation, IREdge, IRGraph, IRNode, Site } from "../../core/ir/index.js";
 
 /** Stable, open language id used in graph/claim identity (`ts`, `ex`, `rs`). */
@@ -52,6 +52,8 @@ export interface RepositoryManifestInventory {
   readonly packageJsonDirs: readonly string[];
   readonly mixExsDirs: readonly string[];
   readonly cargoTomlDirs: readonly string[];
+  /** Absolute, gitignore-bounded Rust source paths from the shared traversal. */
+  readonly rustSourceFiles: readonly string[];
 }
 
 /** Capability declaration is descriptive and test/audit-visible, not marketing text. */
@@ -114,6 +116,7 @@ export interface FrontendGraphFragment {
     {
       readonly suppression?: Suppression;
       readonly package?: string;
+      readonly evidence?: readonly Evidence[];
     }
   >;
   readonly diagnostics: readonly PluginDiagnostic[];

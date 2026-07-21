@@ -1,7 +1,8 @@
 /** Built-in language adapters proving ADR 0013's internal plugin contracts. */
 
-import type { Suppression } from "../../core/claims/index.js";
+import type { Evidence, Suppression } from "../../core/claims/index.js";
 import { analyzeElixirProjectWithGraph } from "../elixir/index.js";
+import { analyzeRustProjectWithGraph } from "../rust/index.js";
 import { type AnalyzeOptions, analyzeProjectWithGraph } from "../ts/analyze.js";
 import { selectProjectBoundaries } from "./boundaries.js";
 import { prefixRepositoryPath, rebaseClaimInputs, rebaseGraph } from "./rebase.js";
@@ -34,6 +35,7 @@ function fragment(
     {
       readonly suppression?: Suppression;
       readonly package?: string;
+      readonly evidence?: readonly Evidence[];
     }
   >();
   for (const claim of analysis.result.claims) {
@@ -46,6 +48,7 @@ function fragment(
       {
         ...(claim.suppression === undefined ? {} : { suppression: claim.suppression }),
         ...(claim.subject.loc.package === undefined ? {} : { package: claim.subject.loc.package }),
+        ...(claim.evidence[0]?.source === "reference-graph" ? {} : { evidence: claim.evidence }),
       },
     );
   }
@@ -132,4 +135,38 @@ export const elixirLanguagePlugin: LanguageFrontendPlugin = {
   },
 };
 
-export const BUILT_IN_LANGUAGE_PLUGINS = [elixirLanguagePlugin, typescriptLanguagePlugin] as const;
+export const rustLanguagePlugin: LanguageFrontendPlugin = {
+  kind: "language",
+  id: "language:rust",
+  version: PLUGIN_VERSION,
+  language: "rs",
+  capabilities: {
+    files: true,
+    symbols: true,
+    dependencies: false,
+    testPartition: true,
+    configPartition: true,
+    compilerExecution: true,
+    mutation: false,
+  },
+  async discover(context) {
+    return selectProjectBoundaries(context.rootDir, context.manifests.cargoTomlDirs, {
+      language: "rs",
+      manifestName: "Cargo.toml",
+      projectKind: "cargo-workspace",
+    });
+  },
+  async analyze(context, boundary) {
+    const analysis = await analyzeRustProjectWithGraph(boundary.rootDir, analyzeOptions(context), {
+      emitConfigMatchWarnings: false,
+      sourceFiles: context.manifests.rustSourceFiles,
+    });
+    return fragment(this.id, this.language, boundary, analysis);
+  },
+};
+
+export const BUILT_IN_LANGUAGE_PLUGINS = [
+  elixirLanguagePlugin,
+  rustLanguagePlugin,
+  typescriptLanguagePlugin,
+] as const;

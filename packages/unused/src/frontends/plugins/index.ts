@@ -2,6 +2,7 @@ export { type BoundaryDescriptor, selectProjectBoundaries } from "./boundaries.j
 export {
   BUILT_IN_LANGUAGE_PLUGINS,
   elixirLanguagePlugin,
+  rustLanguagePlugin,
   typescriptLanguagePlugin,
 } from "./builtins.js";
 export { prefixRepositoryPath, rebaseClaimInputs, rebaseGraph } from "./rebase.js";

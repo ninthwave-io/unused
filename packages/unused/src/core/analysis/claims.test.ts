@@ -1064,3 +1064,38 @@ describe("repository fragment scoping", () => {
     ]);
   });
 });
+
+describe("private symbols in entrypoint files", () => {
+  it("claims an unreachable contains-only item while keeping the exported surface alive", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/lib.rs");
+    addSymbol(g, "src/lib.rs", "public_api");
+    g.addNode({
+      kind: "symbol",
+      id: symbolId("src/lib.rs", "private_dead"),
+      file: "src/lib.rs",
+      exportedName: "private_dead",
+      isDefault: false,
+      typeOnly: false,
+      local: true,
+      span: SPAN,
+    });
+    g.addEdge({
+      kind: "contains",
+      from: fileId("src/lib.rs"),
+      to: symbolId("src/lib.rs", "private_dead"),
+      site: site("src/lib.rs"),
+      name: "private_dead",
+    });
+
+    expect(shape(run(g))).toEqual([
+      {
+        kind: "export",
+        name: "private_dead",
+        file: "src/lib.rs",
+        verdict: "unused",
+        confidence: "high",
+      },
+    ]);
+  });
+});

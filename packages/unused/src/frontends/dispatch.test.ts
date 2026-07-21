@@ -157,4 +157,35 @@ describe("nested-boundary dispatch", () => {
       ),
     ).toBe(true);
   });
+
+  it("analyzes a nested Cargo project and rebases compiler evidence", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unused-nested-rust-dispatch-"));
+    temporaryProjects.push(root);
+    const project = join(root, "native", "core");
+    await mkdir(join(project, "src"), { recursive: true });
+    await writeFile(
+      join(project, "Cargo.toml"),
+      '[package]\nname = "neutral-core"\nversion = "0.1.0"\nedition = "2024"\n',
+    );
+    await writeFile(
+      join(project, "src", "lib.rs"),
+      "pub fn public_api() {}\nfn dead_helper() {}\n",
+    );
+
+    const analysis = await analyzeProjectAutoWithGraph(root, { now: new Date(0) });
+
+    expect(analysis.result.claims).toMatchObject([
+      {
+        subject: {
+          kind: "export",
+          name: "dead_helper",
+          loc: { file: "native/core/src/lib.rs" },
+        },
+        evidence: [{ source: "rustc-dead-code" }],
+      },
+    ]);
+    expect(analysis.boundaries).toMatchObject([
+      { status: "complete", boundaryId: "rs:native/core", language: "rs", fileCount: 1 },
+    ]);
+  });
 });
