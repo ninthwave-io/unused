@@ -167,13 +167,14 @@ export interface AnalyzeInternalOptions {
   /** Defer config-match diagnostics so mixed dispatch can evaluate the language union once. */
   readonly emitConfigMatchWarnings?: boolean;
   /** Convention families owned by repository plugins instead of this composition path. */
-  readonly deferredConventions?: readonly TypeScriptConventionId[];
+  readonly deferredConventions?: readonly DeferredConventionId[];
 }
 
-export type TypeScriptConventionId =
+export type DeferredConventionId =
   | "github-actions-run"
   | "taskfile-command"
-  | "native-config-script";
+  | "native-config-script"
+  | "elixir-runtime";
 
 /**
  * {@link analyzeProject}'s return value: the PRD §4 wire format plus one

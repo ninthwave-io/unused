@@ -29,8 +29,8 @@ import {
   type Provenance,
   SCHEMA_VERSION,
 } from "../../core/claims/index.js";
-import { entrypointId, fileId, type IRGraph } from "../../core/ir/index.js";
-import type { FrontendClaimInputs } from "../plugins/types.js";
+import { entrypointId, fileId, IRGraph } from "../../core/ir/index.js";
+import type { FrontendClaimInputs, GraphContribution } from "../plugins/types.js";
 import type { AnalyzeInternalOptions, AnalyzeOptions, AnalyzeResult } from "../ts/analyze.js";
 import {
   applyConfigSuppressions,
@@ -60,7 +60,15 @@ export interface AnalyzeElixirWithGraph {
   readonly reachability: PartitionedReachability;
   readonly claimInputs: FrontendClaimInputs;
   readonly provenance: Provenance;
+  readonly deferredContributions?: ReadonlyMap<string, GraphContribution>;
 }
+
+const ELIXIR_RUNTIME_PLUGIN_ID = "convention:elixir-runtime";
+const ELIXIR_RUNTIME_HAZARDS = new Set([
+  "elixir-behaviour-callback",
+  "elixir-dynamic-dispatch",
+  "elixir-phoenix-runtime",
+]);
 
 /**
  * Analyze the Elixir (mix) project rooted at `rootDir`. Throws an
@@ -99,7 +107,11 @@ export async function analyzeElixirProjectWithGraph(
   const configReferencedModules = scanConfigModuleReferences(project.projectDir, projectModules);
 
   const runtimeReferences = extractElixirRuntimeReferences(project.projectDir, traceResult);
-  const graph = emitElixirIR({ traceResult, configReferencedModules, runtimeReferences });
+  const emittedGraph = emitElixirIR({ traceResult, configReferencedModules, runtimeReferences });
+  const deferred = internal.deferredConventions?.includes("elixir-runtime") === true;
+  const { graph, contribution } = deferred
+    ? deferElixirRuntimeContribution(emittedGraph)
+    : { graph: emittedGraph, contribution: undefined };
 
   // Per-file line counts for `file`-claim spans (core does no file I/O).
   const fileLineCounts = new Map<string, number>();
@@ -185,7 +197,43 @@ export async function analyzeElixirProjectWithGraph(
     units: [{ rootRelDir: "", name: appName }],
     gateThreshold: config.gate?.threshold ?? "high",
   };
-  return { result, graph, reachability, claimInputs, provenance };
+  return {
+    result,
+    graph,
+    reachability,
+    claimInputs,
+    provenance,
+    ...(contribution === undefined
+      ? {}
+      : { deferredContributions: new Map([[ELIXIR_RUNTIME_PLUGIN_ID, contribution]]) }),
+  };
+}
+
+function deferElixirRuntimeContribution(graph: IRGraph): {
+  readonly graph: IRGraph;
+  readonly contribution: GraphContribution;
+} {
+  const deferredNodeIds = new Set(
+    graph
+      .nodes()
+      .filter((node) => node.kind === "entrypoint" && node.reason === "phoenix-endpoint-router")
+      .map((node) => node.id),
+  );
+  const nodes = graph.nodes().filter((node) => deferredNodeIds.has(node.id));
+  const edges = graph
+    .edges()
+    .filter((edge) => edge.kind === "references" && edge.referenceKind === "runtime-resolved");
+  const hazards = graph
+    .hazards()
+    .filter((hazard) => ELIXIR_RUNTIME_HAZARDS.has(hazard.hazardClass));
+  const deferredEdges = new Set(edges);
+  const deferredHazards = new Set(hazards);
+  const retained = new IRGraph();
+  for (const node of graph.nodes()) if (!deferredNodeIds.has(node.id)) retained.addNode(node);
+  for (const edge of graph.edges()) if (!deferredEdges.has(edge)) retained.addEdge(edge);
+  for (const hazard of graph.hazards())
+    if (!deferredHazards.has(hazard)) retained.addHazard(hazard);
+  return { graph: retained, contribution: { nodes, edges, hazards } };
 }
 
 /**

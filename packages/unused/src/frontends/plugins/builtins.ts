@@ -5,7 +5,13 @@ import { analyzeElixirProjectWithGraph } from "../elixir/index.js";
 import { analyzeRustProjectWithGraph } from "../rust/index.js";
 import { type AnalyzeOptions, analyzeProjectWithGraph } from "../ts/analyze.js";
 import { selectProjectBoundaries } from "./boundaries.js";
-import { prefixRepositoryPath, rebaseClaimInputs, rebaseGraph } from "./rebase.js";
+import { elixirRuntimeConventionPlugin } from "./elixir-conventions.js";
+import {
+  prefixRepositoryPath,
+  rebaseClaimInputs,
+  rebaseGraph,
+  rebaseGraphContribution,
+} from "./rebase.js";
 import {
   rustlerBridgePlugin,
   rustlerElixirConventionPlugin,
@@ -14,6 +20,7 @@ import {
 import type {
   AnalyzerPlugin,
   FrontendGraphFragment,
+  GraphContribution,
   LanguageFrontendPlugin,
   RepositoryAnalysisContext,
 } from "./types.js";
@@ -35,7 +42,9 @@ function fragment(
   pluginId: string,
   language: string,
   boundary: Parameters<LanguageFrontendPlugin["analyze"]>[1],
-  analysis: Awaited<ReturnType<typeof analyzeProjectWithGraph>>,
+  analysis: Awaited<ReturnType<typeof analyzeProjectWithGraph>> & {
+    readonly deferredContributions?: ReadonlyMap<string, GraphContribution>;
+  },
 ): FrontendGraphFragment {
   const claimAnnotations = new Map<
     string,
@@ -74,6 +83,16 @@ function fragment(
     },
     claimInputs: rebaseClaimInputs(analysis.claimInputs, boundary.rootRelDir),
     claimAnnotations,
+    ...(analysis.deferredContributions === undefined
+      ? {}
+      : {
+          deferredContributions: new Map(
+            [...analysis.deferredContributions].map(([id, contribution]) => [
+              id,
+              rebaseGraphContribution(contribution, analysis.graph, boundary.rootRelDir),
+            ]),
+          ),
+        }),
     diagnostics: [],
   };
 }
@@ -137,7 +156,10 @@ export const elixirLanguagePlugin: LanguageFrontendPlugin = {
     const analysis = await analyzeElixirProjectWithGraph(
       boundary.rootDir,
       analyzeOptions(context),
-      { emitConfigMatchWarnings: false },
+      {
+        emitConfigMatchWarnings: false,
+        deferredConventions: ["elixir-runtime"],
+      },
     );
     return fragment(this.id, this.language, boundary, analysis);
   },
@@ -181,6 +203,7 @@ export const BUILT_IN_LANGUAGE_PLUGINS = [
 
 export const BUILT_IN_PLUGINS: readonly AnalyzerPlugin[] = [
   ...BUILT_IN_LANGUAGE_PLUGINS,
+  elixirRuntimeConventionPlugin,
   rustlerElixirConventionPlugin,
   rustlerRustConventionPlugin,
   typescriptConfigCarriersConventionPlugin,

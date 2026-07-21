@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { dependencyId, entrypointId, fileId, IRGraph, symbolId } from "../../core/ir/index.js";
-import { prefixRepositoryPath, rebaseClaimInputs, rebaseGraph } from "./rebase.js";
+import {
+  prefixRepositoryPath,
+  rebaseClaimInputs,
+  rebaseGraph,
+  rebaseGraphContribution,
+} from "./rebase.js";
 
 const SITE = { file: "lib/callback.ex", span: { start: 0, end: 1, startLine: 2, endLine: 2 } };
 
@@ -105,5 +110,54 @@ describe("rebaseGraph", () => {
       "apps/backend/lib/generated.ex",
     ]);
     expect([...rebased.claimableFiles]).toEqual(["apps/backend/lib/callback.ex"]);
+  });
+
+  it("rebases deferred edges against nodes retained in the owning graph", () => {
+    const graph = new IRGraph();
+    graph.addNode({ kind: "file", id: fileId("lib/callback.ex"), path: "lib/callback.ex" });
+    graph.addNode({
+      kind: "symbol",
+      id: symbolId("lib/callback.ex", "App.callback/1"),
+      file: "lib/callback.ex",
+      exportedName: "App.callback/1",
+      isDefault: false,
+      typeOnly: false,
+      local: true,
+      span: SITE.span,
+    });
+    const contribution = rebaseGraphContribution(
+      {
+        edges: [
+          {
+            kind: "references",
+            referenceKind: "runtime-resolved",
+            from: symbolId("lib/callback.ex", "App.callback/1"),
+            to: symbolId("lib/callback.ex", "App.callback/1"),
+            site: SITE,
+            name: "App.callback/1",
+          },
+        ],
+        hazards: [
+          {
+            file: fileId("lib/callback.ex"),
+            hazardClass: "elixir-dynamic-dispatch",
+            detail: "neutral",
+            site: SITE,
+          },
+        ],
+      },
+      graph,
+      "apps/backend",
+    );
+
+    expect(contribution.edges?.[0]).toMatchObject({
+      from: symbolId("apps/backend/lib/callback.ex", "App.callback/1"),
+      to: symbolId("apps/backend/lib/callback.ex", "App.callback/1"),
+      site: { file: "apps/backend/lib/callback.ex" },
+    });
+    expect(contribution.hazards?.[0]).toMatchObject({
+      file: fileId("apps/backend/lib/callback.ex"),
+      site: { file: "apps/backend/lib/callback.ex" },
+    });
   });
 });

@@ -6,7 +6,13 @@ export {
   rustLanguagePlugin,
   typescriptLanguagePlugin,
 } from "./builtins.js";
-export { prefixRepositoryPath, rebaseClaimInputs, rebaseGraph } from "./rebase.js";
+export { elixirRuntimeConventionPlugin } from "./elixir-conventions.js";
+export {
+  prefixRepositoryPath,
+  rebaseClaimInputs,
+  rebaseGraph,
+  rebaseGraphContribution,
+} from "./rebase.js";
 export { PluginRegistry } from "./registry.js";
 export {
   rustlerBridgePlugin,

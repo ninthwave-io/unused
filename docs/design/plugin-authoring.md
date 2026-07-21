@@ -53,6 +53,15 @@ remove or mutate another plugin's facts. Duplicate identical node ids are
 idempotent; conflicting shapes fail loudly. Diagnostics must be deterministic
 and must never enter canonical JSON stdout.
 
+When a convention depends on expensive language-tool facts, the language
+frontend may prepare a `GraphContribution` during its one parse/compiler pass
+and place it in `FrontendGraphFragment.deferredContributions` under the owning
+plugin id. The base fragment must omit those facts in registry-driven runs; the
+convention plugin activates the exact prepared contribution in phase 3. Rebase
+deferred edges against the complete owning graph with
+`rebaseGraphContribution`. This is an ownership hand-off, not permission to
+parse, trace, or compile twice.
+
 Computed or ambiguous runtime identity requires a registered hazard with the
 narrowest truthful scope. A convention must never invent an edge just to gain
 recall. A bridge should join exact endpoint keys and keep unmatched externally

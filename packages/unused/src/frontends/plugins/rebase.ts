@@ -12,7 +12,7 @@ import {
   type Site,
   symbolId,
 } from "../../core/ir/index.js";
-import type { FrontendClaimInputs } from "./types.js";
+import type { FrontendClaimInputs, GraphContribution } from "./types.js";
 
 /** Return a new graph whose file identities and provenance are repository-relative. */
 export function rebaseGraph(graph: IRGraph, rootRelDir: string): IRGraph {
@@ -28,6 +28,41 @@ export function rebaseGraph(graph: IRGraph, rootRelDir: string): IRGraph {
   for (const edge of graph.edges()) rebased.addEdge(rebaseEdge(edge, prefix, ids));
   for (const hazard of graph.hazards()) rebased.addHazard(rebaseHazard(hazard, prefix, ids));
   return rebased;
+}
+
+/** Rebase a deferred contribution whose edges can target nodes in `ownerGraph`. */
+export function rebaseGraphContribution(
+  contribution: GraphContribution,
+  ownerGraph: IRGraph,
+  rootRelDir: string,
+): GraphContribution {
+  const prefix = normalizePrefix(rootRelDir);
+  if (prefix === "") return contribution;
+  const ids = new Map<string, string>();
+  for (const node of [...ownerGraph.nodes(), ...(contribution.nodes ?? [])]) {
+    ids.set(node.id, rebaseNode(node, prefix).id);
+  }
+  return {
+    ...(contribution.nodes === undefined
+      ? {}
+      : { nodes: contribution.nodes.map((node) => rebaseNode(node, prefix)) }),
+    ...(contribution.edges === undefined
+      ? {}
+      : { edges: contribution.edges.map((edge) => rebaseEdge(edge, prefix, ids)) }),
+    ...(contribution.hazards === undefined
+      ? {}
+      : {
+          hazards: contribution.hazards.map((hazard) => rebaseHazard(hazard, prefix, ids)),
+        }),
+    ...(contribution.diagnostics === undefined
+      ? {}
+      : {
+          diagnostics: contribution.diagnostics.map((diagnostic) => ({
+            ...diagnostic,
+            ...(diagnostic.site === undefined ? {} : { site: rebaseSite(diagnostic.site, prefix) }),
+          })),
+        }),
+  };
 }
 
 /** Rebase claim metadata alongside its graph fragment. */

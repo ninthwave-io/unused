@@ -119,6 +119,8 @@ export interface FrontendGraphFragment {
       readonly evidence?: readonly Evidence[];
     }
   >;
+  /** Precomputed facts activated by their owning convention plugin phase. */
+  readonly deferredContributions?: ReadonlyMap<string, GraphContribution>;
   readonly diagnostics: readonly PluginDiagnostic[];
 }
 

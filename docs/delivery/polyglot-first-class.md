@@ -322,7 +322,7 @@ migrating the narrower Elixir runtime conventions.
 
 ### P5 — Convention modularization
 
-Status: in progress
+Status: complete
 
 Deliverables:
 
@@ -358,10 +358,31 @@ Progress:
   mutation guidance, local-toolchain expectations, and the public/private
   derivation boundary. The corpus README now documents active language and
   polyglot scoreboards instead of its obsolete pre-analyzer state.
+- `convention:elixir-runtime` now owns literal runtime-reference edges,
+  behaviour/OTP/Phoenix/dynamic-dispatch hazards, and Phoenix endpoint/router
+  roots in registry-driven analysis. Direct Elixir analysis retains the same
+  established emission for compatibility.
+- The Elixir frontend prepares the convention contribution from its one
+  compiler trace and one existing runtime-reference extraction, then omits it
+  from the base fragment. Deferred contributions are typed, keyed by plugin id,
+  and rebased against retained graph nodes; the plugin activates them before
+  global reachability. No project is rescanned or recompiled.
+- An integration test analyzes two nested neutral Mix boundaries together and
+  proves the rebased MFA edge and behaviour-callback hazard keep their exact
+  live subjects unclaimed. Focused P5 completion verification: 16 plugin/
+  dispatch/polyglot tests pass under the selected Mix toolchain; typecheck and
+  dependency boundaries pass (916 modules / 1,970 dependencies).
 
-Next action: move Elixir literal runtime references and OTP/Phoenix hazards
-behind their own convention plugins, using frontend deferral and the existing
-extractor/tracer facts rather than rescanning or recompiling the project.
+P5 decision: the contracts are proven by a filesystem convention family, a
+compiler-fact convention family, and a cross-language bridge. Further
+TypeScript preset/source convention migration can proceed incrementally without
+blocking v0.1.0; no convention-specific orchestrator branch or external plugin
+loading ABI is required.
+
+Next action: begin P6 with the complete quality-gate matrix, regenerate every
+scoreboard/assumption artifact, run packaging/privacy smokes, and capture a
+polyglot phase/counter plus wall/CPU/RSS benchmark before updating the release
+and Rust decision notes.
 
 ### P6 — Integrated acceptance and release decision
 
