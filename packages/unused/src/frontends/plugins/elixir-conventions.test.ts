@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { fileId, IRGraph, symbolId } from "../../core/ir/index.js";
 import {
+  ectoElixirAtomRoleSummaryProvider,
+  ectoElixirConventionPlugin,
   elixirRuntimeConventionPlugin,
   elixirScriptConventionPlugin,
 } from "./elixir-conventions.js";
@@ -10,6 +12,21 @@ const site = {
   file: "lib/neutral/runtime.ex",
   span: { start: 0, end: 0, startLine: 4, endLine: 4 },
 };
+
+describe("ectoElixirConventionPlugin", () => {
+  it("owns a dependency-gated semantic-summary provider before graph emission", () => {
+    expect(ectoElixirConventionPlugin).toMatchObject({
+      id: "convention:ecto",
+      kind: "convention",
+      languages: ["ex"],
+      elixirAtomRoleSummaryProvider: ectoElixirAtomRoleSummaryProvider,
+    });
+    expect(ectoElixirAtomRoleSummaryProvider.summaries.length).toBeGreaterThan(0);
+    for (const summary of ectoElixirAtomRoleSummaryProvider.summaries) {
+      expect(summary.origin).toEqual({ pluginId: "convention:ecto", dependency: "ecto" });
+    }
+  });
+});
 
 describe("elixirRuntimeConventionPlugin", () => {
   it("activates exactly the contribution prepared from the existing compiler trace", async () => {

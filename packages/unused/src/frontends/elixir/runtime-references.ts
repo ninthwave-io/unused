@@ -18,6 +18,12 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  createElixirAtomRoleSummaryLookup,
+  type ElixirAtomRoleSummary,
+  type ElixirAtomRoleSummaryLookup,
+  type ElixirAtomRoleSummaryProvider,
+} from "./atom-role-summaries.js";
 import type { FunctionRecord, ModuleRecord, TraceEvent, TraceResult } from "./events.js";
 
 export interface ElixirRuntimeReference {
@@ -47,7 +53,7 @@ interface ElixirDynamicFactBase {
 /** A known atom-producing call and the bounded disposition of its result. */
 export interface ElixirComputedAtomFact extends ElixirDynamicFactBase {
   readonly factKind: "computed-atom";
-  readonly flow: "data" | "escape";
+  readonly flow: "data" | "delegated-invocation" | "escape";
   readonly kind: "exact" | "opaque";
 }
 
@@ -61,7 +67,22 @@ export type ElixirDynamicDispatch = ElixirComputedAtomFact | ElixirDynamicInvoca
 export interface ElixirRuntimeConventions {
   readonly references: readonly ElixirRuntimeReference[];
   readonly dynamicDispatches: readonly ElixirDynamicDispatch[];
+  readonly atomFlowStats: Readonly<ElixirAtomFlowStats>;
 }
+
+export interface ElixirAtomFlowStats {
+  readonly sources: number;
+  readonly sourceBytes: number;
+  readonly producers: number;
+  readonly roleEdges: number;
+  readonly queueVisits: number;
+  readonly summaryMatches: number;
+  readonly dataSinks: number;
+  readonly invocationSinks: number;
+  readonly escapes: number;
+}
+
+type MutableAtomFlowStats = { -readonly [K in keyof ElixirAtomFlowStats]: number };
 
 const MODULE = String.raw`[A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*`;
 const FUNCTION = `[a-z_][A-Za-z0-9_]*[!?]?`;
@@ -80,8 +101,6 @@ const STATIC_LIST_ELEMENT_RE =
   /(?:[A-Za-z_][A-Za-z0-9_.]*[!?]?|:[A-Za-z_][A-Za-z0-9_]*[!?]?|[-+]?\d[\d_.]*)/uy;
 const ANY_APPLY_RE = /(?:\bKernel\s*\.\s*|:erlang\s*\.\s*|\b)apply\s*\(/gu;
 const ATOM_PRODUCER_RE = /\bString\.(to_atom|to_existing_atom)\s*\(/gu;
-const ATOM_PRODUCER_ARGUMENT_RE =
-  /\bString\.(?:to_atom|to_existing_atom)\s*\(\s*([a-z_][A-Za-z0-9_]*)\s*\)/gu;
 const PHOENIX_CONTROLLER = "Phoenix.Controller";
 const MAP_CALL_RE =
   /\bMap\.(fetch!|fetch|get|get_lazy|has_key\?|delete|put|put_new|put_new_lazy|replace|replace!|update|update!)\s*\(/gu;
@@ -98,6 +117,10 @@ const CLAUSE_GUARD_RE = /^(.+?)\s+when\s+(.+)$/u;
 const SIMPLE_BINDER_RE = /^[a-z_][A-Za-z0-9_]*$/u;
 const OK_TUPLE_BINDER_RE = /^\{\s*:ok\s*,\s*([a-z_][A-Za-z0-9_]*)\s*\}$/u;
 const LITERAL_ATOM_RE = /^:[a-z_][A-Za-z0-9_]*[!?]?$/u;
+const ROLE_CALL_RE = new RegExp(
+  String.raw`(?:(?:\b(${MODULE})|\b(Atom|Enum|Keyword|Map|MapSet))\s*\.\s*)?(${FUNCTION})\s*\(`,
+  "gu",
+);
 
 interface IdentifierOccurrence {
   readonly start: number;
@@ -155,11 +178,31 @@ export function extractElixirRuntimeReferences(
 export function extractElixirRuntimeConventions(
   projectDir: string,
   traceResult: TraceResult,
+  summaryProviders: readonly ElixirAtomRoleSummaryProvider[] = [],
 ): ElixirRuntimeConventions {
+  const atomFlowStats: MutableAtomFlowStats = {
+    sources: 0,
+    sourceBytes: 0,
+    producers: 0,
+    roleEdges: 0,
+    queueVisits: 0,
+    summaryMatches: 0,
+    dataSinks: 0,
+    invocationSinks: 0,
+    escapes: 0,
+  };
   const functionsByModuleName = indexFunctions(traceResult.functions);
+  const atomRoleSummaryLookup = createElixirAtomRoleSummaryLookup(
+    applicableAtomRoleSummaries(traceResult, summaryProviders),
+  );
   const contents = readProjectSources(projectDir, traceResult);
   const sources = new Map(
     [...contents].map(([file, content]) => [file, indexSource(content)] as const),
+  );
+  atomFlowStats.sources = sources.size;
+  atomFlowStats.sourceBytes = [...contents.values()].reduce(
+    (total, content) => total + content.length,
+    0,
   );
   const ownerIndex = indexOwners(traceResult);
   const parsedBySite = indexParsedApplies(sources);
@@ -252,8 +295,35 @@ export function extractElixirRuntimeConventions(
     references,
     seen,
     provenUseEvents,
+    atomFlowStats,
+    atomRoleSummaryLookup,
   );
-  return { references, dynamicDispatches };
+  return { references, dynamicDispatches, atomFlowStats };
+}
+
+function applicableAtomRoleSummaries(
+  traceResult: TraceResult,
+  providers: readonly ElixirAtomRoleSummaryProvider[],
+): readonly ElixirAtomRoleSummary[] {
+  const summaries: ElixirAtomRoleSummary[] = [];
+  const providerIds = new Set<string>();
+  for (const provider of providers) {
+    if (providerIds.has(provider.id)) {
+      throw new Error(`duplicate Elixir atom role summary provider: ${provider.id}`);
+    }
+    providerIds.add(provider.id);
+    if (!traceResult.deps.includes(provider.dependency)) continue;
+    for (const summary of provider.summaries) {
+      if (
+        summary.origin.pluginId !== provider.id ||
+        summary.origin.dependency !== provider.dependency
+      ) {
+        throw new Error(`Elixir atom role summary is not owned by provider ${provider.id}`);
+      }
+      summaries.push(summary);
+    }
+  }
+  return summaries;
 }
 
 function indexParsedApplies(
@@ -443,15 +513,23 @@ function extractDynamicDispatches(
   references: ElixirRuntimeReference[],
   seenReferences: Set<string>,
   provenUseEvents: readonly TraceEvent[],
+  atomFlowStats: MutableAtomFlowStats,
+  atomRoleSummaryLookup: ElixirAtomRoleSummaryLookup,
 ): ElixirDynamicDispatch[] {
   const candidateIndex = indexFunctionCandidates(traceResult.functions, functionsByModuleName);
   const functionsByModule = candidateIndex.byModule;
   const aliasTargetsByCarrierSite = indexAliasTargets(traceResult.events);
 
   const dynamicEventsBySite = indexDynamicEventsBySite(traceResult.events);
-  const atomProducerRoles = classifyAtomProducerEvents(traceResult.events, sources);
+  const atomProducerRoles = classifyAtomProducerEvents(
+    traceResult,
+    sources,
+    atomFlowStats,
+    atomRoleSummaryLookup,
+  );
   const safeAtomEvents = atomProducerRoles.data;
   const directAtomInvocationEvents = atomProducerRoles.invocation;
+  const delegatedAtomInvocationEvents = atomProducerRoles.delegatedInvocation;
   const exactUseDispatchEvents = exactUseDispatcherEvents(
     traceResult,
     references,
@@ -468,6 +546,20 @@ function extractDynamicDispatches(
     const owner = ownerFromEvent(event);
     const eventKey = dynamicEventKey(event);
     const siteEvents = dynamicEventsBySite.get(dispatchSiteKey(event.file, event.line)) ?? [];
+    if (delegatedAtomInvocationEvents.has(event)) {
+      dispatches.push({
+        ...owner,
+        file: event.file,
+        line: event.line,
+        factKind: "computed-atom",
+        flow: "delegated-invocation",
+        kind: "exact",
+        world: event.partition === "test" ? "test" : "production",
+        eventKey,
+        targets: [],
+      });
+      continue;
+    }
     if (safeAtomEvents.has(event)) {
       dispatches.push({
         ...owner,
@@ -659,6 +751,656 @@ function indexDynamicEventsBySite(events: readonly TraceEvent[]): Map<string, Tr
   return index;
 }
 
+type AtomFlowDisposition = "data" | "invocation" | "escape";
+
+interface IndexedRoleCall {
+  readonly module: string | null;
+  readonly name: string;
+  readonly arity: number;
+  readonly start: number;
+  readonly open: number;
+  readonly close: number;
+  readonly line: number;
+  readonly piped: boolean;
+  readonly sourceCardinality: number;
+}
+
+interface AtomFlowResult {
+  readonly disposition: AtomFlowDisposition;
+  readonly requiredCalls: readonly IndexedRoleCall[];
+  /** A compiler-confirmed dynamic call will emit the invocation hazard itself. */
+  readonly delegatedInvocation?: true;
+}
+
+interface AtomRoleIndex {
+  readonly callsByOpen: ReadonlyMap<number, IndexedRoleCall>;
+  readonly pipelineCalls: readonly IndexedRoleCall[];
+}
+
+interface AtomFlowContext {
+  readonly producerEvent: TraceEvent;
+  readonly eventsBySourceCall: ReadonlyMap<string, readonly TraceEvent[]>;
+  readonly summaryLookup: ElixirAtomRoleSummaryLookup;
+  readonly projectModules: ReadonlySet<string>;
+  readonly stats: MutableAtomFlowStats;
+  /** Reviewed migration adapter for legacy exact terminal proofs only. */
+  readonly legacyTerminal: boolean;
+}
+
+const ATOM_FLOW_DATA = 1 << 0;
+const ATOM_FLOW_INVOCATION = 1 << 1;
+const ATOM_FLOW_ESCAPE = 1 << 2;
+const ATOM_FLOW_DELEGATED_INVOCATION = 1 << 3;
+
+interface AtomFlowNode {
+  readonly key: string;
+  readonly context: AtomFlowContext;
+  readonly kind: "value" | "assignment";
+  readonly start: number;
+  readonly end: number;
+  readonly parentOpen?: number;
+  readonly name?: string;
+  readonly incoming: Set<string>;
+  readonly outgoing: Set<string>;
+  terminal: number;
+  outcome: number;
+}
+
+interface AtomFlowGraph {
+  readonly source: SourceIndex;
+  readonly roles: AtomRoleIndex;
+  readonly nodes: Map<string, AtomFlowNode>;
+  readonly pending: AtomFlowNode[];
+  readonly stats: MutableAtomFlowStats;
+}
+
+/**
+ * Build the bounded call-role index once per compiler-owned source. Calls not
+ * present in the declarative registry remain indexed so an enclosing unknown
+ * call cannot be skipped in favour of a known outer data sink.
+ */
+function indexAtomRoles(source: SourceIndex): AtomRoleIndex {
+  const pending: Array<Omit<IndexedRoleCall, "sourceCardinality">> = [];
+  const cardinality = new Map<string, number>();
+  for (const match of source.code.matchAll(ROLE_CALL_RE)) {
+    const name = match[3];
+    if (name === undefined) continue;
+    const start = match.index ?? 0;
+    const open = start + match[0].length - 1;
+    const close = source.closeByOpen.get(open);
+    if (close === undefined) continue;
+    const module = match[1] ?? match[2] ?? null;
+    const explicitArity = callArity(source, open);
+    const pipe = precedingPipe(source.code, start);
+    const piped = pipe !== null;
+    const arity = explicitArity + (piped ? 1 : 0);
+    const line = lineAt(source.lineStarts, start);
+    const key = `${containingFunctionRange(source.functionRanges, start)?.start ?? -1}\0${line}\0${name}\0${arity}`;
+    cardinality.set(key, (cardinality.get(key) ?? 0) + 1);
+    pending.push({
+      module,
+      name,
+      arity,
+      start,
+      open,
+      close,
+      line,
+      piped,
+    });
+  }
+  const calls = pending.map((call) => ({
+    ...call,
+    sourceCardinality:
+      cardinality.get(
+        `${containingFunctionRange(source.functionRanges, call.start)?.start ?? -1}\0${call.line}\0${call.name}\0${call.arity}`,
+      ) ?? 0,
+  }));
+  return {
+    callsByOpen: new Map(calls.map((call) => [call.open, call])),
+    pipelineCalls: calls.filter((call) => call.piped),
+  };
+}
+
+function callArity(source: SourceIndex, open: number): number {
+  const close = source.closeByOpen.get(open);
+  if (close === undefined) return 0;
+  const start = skipWhitespaceForward(source.code, open + 1, close);
+  if (start === close) return 0;
+  return (source.commasByOpen.get(open)?.length ?? 0) + 1;
+}
+
+function precedingPipe(code: string, callStart: number): number | null {
+  const before = skipWhitespaceBackward(code, callStart, 0);
+  if (before < 2 || code.slice(before - 2, before) !== "|>") return null;
+  return before - 2;
+}
+
+function atomFlowContextKey(context: AtomFlowContext): string {
+  const event = context.producerEvent;
+  return [
+    event.file,
+    event.from_mod ?? "",
+    event.from_fun ?? "",
+    event.partition,
+    context.legacyTerminal ? "legacy" : "indexed",
+  ].join("\0");
+}
+
+function ensureAtomValueNode(
+  graph: AtomFlowGraph,
+  producerStart: number,
+  producerEnd: number,
+  parentOpen: number | undefined,
+  context: AtomFlowContext,
+): string {
+  const key = `${atomFlowContextKey(context)}\0v\0${producerStart}\0${producerEnd}\0${parentOpen ?? -1}`;
+  if (!graph.nodes.has(key)) {
+    const node: AtomFlowNode = {
+      key,
+      context,
+      kind: "value",
+      start: producerStart,
+      end: producerEnd,
+      ...(parentOpen === undefined ? {} : { parentOpen }),
+      incoming: new Set(),
+      outgoing: new Set(),
+      terminal: 0,
+      outcome: 0,
+    };
+    graph.nodes.set(key, node);
+    graph.pending.push(node);
+  }
+  return key;
+}
+
+function ensureAtomAssignmentNode(
+  graph: AtomFlowGraph,
+  assignment: { readonly name: string; readonly start: number; readonly end: number },
+  context: AtomFlowContext,
+): string {
+  const key = `${atomFlowContextKey(context)}\0a\0${assignment.start}\0${assignment.end}\0${assignment.name}`;
+  if (!graph.nodes.has(key)) {
+    const node: AtomFlowNode = {
+      key,
+      context,
+      kind: "assignment",
+      start: assignment.start,
+      end: assignment.end,
+      name: assignment.name,
+      incoming: new Set(),
+      outgoing: new Set(),
+      terminal: 0,
+      outcome: 0,
+    };
+    graph.nodes.set(key, node);
+    graph.pending.push(node);
+  }
+  return key;
+}
+
+function addAtomFlowEdge(graph: AtomFlowGraph, from: AtomFlowNode, toKey: string): void {
+  if (from.outgoing.has(toKey)) return;
+  from.outgoing.add(toKey);
+  graph.nodes.get(toKey)?.incoming.add(from.key);
+  graph.stats.roleEdges += 1;
+}
+
+function expressionAssignment(
+  source: SourceIndex,
+  expressionStart: number,
+  expressionEnd: number,
+): { readonly name: string; readonly start: number; readonly end: number } | null {
+  const line = lineAt(source.lineStarts, expressionStart);
+  const lineStart = source.lineStarts[line - 1] ?? 0;
+  const lineEnd = source.lineStarts[line] ?? source.code.length;
+  const expressionEndLine = lineAt(source.lineStarts, Math.max(expressionStart, expressionEnd - 1));
+  const expressionLineEnd = source.lineStarts[expressionEndLine] ?? source.code.length;
+  const assignmentStart = skipWhitespaceForward(source.code, lineStart, expressionStart);
+  ASSIGNMENT_RE.lastIndex = assignmentStart;
+  const match = ASSIGNMENT_RE.exec(source.code);
+  const name = match?.[1];
+  if (
+    name !== undefined &&
+    ASSIGNMENT_RE.lastIndex === expressionStart &&
+    skipWhitespaceForward(source.code, expressionEnd, expressionLineEnd) === expressionLineEnd
+  ) {
+    return { name, start: assignmentStart, end: expressionEnd };
+  }
+  const prefix = source.code.slice(lineStart, expressionStart);
+  const withAssignment = /\b([a-z_][A-Za-z0-9_]*)\s*=\s*$/u.exec(prefix);
+  const withName = withAssignment?.[1];
+  const suffixStart = skipWhitespaceForward(source.code, expressionEnd, lineEnd);
+  const suffixEnd = skipWhitespaceBackward(source.code, lineEnd, suffixStart);
+  if (
+    withName === undefined ||
+    !/^\s*with\b/u.test(prefix) ||
+    source.code.slice(suffixStart, suffixEnd) !== "do"
+  ) {
+    return null;
+  }
+  return {
+    name: withName,
+    start: lineStart + (withAssignment?.index ?? 0),
+    end: expressionEnd,
+  };
+}
+
+function isAssignmentAt(code: string, _start: number, end: number): boolean {
+  const next = skipWhitespaceForward(code, end, code.length);
+  return (
+    code[next] === "=" && code[next + 1] !== "=" && code[next + 1] !== ">" && code[next + 1] !== "~"
+  );
+}
+
+function expandAtomFlowGraph(graph: AtomFlowGraph): void {
+  let pendingIndex = 0;
+  while (pendingIndex < graph.pending.length) {
+    const node = graph.pending[pendingIndex];
+    pendingIndex += 1;
+    if (node === undefined) continue;
+    graph.stats.queueVisits += 1;
+    if (node.kind === "assignment") expandAtomAssignmentNode(graph, node);
+    else expandAtomValueNode(graph, node);
+  }
+}
+
+function expandAtomAssignmentNode(graph: AtomFlowGraph, node: AtomFlowNode): void {
+  const { source } = graph;
+  const name = node.name;
+  const range = containingFunctionRange(source.functionRanges, node.start);
+  if (name === undefined || range === null) {
+    node.terminal |= ATOM_FLOW_ESCAPE;
+    return;
+  }
+  const interpolation = lowerBoundNumber(source.interpolationStarts, node.end);
+  if ((source.interpolationStarts[interpolation] ?? Number.POSITIVE_INFINITY) < range.end) {
+    node.terminal |= ATOM_FLOW_ESCAPE;
+    return;
+  }
+  const occurrences = source.identifiersByName.get(name) ?? [];
+  let uses = 0;
+  let index = lowerBoundOccurrence(occurrences, node.end);
+  while (index < occurrences.length) {
+    const occurrence = occurrences[index];
+    index += 1;
+    if (occurrence === undefined || occurrence.start >= range.end) break;
+    if (isAssignmentAt(source.code, occurrence.start, occurrence.end)) {
+      node.terminal |= ATOM_FLOW_ESCAPE;
+      break;
+    }
+    if (isMapFieldAtomKey(source, occurrence)) continue;
+    uses += 1;
+    const useKey = ensureAtomValueNode(
+      graph,
+      occurrence.start,
+      occurrence.end,
+      occurrence.parentOpen,
+      node.context,
+    );
+    addAtomFlowEdge(graph, node, useKey);
+  }
+  if (uses === 0) node.terminal |= ATOM_FLOW_ESCAPE;
+}
+
+function expandAtomValueNode(graph: AtomFlowGraph, node: AtomFlowNode): void {
+  const { source, roles } = graph;
+  const after = skipWhitespaceForward(source.code, node.end, source.code.length);
+  if (/^\.[a-z_][A-Za-z0-9_]*[!?]?\s*\(/u.test(source.code.slice(after, after + 96))) {
+    node.terminal |= ATOM_FLOW_INVOCATION;
+    return;
+  }
+  if (isExactLiteralAtomAllowlist(source, after)) {
+    node.terminal |= ATOM_FLOW_DATA;
+    return;
+  }
+
+  const parentOpen = node.parentOpen;
+  if (parentOpen !== undefined) {
+    const call = roles.callsByOpen.get(parentOpen);
+    if (call !== undefined) {
+      expandAtomCallRole(graph, node, call);
+      return;
+    }
+    if (isMfaSelectorPosition(source, parentOpen, node.start, node.end)) {
+      node.terminal |= ATOM_FLOW_INVOCATION;
+      return;
+    }
+    const close = source.closeByOpen.get(parentOpen);
+    if (close === undefined) {
+      node.terminal |= ATOM_FLOW_ESCAPE;
+      return;
+    }
+    const containerKey = ensureAtomValueNode(
+      graph,
+      containerExpressionStart(source.code, parentOpen),
+      close + 1,
+      source.parentByOpen.get(parentOpen),
+      node.context,
+    );
+    addAtomFlowEdge(graph, node, containerKey);
+    return;
+  }
+
+  const pipeline = immediatePipelineCall(source, roles, node.end);
+  if (pipeline !== null) {
+    expandAtomCallRole(graph, node, pipeline, 0);
+    return;
+  }
+  const assignment = expressionAssignment(source, node.start, node.end);
+  if (assignment !== null) {
+    if (assignment.name === "_") {
+      node.terminal |= ATOM_FLOW_DATA;
+      return;
+    }
+    addAtomFlowEdge(graph, node, ensureAtomAssignmentNode(graph, assignment, node.context));
+    return;
+  }
+  node.terminal |= node.context.legacyTerminal ? ATOM_FLOW_DATA : ATOM_FLOW_ESCAPE;
+}
+
+function expandAtomCallRole(
+  graph: AtomFlowGraph,
+  node: AtomFlowNode,
+  call: IndexedRoleCall,
+  knownArgument?: number,
+): void {
+  const argument =
+    knownArgument ?? containingCallArgument(graph.source, call, node.start, node.end);
+  if (argument === null) {
+    node.terminal |= ATOM_FLOW_ESCAPE;
+    return;
+  }
+  // The argument-to-call-role relation is an indexed graph edge even when it
+  // terminates at a data, invocation, or escape sink rather than another
+  // value node.
+  graph.stats.roleEdges += 1;
+  const invocation = invocationCallEvent(call, argument, node.context);
+  if (invocation !== undefined) {
+    node.terminal |= invocation.dyn ? ATOM_FLOW_DELEGATED_INVOCATION : ATOM_FLOW_INVOCATION;
+    return;
+  }
+  const summary = resolveRoleSummary(call, node.context);
+  if (summary === undefined) {
+    node.terminal |= ATOM_FLOW_ESCAPE;
+    return;
+  }
+  const callbackRole = summary.callbackResults?.[argument];
+  if (callbackRole !== undefined) {
+    if (
+      !callbackContainsValue(graph.source, call, argument, node.start, node.end) &&
+      !node.context.legacyTerminal
+    ) {
+      const range = explicitArgumentRange(graph.source, call, argument);
+      node.terminal |=
+        range?.start === node.start && range.end === node.end
+          ? ATOM_FLOW_INVOCATION
+          : ATOM_FLOW_ESCAPE;
+      return;
+    }
+    addAtomCallResultEdge(graph, node, call);
+    return;
+  }
+  const role = summary.arguments[argument] ?? "escape";
+  if (role === "consume-data") node.terminal |= ATOM_FLOW_DATA;
+  else if (role === "invocation-selector") node.terminal |= ATOM_FLOW_INVOCATION;
+  else if (role === "propagate-to-result") addAtomCallResultEdge(graph, node, call);
+  else node.terminal |= ATOM_FLOW_ESCAPE;
+}
+
+function addAtomCallResultEdge(
+  graph: AtomFlowGraph,
+  node: AtomFlowNode,
+  call: IndexedRoleCall,
+): void {
+  const resultKey = ensureAtomValueNode(
+    graph,
+    call.start,
+    call.close + 1,
+    graph.source.parentByOpen.get(call.open),
+    node.context,
+  );
+  addAtomFlowEdge(graph, node, resultKey);
+}
+
+function solveAtomFlowGraph(graph: AtomFlowGraph): void {
+  expandAtomFlowGraph(graph);
+  const queue: AtomFlowNode[] = [];
+  for (const node of graph.nodes.values()) {
+    node.outcome = node.terminal;
+    if (node.outcome !== 0) queue.push(node);
+  }
+  let queueIndex = 0;
+  while (queueIndex < queue.length) {
+    const node = queue[queueIndex];
+    queueIndex += 1;
+    if (node === undefined) continue;
+    graph.stats.queueVisits += 1;
+    for (const predecessorKey of node.incoming) {
+      const predecessor = graph.nodes.get(predecessorKey);
+      if (predecessor === undefined) continue;
+      const next = predecessor.outcome | node.outcome;
+      if (next === predecessor.outcome) continue;
+      predecessor.outcome = next;
+      queue.push(predecessor);
+    }
+  }
+}
+
+function atomFlowResult(graph: AtomFlowGraph, rootKey: string): AtomFlowResult {
+  const outcome = graph.nodes.get(rootKey)?.outcome ?? ATOM_FLOW_ESCAPE;
+  if ((outcome & ATOM_FLOW_INVOCATION) !== 0) {
+    return { disposition: "invocation", requiredCalls: [] };
+  }
+  if ((outcome & ATOM_FLOW_ESCAPE) !== 0) {
+    return { disposition: "escape", requiredCalls: [] };
+  }
+  if ((outcome & ATOM_FLOW_DELEGATED_INVOCATION) !== 0) {
+    return { disposition: "invocation", requiredCalls: [], delegatedInvocation: true };
+  }
+  if ((outcome & ATOM_FLOW_DATA) !== 0) return { disposition: "data", requiredCalls: [] };
+  return { disposition: "escape", requiredCalls: [] };
+}
+
+function containerExpressionStart(code: string, open: number): number {
+  if (code[open - 1] === "%") return open - 1;
+  let index = open;
+  while (index > 0 && /[A-Za-z0-9_.]/u.test(code[index - 1] ?? "")) index -= 1;
+  return code[index - 1] === "%" ? index - 1 : open;
+}
+
+function isExactLiteralAtomAllowlist(source: SourceIndex, afterValue: number): boolean {
+  const suffix = source.code.slice(afterValue, Math.min(source.code.length, afterValue + 16));
+  const operator = /^(?:not\s+)?in\s*/u.exec(suffix);
+  if (operator === null) return false;
+  const open = afterValue + operator[0].length;
+  if (source.code[open] !== "[") return false;
+  const close = source.closeByOpen.get(open);
+  const commas = source.commasByOpen.get(open) ?? [];
+  if (close === undefined) return false;
+  const bounds = [open, ...commas, close];
+  if (bounds.length < 2) return false;
+  for (let index = 0; index + 1 < bounds.length; index += 1) {
+    const left = bounds[index];
+    const right = bounds[index + 1];
+    if (left === undefined || right === undefined) return false;
+    const start = skipWhitespaceForward(source.code, left + 1, right);
+    const end = skipWhitespaceBackward(source.code, right, left + 1);
+    if (!LITERAL_ATOM_RE.test(source.code.slice(start, end))) return false;
+  }
+  return true;
+}
+
+function containingCallArgument(
+  source: SourceIndex,
+  call: IndexedRoleCall,
+  valueStart: number,
+  valueEnd: number,
+): number | null {
+  const explicit = call.arity - (call.piped ? 1 : 0);
+  const argument = lowerBoundNumber(source.commasByOpen.get(call.open) ?? [], valueStart);
+  if (argument >= explicit) return null;
+  const range = callArgumentRange(source, call.open, argument);
+  return range !== null && range.start <= valueStart && valueEnd <= range.end
+    ? argument + (call.piped ? 1 : 0)
+    : null;
+}
+
+function explicitArgumentRange(
+  source: SourceIndex,
+  call: IndexedRoleCall,
+  logicalArgument: number,
+): { readonly start: number; readonly end: number } | null {
+  const explicitArgument = logicalArgument - (call.piped ? 1 : 0);
+  return explicitArgument < 0 ? null : callArgumentRange(source, call.open, explicitArgument);
+}
+
+function invocationCallEvent(
+  call: IndexedRoleCall,
+  argument: number,
+  context: AtomFlowContext,
+): TraceEvent | undefined {
+  const event = resolveSourceCallEvent(call, context);
+  const invocation =
+    ((event?.to_mod === "Kernel" || event?.to_mod === ":erlang") &&
+      event.name === "apply" &&
+      event.arity === 3 &&
+      (argument === 0 || argument === 1)) ||
+    (event?.to_mod === "Function" &&
+      event.name === "capture" &&
+      event.arity === 3 &&
+      (argument === 0 || argument === 1));
+  return invocation ? event : undefined;
+}
+
+function resolveRoleSummary(
+  call: IndexedRoleCall,
+  context: AtomFlowContext,
+): ElixirAtomRoleSummary | undefined {
+  const event = resolveSourceCallEvent(call, context);
+  if (event?.name === undefined || event.arity === undefined) return undefined;
+  const summary = context.summaryLookup(event.to_mod, event.name, event.arity);
+  if (summary === undefined) return undefined;
+  if (context.projectModules.has(summary.module)) return undefined;
+  context.stats.summaryMatches += 1;
+  return summary;
+}
+
+function resolveSourceCallEvent(
+  call: IndexedRoleCall,
+  context: AtomFlowContext,
+): TraceEvent | undefined {
+  if (call.sourceCardinality !== 1) return undefined;
+  const events = context.eventsBySourceCall.get(
+    roleSourceCallKey(
+      context.producerEvent.file,
+      call.line,
+      context.producerEvent,
+      call.name,
+      call.arity,
+    ),
+  );
+  return events?.length === 1 ? events[0] : undefined;
+}
+
+function isMfaSelectorPosition(
+  source: SourceIndex,
+  open: number,
+  valueStart: number,
+  valueEnd: number,
+): boolean {
+  if (source.code[open] !== "{" || (source.commasByOpen.get(open)?.length ?? 0) !== 2) return false;
+  const third = callArgumentRange(source, open, 2);
+  if (third === null || source.code[third.start] !== "[") return false;
+  for (const argument of [0, 1]) {
+    const range = callArgumentRange(source, open, argument);
+    if (range !== null && range.start <= valueStart && valueEnd <= range.end) return true;
+  }
+  return false;
+}
+
+function callbackContainsValue(
+  source: SourceIndex,
+  call: IndexedRoleCall,
+  logicalArgument: number,
+  valueStart: number,
+  valueEnd: number,
+): boolean {
+  const explicitArgument = logicalArgument - (call.piped ? 1 : 0);
+  if (explicitArgument < 0) return false;
+  const range = callArgumentRange(source, call.open, explicitArgument);
+  if (range === null || range.start > valueStart || valueEnd > range.end) return false;
+  const block = containingBlockRange(source.blockRanges, valueStart);
+  if (
+    block === null ||
+    source.code.slice(block.open, block.open + 2) !== "fn" ||
+    block.open < range.start ||
+    block.close + 3 > range.end
+  ) {
+    return false;
+  }
+  const arrows = source.arrowsByBlockOpen.get(block.open) ?? [];
+  let arrow: number | undefined;
+  let arrowIndex = -1;
+  let clauseEnd = block.close;
+  for (let index = 0; index < arrows.length; index += 1) {
+    const candidate = arrows[index];
+    if (candidate === undefined || candidate >= valueStart) break;
+    arrow = candidate;
+    arrowIndex = index;
+  }
+  if (arrow === undefined) return false;
+  const nextArrow = arrows[arrowIndex + 1];
+  if (nextArrow !== undefined) {
+    const nextLine = lineAt(source.lineStarts, nextArrow);
+    const nextLineStart = source.lineStarts[nextLine - 1] ?? 0;
+    const nextClauseStart = skipHorizontalWhitespaceForward(source.code, nextLineStart);
+    // Support an exact ordinary one-line next clause head. Multiline or
+    // same-line clause heads remain conservative until their pattern spans
+    // are indexed explicitly.
+    if (nextClauseStart >= nextArrow) return false;
+    clauseEnd = nextClauseStart;
+  }
+  return skipWhitespaceForward(source.code, valueEnd, clauseEnd) === clauseEnd;
+}
+
+function immediatePipelineCall(
+  source: SourceIndex,
+  roles: AtomRoleIndex,
+  valueEnd: number,
+): IndexedRoleCall | null {
+  const after = skipWhitespaceForward(source.code, valueEnd, source.code.length);
+  if (source.code.slice(after, after + 2) !== "|>") return null;
+  const callStart = skipWhitespaceForward(source.code, after + 2, source.code.length);
+  let low = 0;
+  let high = roles.pipelineCalls.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if ((roles.pipelineCalls[middle]?.start ?? Number.POSITIVE_INFINITY) < callStart)
+      low = middle + 1;
+    else high = middle;
+  }
+  const call = roles.pipelineCalls[low];
+  return call?.start === callStart ? call : null;
+}
+
+function roleSourceCallKey(
+  file: string,
+  line: number,
+  carrier: TraceEvent,
+  name: string,
+  arity: number,
+): string {
+  return [
+    file,
+    line,
+    carrier.from_mod ?? "",
+    carrier.from_fun ?? "",
+    carrier.partition,
+    name,
+    arity,
+  ].join("\0");
+}
+
 /**
  * A function-scoped atom producer is harmless only when its complete value is
  * either a direct key argument of a compiler-confirmed `Map` operation or the
@@ -667,14 +1409,21 @@ function indexDynamicEventsBySite(events: readonly TraceEvent[]): Map<string, Tr
  * unproven pipelines, and same-line ambiguity deliberately fail this proof.
  */
 function classifyAtomProducerEvents(
-  events: readonly TraceEvent[],
+  traceResult: TraceResult,
   sources: ReadonlyMap<string, SourceIndex>,
+  stats: MutableAtomFlowStats,
+  summaryLookup: ElixirAtomRoleSummaryLookup,
 ): {
   readonly data: ReadonlySet<TraceEvent>;
   readonly invocation: ReadonlySet<TraceEvent>;
+  readonly delegatedInvocation: ReadonlySet<TraceEvent>;
 } {
+  const events = traceResult.events;
+  const projectModules = new Set(traceResult.modules.map((module) => module.mod));
+  const eventsBySourceCall = indexRoleEvents(events);
   const sourceFacts = new Map<string, AtomProducerFact[]>();
   for (const [file, source] of sources) {
+    const roleIndex = indexAtomRoles(source);
     const mapCalls = indexMapCalls(source);
     const enumMapCalls = indexEnumMapCalls(source);
     const enumCallByMapOpen = new Map<number, EnumMapCall | null>();
@@ -686,6 +1435,7 @@ function classifyAtomProducerEvents(
       const open = start + match[0].length - 1;
       const close = source.closeByOpen.get(open);
       if (close === undefined) continue;
+      stats.producers += 1;
       const line = lineAt(source.lineStarts, start);
       const safeMap = directMapKeyConsumer(source, mapCalls, start, open, close);
       const safeMapInto = directEnumMapIntoKeyConsumer(
@@ -708,6 +1458,11 @@ function classifyAtomProducerEvents(
         file,
         line,
         name,
+        source,
+        roleIndex,
+        producerStart: start,
+        producerOpen: open,
+        producerClose: close,
         directInvocation: isDirectAtomInvocationConsumer(source, start, open, close),
         ...(safeMap === null ? {} : { safeMap }),
         ...(safeMapInto === null ? {} : { safeMapInto }),
@@ -718,9 +1473,7 @@ function classifyAtomProducerEvents(
   }
 
   const eventFacts = new Map<string, TraceEvent[]>();
-  const ordinaryEventsByCarrier = new Map<string, TraceEvent[]>();
   for (const event of events) {
-    append(ordinaryEventsByCarrier, carrierSiteKey(event), event);
     if (
       event.dyn &&
       event.to_mod === "String" &&
@@ -733,88 +1486,132 @@ function classifyAtomProducerEvents(
 
   const safe = new Set<TraceEvent>();
   const invocation = new Set<TraceEvent>();
+  const delegatedInvocation = new Set<TraceEvent>();
+  const graphs = new Map<string, AtomFlowGraph>();
+  const roots: Array<{
+    readonly graph: AtomFlowGraph;
+    readonly rootKey: string;
+    readonly event: TraceEvent;
+    readonly directInvocation: boolean;
+  }> = [];
   for (const [key, facts] of sourceFacts) {
     const matchingEvents = eventFacts.get(key) ?? [];
     // The tracer has line but not column provenance. Never guess which role a
     // same-line event belongs to, even when two source expressions look safe.
-    if (facts.length !== 1 || matchingEvents.length !== 1) continue;
+    // One source occurrence may be compiled in both production and test; join
+    // each exact carrier/partition independently and reject duplicates within
+    // that identity rather than conflating the partitions.
+    if (facts.length !== 1) continue;
     const fact = facts[0];
-    const event = matchingEvents[0];
-    if (fact === undefined || event === undefined) continue;
-    if (fact.directInvocation) {
-      invocation.add(event);
-      continue;
+    if (fact === undefined) continue;
+    let graph = graphs.get(fact.file);
+    if (graph === undefined) {
+      graph = {
+        source: fact.source,
+        roles: fact.roleIndex,
+        nodes: new Map(),
+        pending: [],
+        stats,
+      };
+      graphs.set(fact.file, graph);
     }
-    if (fact.safeMap !== undefined) {
-      const safeMap = fact.safeMap;
-      const mapCarrierSite = carrierAt(fact.file, safeMap.line, event);
-      const compilerCalls = (ordinaryEventsByCarrier.get(mapCarrierSite) ?? []).filter(
-        (candidate) =>
-          candidate.to_mod === "Map" &&
-          candidate.name === safeMap.name &&
-          candidate.arity === safeMap.arity,
+    for (const carrierEvents of groupBy(matchingEvents, atomProducerCarrierKey).values()) {
+      if (carrierEvents.length !== 1) continue;
+      const event = carrierEvents[0];
+      if (event === undefined) continue;
+      const context: AtomFlowContext = {
+        producerEvent: event,
+        eventsBySourceCall,
+        summaryLookup,
+        projectModules,
+        stats,
+        legacyTerminal: legacyExactTerminal(fact, event, eventsBySourceCall, summaryLookup),
+      };
+      const rootKey = ensureAtomValueNode(
+        graph,
+        fact.producerStart,
+        fact.producerClose + 1,
+        fact.source.parentByOpen.get(fact.producerOpen),
+        context,
       );
-      if (compilerCalls.length === 1) safe.add(event);
-      continue;
-    }
-    if (fact.safeMapInto !== undefined) {
-      const mapCalls = (
-        ordinaryEventsByCarrier.get(carrierAt(fact.file, fact.safeMapInto.mapLine, event)) ?? []
-      ).filter(
-        (candidate) =>
-          candidate.to_mod === "Enum" && candidate.name === "map" && candidate.arity === 2,
-      );
-      const intoCalls = (
-        ordinaryEventsByCarrier.get(carrierAt(fact.file, fact.safeMapInto.intoLine, event)) ?? []
-      ).filter(
-        (candidate) =>
-          candidate.to_mod === "Enum" && candidate.name === "into" && candidate.arity === 2,
-      );
-      if (mapCalls.length === 1 && intoCalls.length === 1) safe.add(event);
-      continue;
-    }
-    if (fact.safeAssignedMapValues !== undefined) {
-      const guardCalls = (
-        ordinaryEventsByCarrier.get(
-          carrierAt(fact.file, fact.safeAssignedMapValues.guardLine, event),
-        ) ?? []
-      ).filter(
-        (candidate) =>
-          candidate.to_mod === "Kernel" && candidate.name === "is_binary" && candidate.arity === 1,
-      );
-      if (guardCalls.length !== 1) continue;
-      const confirmedEnumCalls = fact.safeAssignedMapValues.mapLines.every((mapLine) => {
-        const calls = ordinaryEventsByCarrier.get(carrierAt(fact.file, mapLine, event)) ?? [];
-        return (
-          calls.filter(
-            (candidate) =>
-              candidate.to_mod === "Enum" && candidate.name === "map" && candidate.arity === 2,
-          ).length === 1
-        );
+      roots.push({
+        graph,
+        rootKey,
+        event,
+        directInvocation: fact.directInvocation,
       });
-      if (confirmedEnumCalls) safe.add(event);
+    }
+  }
+  for (const graph of graphs.values()) solveAtomFlowGraph(graph);
+  for (const root of roots) {
+    const indexedFlow = atomFlowResult(root.graph, root.rootKey);
+    const { event } = root;
+    if (indexedFlow.disposition === "invocation" || root.directInvocation) {
+      stats.invocationSinks += 1;
+      if (indexedFlow.delegatedInvocation === true) delegatedInvocation.add(event);
+      else invocation.add(event);
       continue;
     }
-    if (fact.safeInlineMapPutValue === undefined) continue;
-    const inlineGuardCalls = (
-      ordinaryEventsByCarrier.get(
-        carrierAt(fact.file, fact.safeInlineMapPutValue.guardLine, event),
-      ) ?? []
-    ).filter(
-      (candidate) =>
-        candidate.to_mod === "Kernel" && candidate.name === "is_binary" && candidate.arity === 1,
-    );
-    const inlineMapCalls = (
-      ordinaryEventsByCarrier.get(
-        carrierAt(fact.file, fact.safeInlineMapPutValue.mapLine, event),
-      ) ?? []
-    ).filter(
-      (candidate) =>
-        candidate.to_mod === "Map" && candidate.name === "put" && candidate.arity === 3,
-    );
-    if (inlineGuardCalls.length === 1 && inlineMapCalls.length === 1) safe.add(event);
+    if (indexedFlow.disposition === "data") {
+      stats.dataSinks += 1;
+      safe.add(event);
+      continue;
+    }
+    stats.escapes += 1;
   }
-  return { data: safe, invocation };
+  return { data: safe, invocation, delegatedInvocation };
+}
+
+function atomProducerCarrierKey(event: TraceEvent): string {
+  return [event.file, event.from_mod ?? "", event.from_fun ?? "", event.partition].join("\0");
+}
+
+function indexRoleEvents(
+  events: readonly TraceEvent[],
+): ReadonlyMap<string, readonly TraceEvent[]> {
+  const index = new Map<string, TraceEvent[]>();
+  for (const event of events) {
+    if (event.name === undefined || event.arity === undefined) continue;
+    append(index, roleSourceCallKey(event.file, event.line, event, event.name, event.arity), event);
+  }
+  return index;
+}
+
+function legacyExactTerminal(
+  fact: AtomProducerFact,
+  event: TraceEvent,
+  eventsBySourceCall: ReadonlyMap<string, readonly TraceEvent[]>,
+  summaryLookup: ElixirAtomRoleSummaryLookup,
+): boolean {
+  const exact = (line: number, toMod: string, name: string, arity: number): boolean => {
+    const events = eventsBySourceCall.get(roleSourceCallKey(fact.file, line, event, name, arity));
+    return events?.length === 1 && events[0]?.to_mod === toMod;
+  };
+  if (fact.safeMap !== undefined) {
+    return (
+      summaryLookup("Map", fact.safeMap.name, fact.safeMap.arity)?.arguments[1] ===
+        "consume-data" && exact(fact.safeMap.line, "Map", fact.safeMap.name, fact.safeMap.arity)
+    );
+  }
+  if (fact.safeMapInto !== undefined) {
+    return (
+      exact(fact.safeMapInto.mapLine, "Enum", "map", 2) &&
+      exact(fact.safeMapInto.intoLine, "Enum", "into", 2)
+    );
+  }
+  if (fact.safeAssignedMapValues !== undefined) {
+    return (
+      exact(fact.safeAssignedMapValues.guardLine, "Kernel", "is_binary", 1) &&
+      fact.safeAssignedMapValues.mapLines.every((line) => exact(line, "Enum", "map", 2))
+    );
+  }
+  if (fact.safeInlineMapPutValue !== undefined) {
+    return (
+      exact(fact.safeInlineMapPutValue.guardLine, "Kernel", "is_binary", 1) &&
+      exact(fact.safeInlineMapPutValue.mapLine, "Map", "put", 3)
+    );
+  }
+  return false;
 }
 
 function isDirectAtomInvocationConsumer(
@@ -871,6 +1668,11 @@ interface AtomProducerFact {
   readonly file: string;
   readonly line: number;
   readonly name: string;
+  readonly source: SourceIndex;
+  readonly roleIndex: AtomRoleIndex;
+  readonly producerStart: number;
+  readonly producerOpen: number;
+  readonly producerClose: number;
   readonly directInvocation: boolean;
   readonly safeMap?: { readonly name: string; readonly arity: number; readonly line: number };
   readonly safeMapInto?: { readonly mapLine: number; readonly intoLine: number };
@@ -905,10 +1707,6 @@ interface MapCall {
   readonly open: number;
   readonly keyArgument: number;
   readonly line: number;
-}
-
-function carrierAt(file: string, line: number, event: TraceEvent): string {
-  return [file, line, event.from_mod ?? "", event.from_fun ?? ""].join("\0");
 }
 
 /**
@@ -1763,10 +2561,6 @@ export function dynamicEventKey(event: TraceEvent): string {
   ].join("\0");
 }
 
-function carrierSiteKey(event: TraceEvent): string {
-  return [event.file, event.line, event.from_mod ?? "", event.from_fun ?? ""].join("\0");
-}
-
 function atomSiteKey(file: string, line: number, name: string): string {
   return `${file}\0${line}\0${name}`;
 }
@@ -1890,7 +2684,6 @@ function indexSource(content: string): SourceIndex {
   const identifiersByName = new Map<string, IdentifierOccurrence[]>();
   const interpolationStarts: number[] = [];
   const atomProducerStarts: number[] = [];
-  const indexedIdentifierNames = new Set(["rescue", "try"]);
   const usingSignatures: Array<{ line: number; selector: string }> = [];
   for (const match of code.matchAll(USING_SELECTOR_RE)) {
     const selector = match[1];
@@ -1906,17 +2699,6 @@ function indexSource(content: string): SourceIndex {
   for (const match of code.matchAll(ATOM_PRODUCER_RE)) {
     const producerStart = match.index ?? 0;
     atomProducerStarts.push(producerStart);
-    const line = lineAt(lineStarts, producerStart);
-    const lineStart = lineStarts[line - 1] ?? 0;
-    ASSIGNMENT_RE.lastIndex = skipWhitespaceForward(code, lineStart, producerStart);
-    const assignment = ASSIGNMENT_RE.exec(code);
-    const variable = assignment?.[1];
-    if (variable !== undefined && ASSIGNMENT_RE.lastIndex === producerStart)
-      indexedIdentifierNames.add(variable);
-  }
-  for (const match of code.matchAll(ATOM_PRODUCER_ARGUMENT_RE)) {
-    const variable = match[1];
-    if (variable !== undefined) indexedIdentifierNames.add(variable);
   }
   const stack: Array<{ open: number; close: string; commas: number[] }> = [];
   for (let index = 0; index < code.length; index += 1) {
@@ -1936,14 +2718,12 @@ function indexSource(content: string): SourceIndex {
       let end = index + 1;
       while (/[A-Za-z0-9_]/u.test(code[end] ?? "")) end += 1;
       const name = code.slice(index, end);
-      if (indexedIdentifierNames.has(name)) {
-        const parentOpen = stack.at(-1)?.open;
-        append(identifiersByName, name, {
-          start: index,
-          end,
-          ...(parentOpen === undefined ? {} : { parentOpen }),
-        });
-      }
+      const parentOpen = stack.at(-1)?.open;
+      append(identifiersByName, name, {
+        start: index,
+        end,
+        ...(parentOpen === undefined ? {} : { parentOpen }),
+      });
       index = end - 1;
       continue;
     }
@@ -2034,9 +2814,14 @@ function indexFunctionRanges(
     const newline = code.indexOf("\n", start);
     const headerEnd = newline < 0 ? code.length : newline;
     const header = code.slice(start, headerEnd);
+    const oneLine = /,\s*do\s*:/u.test(header);
     let functionDo: number | null = null;
     for (const doMatch of header.matchAll(/\bdo\b/gu)) functionDo = start + (doMatch.index ?? 0);
-    const end = functionDo === null ? start : (blockCloseByOpen.get(functionDo) ?? start);
+    const end = oneLine
+      ? headerEnd
+      : functionDo === null
+        ? start
+        : (blockCloseByOpen.get(functionDo) ?? start);
     const binaryGuards = new Set<string>();
     const guardStart = /\bwhen\b/u.exec(header)?.index;
     const guard = guardStart === undefined ? "" : header.slice(guardStart).trim();

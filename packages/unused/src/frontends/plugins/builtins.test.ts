@@ -32,6 +32,7 @@ describe("built-in language plugins", () => {
   it("registers conventions and bridges without orchestrator edits", () => {
     const registry = new PluginRegistry(BUILT_IN_PLUGINS);
     expect(registry.conventionPlugins().map((plugin) => plugin.id)).toEqual([
+      "convention:ecto",
       "convention:elixir-runtime",
       "convention:elixir-scripts",
       "convention:rustler-elixir",

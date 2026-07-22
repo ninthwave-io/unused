@@ -1,7 +1,7 @@
 # 0014 — Typed Elixir computed-value flow and explicit hazard scope
 
 Date: 2026-07-22
-Status: Accepted (correctness implementation decision; implementation pending)
+Status: Accepted (phases 1A and 1B1 implemented; later phases pending)
 
 ## Context
 
@@ -246,6 +246,49 @@ Each phase is independently revertible. The rollback is to project current
 facts into the existing `elixir-dynamic-dispatch` annotation and its
 carrier-reachable unit cap. Rollback may reduce precision and deletion support;
 it may never reduce safety.
+
+### Phase 1B1 implementation checkpoint
+
+The first local-flow slice is implemented as a source-local indexed value-role
+graph. All producers on one exact carrier and partition share container,
+assignment, call-role, and use nodes. A finite outcome bitmask converges over
+reverse edges with a delta queue, so each node changes only a bounded number of
+times rather than rewalking shared suffixes per producer. Its reviewed
+declarative registry is sparse and exact by canonical
+module, function, and arity. Source calls must have unique source cardinality
+and unique compiler-event corroboration on the same carrier and partition;
+aliases and imports use the compiler's canonical callee. Core summaries are
+disabled when the project owns the named core module. Ecto summaries are owned
+by a typed provider on the registered built-in `convention:ecto` plugin. The
+provider is applied before graph emission only when `ecto` is a compiler-known
+dependency, and is disabled when the project owns the summarized Ecto module.
+
+This slice covers standard `Map`, `Keyword`, `MapSet`, `Atom`, and `Enum`
+data/propagation roles plus an intentionally small public `Ecto.Changeset` and
+`Ecto.Type` surface. It follows simple versioned locals, assignments, literal
+containers and allowlists, pipelines, `with` bindings, and exact literal
+callback result expressions. Invocation receivers, `apply`, captures, MFA
+selector positions, Ecto type selectors, unknown calls or returns, rebinds,
+interpolation, and ambiguous cardinality remain conservative. Omitted summary
+arguments are escapes, never inferred safe.
+
+The four legacy exact recognizers remain enabled through the same final
+classification result so previously accepted data-only cases do not regress
+while the generic engine grows. Invocation and unknown-use evidence takes
+precedence over that compatibility terminal. There is no same-module or
+cross-module function-summary propagation in Phase 1B1; that remains phase 6
+and requires separate evidence.
+
+The implementation exposes deterministic internal counters for sources,
+source bytes, producers, role edges, queue visits, matched summaries, data and
+invocation sinks, and escapes. One event-populated 250-to-1,000-function
+fixture holds independent semantic density constant. A second adversarial
+fixture puts P producers in one assigned container with U later consumers and
+asserts unique-edge and queue-visit bounds proportional to P + U, preventing
+the former P × U traversal from returning. Independent real Mix fixtures prove
+data-only deletion support, returned-value escape refusal, and bounded apply
+refusal without cross-contaminating their units. No public report or JSON
+schema changes in this slice.
 
 ## Acceptance
 

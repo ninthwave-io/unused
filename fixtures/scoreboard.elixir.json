@@ -1,25 +1,25 @@
 {
   "analyzer": "elixir-reference-graph",
   "corpus": {
-    "cases": 22,
-    "subjects": 69
+    "cases": 25,
+    "subjects": 76
   },
   "precision": 1,
-  "recall": 0.9666666666666667,
+  "recall": 0.9705882352941176,
   "falsePositives": 0,
   "confidenceViolations": 0,
   "misses": 1,
   "unlabelledClaims": 0,
   "byConfidenceTier": {
     "high": {
-      "claims": 22,
-      "truePositives": 22,
+      "claims": 24,
+      "truePositives": 24,
       "falsePositives": 0,
       "confidenceViolations": 0
     },
     "medium": {
-      "claims": 7,
-      "truePositives": 7,
+      "claims": 9,
+      "truePositives": 9,
       "falsePositives": 0,
       "confidenceViolations": 0
     },
@@ -79,6 +79,39 @@
       "case": "atom-map-key-safe",
       "subjects": 5,
       "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "atom-role-data-safe",
+      "subjects": 2,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "atom-role-escape",
+      "subjects": 2,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "atom-role-summaries",
+      "subjects": 3,
+      "deadLabels": 2,
       "precision": 1,
       "recall": 1,
       "falsePositives": 0,

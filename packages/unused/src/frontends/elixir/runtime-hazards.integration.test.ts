@@ -436,7 +436,10 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
       .hazards()
       .filter((hazard) => hazard.hazardClass === "elixir-dynamic-dispatch");
     expect(invocationHazards.map((hazard) => hazard.carrierSymbol).sort()).toEqual([
+      expect.stringContaining("assigned/2"),
       expect.stringContaining("assigned_apply/2"),
+      expect.stringContaining("assigned_capture/2"),
+      expect.stringContaining("assigned_mfa/2"),
       expect.stringContaining("immediate/1"),
       expect.stringContaining("mfa_pipeline/1"),
       expect.stringContaining("mixed/2"),
@@ -445,10 +448,6 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
       .hazards()
       .filter((hazard) => hazard.hazardClass === "elixir-computed-atom-escape");
     expect(escapeHazards.map((hazard) => hazard.carrierSymbol).sort()).toEqual([
-      expect.stringContaining("assigned/2"),
-      expect.stringContaining("assigned_apply/2"),
-      expect.stringContaining("assigned_capture/2"),
-      expect.stringContaining("assigned_mfa/2"),
       expect.stringContaining("inline_dynamic_key/3"),
       expect.stringContaining("intervening_pipeline/1"),
       expect.stringContaining("nested_pipeline/1"),
@@ -492,6 +491,140 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
     ).toMatchObject({ supported: false });
   }, 60_000);
 
+  it("keeps an indexed apply role bounded through why and deletion", async () => {
+    const analysis = await analyzeElixirProjectWithGraph(fixture("atom-role-summaries"), {
+      now: new Date(0),
+    });
+    const invocationHazards = analysis.graph
+      .hazards()
+      .filter((hazard) => hazard.hazardClass === "elixir-dynamic-dispatch");
+    expect(invocationHazards).toEqual([
+      expect.objectContaining({
+        carrierSymbol: expect.stringContaining("NeutralAtomRoles.Flows.invoke/1"),
+      }),
+    ]);
+    const escapeHazards = analysis.graph
+      .hazards()
+      .filter((hazard) => hazard.hazardClass === "elixir-computed-atom-escape");
+    expect(escapeHazards).toEqual([]);
+
+    const invoked = whyAlive({
+      graph: analysis.graph,
+      reachability: analysis.reachability,
+      claims: analysis.result.claims,
+      query: "NeutralAtomRoles.Target.action/0",
+      hazardEvaluations: [analysis.hazardEvaluation],
+    });
+    expect(invoked).toMatchObject({ outcome: "dead", confidence: "medium" });
+    if (invoked.outcome !== "dead") throw new Error("expected dynamic invocation candidate");
+    expect(invoked.hazards).toContainEqual(
+      expect.objectContaining({
+        hazardClass: "elixir-dynamic-dispatch",
+        worlds: ["production"],
+        site: "lib/neutral_atom_roles/flows.ex:10",
+      }),
+    );
+    expect(
+      computeDeletionPlan({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        subject: invoked.subject,
+        hazardEvaluations: [analysis.hazardEvaluation],
+      }),
+    ).toMatchObject({
+      supported: false,
+      unsupportedReason: expect.stringContaining(
+        "active elixir-dynamic-dispatch hazard at lib/neutral_atom_roles/flows.ex:10",
+      ),
+    });
+
+    const unrelated = whyAlive({
+      graph: analysis.graph,
+      reachability: analysis.reachability,
+      claims: analysis.result.claims,
+      query: "NeutralAtomRoles.Flows.genuinely_unused/0",
+      hazardEvaluations: [analysis.hazardEvaluation],
+    });
+    expect(unrelated).toMatchObject({ outcome: "dead", confidence: "high", hazards: [] });
+    if (unrelated.outcome !== "dead") throw new Error("expected unrelated invocation control");
+    expect(
+      computeDeletionPlan({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        subject: unrelated.subject,
+        hazardEvaluations: [analysis.hazardEvaluation],
+      }),
+    ).toMatchObject({ supported: true });
+  }, 60_000);
+
+  it("explains and refuses an isolated returned-value escape", async () => {
+    const analysis = await analyzeElixirProjectWithGraph(fixture("atom-role-escape"), {
+      now: new Date(0),
+    });
+    const escaped = whyAlive({
+      graph: analysis.graph,
+      reachability: analysis.reachability,
+      claims: analysis.result.claims,
+      query: "NeutralAtomEscape.Flow.genuinely_unused/0",
+      hazardEvaluations: [analysis.hazardEvaluation],
+    });
+    expect(escaped).toMatchObject({ outcome: "dead", confidence: "medium" });
+    if (escaped.outcome !== "dead") throw new Error("expected isolated escape candidate");
+    expect(escaped.hazards).toContainEqual(
+      expect.objectContaining({
+        hazardClass: "elixir-computed-atom-escape",
+        worlds: ["production"],
+        site: "lib/neutral_atom_escape/flow.ex:3",
+      }),
+    );
+    expect(
+      computeDeletionPlan({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        subject: escaped.subject,
+        hazardEvaluations: [analysis.hazardEvaluation],
+      }),
+    ).toMatchObject({
+      supported: false,
+      stages: [],
+      unsupportedReason: expect.stringContaining(
+        "computed atom escapes analysis at lib/neutral_atom_escape/flow.ex:3 in production",
+      ),
+    });
+  }, 60_000);
+
+  it("leaves an unrelated dead control deletable after an indexed data sink", async () => {
+    const analysis = await analyzeElixirProjectWithGraph(fixture("atom-role-data-safe"), {
+      now: new Date(0),
+    });
+    expect(
+      analysis.graph
+        .hazards()
+        .filter(
+          (hazard) =>
+            hazard.hazardClass === "elixir-dynamic-dispatch" ||
+            hazard.hazardClass === "elixir-computed-atom-escape",
+        ),
+    ).toEqual([]);
+    const dead = whyAlive({
+      graph: analysis.graph,
+      reachability: analysis.reachability,
+      claims: analysis.result.claims,
+      query: "NeutralAtomData.Flow.genuinely_unused/0",
+      hazardEvaluations: [analysis.hazardEvaluation],
+    });
+    expect(dead).toMatchObject({ outcome: "dead", confidence: "high", hazards: [] });
+    if (dead.outcome !== "dead") throw new Error("expected isolated dead data-role control");
+    expect(
+      computeDeletionPlan({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        subject: dead.subject,
+        hazardEvaluations: [analysis.hazardEvaluation],
+      }),
+    ).toMatchObject({ supported: true });
+  }, 60_000);
+
   it.each([
     "dynamic-use-helpers",
     "dynamic-local-dispatch",
@@ -501,6 +634,9 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
     "atom-inline-map-put-safe",
     "atom-fetch-map-put-safe",
     "atom-dynamic-receiver",
+    "atom-role-summaries",
+    "atom-role-data-safe",
+    "atom-role-escape",
   ])(
     "preserves Elixir claims after mixed-plugin composition: %s",
     async (name) => {

@@ -48,6 +48,7 @@ import {
   warnOnEmptyConfigMatches,
 } from "../ts/config.js";
 import { discoverProjectInventory, filterGitignoredRelativePaths } from "../ts/discover.js";
+import type { ElixirAtomRoleSummaryProvider } from "./atom-role-summaries.js";
 import { detectElixirProject } from "./detect.js";
 import { emitElixirIR } from "./emit.js";
 import { ElixirFrontendError, runTracer } from "./runner.js";
@@ -70,6 +71,10 @@ export interface AnalyzeElixirWithGraph {
   readonly provenance: Provenance;
   readonly hazardEvaluation: HazardEvaluation;
   readonly deferredContributions?: ReadonlyMap<string, GraphContribution>;
+}
+
+export interface AnalyzeElixirInternalOptions extends AnalyzeInternalOptions {
+  readonly atomRoleSummaryProviders?: readonly ElixirAtomRoleSummaryProvider[];
 }
 
 const ELIXIR_RUNTIME_PLUGIN_ID = "convention:elixir-runtime";
@@ -96,7 +101,7 @@ export async function analyzeElixirProject(
 export async function analyzeElixirProjectWithGraph(
   rootDir: string,
   options: AnalyzeOptions = {},
-  internal: AnalyzeInternalOptions = {},
+  internal: AnalyzeElixirInternalOptions = {},
 ): Promise<AnalyzeElixirWithGraph> {
   const start = Date.now();
   const now = options.now ?? new Date();
@@ -138,7 +143,11 @@ export async function analyzeElixirProjectWithGraph(
   const projectModules = new Set(traceResult.modules.map((m) => m.mod));
   const configReferencedModules = scanConfigModuleReferences(project.projectDir, projectModules);
 
-  const runtimeConventions = extractElixirRuntimeConventions(project.projectDir, traceResult);
+  const runtimeConventions = extractElixirRuntimeConventions(
+    project.projectDir,
+    traceResult,
+    internal.atomRoleSummaryProviders,
+  );
   const scriptFacts = extractElixirScriptFacts(
     project.projectDir,
     visibleElixirSourceFiles,

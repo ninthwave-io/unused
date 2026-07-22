@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { ectoElixirAtomRoleSummaryProvider } from "../plugins/elixir-conventions.js";
 import type { FunctionRecord, ModuleRecord, TraceEvent, TraceResult } from "./events.js";
 import {
   dynamicEventKey,
@@ -299,6 +300,370 @@ describe("extractElixirRuntimeReferences", () => {
           world: "production",
         },
       ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("classifies indexed local data, propagation, callback, and escape roles", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-indexed-atom-roles-"));
+    const file = "indexed_atom_roles.ex";
+    const summaryProviders = [ectoElixirAtomRoleSummaryProvider];
+    const lines = [
+      "defmodule NeutralIndexed.Box do",
+      "  defstruct [:kind]",
+      "end",
+      "defmodule NeutralIndexed.Roles do",
+      "  alias Ecto.Type",
+      "  alias Ecto.Changeset",
+      "  import Ecto.Changeset, only: [get_change: 2]",
+      "  def map_key(map, raw), do: Map.has_key?(map, String.to_atom(raw))",
+      "  def keyword_pipe(options, raw), do: options |> Keyword.has_key?(String.to_atom(raw))",
+      "  def member(set, raw), do: MapSet.member?(set, String.to_atom(raw))",
+      "  def stringify(raw), do: Atom.to_string(String.to_atom(raw))",
+      "  def allowlist(raw), do: String.to_atom(raw) in [:first, :second]",
+      "  def assigned(map, raw) do",
+      "    box = %{kind: String.to_atom(raw)}",
+      "    Map.has_key?(box, :kind)",
+      "  end",
+      "  def with_assignment(map, raw) do",
+      "    with kind = String.to_atom(raw) do",
+      "      Map.has_key?(map, kind)",
+      "    end",
+      "  end",
+      "  def assigned_list(raw) do",
+      "    values = [String.to_atom(raw)]",
+      "    Enum.member?(values, :known)",
+      "  end",
+      "  def assigned_keyword(raw) do",
+      "    options = [kind: String.to_atom(raw)]",
+      "    Keyword.has_key?(options, :kind)",
+      "  end",
+      "  def assigned_struct(raw) do",
+      "    box = %NeutralIndexed.Box{kind: String.to_atom(raw)}",
+      "    Map.has_key?(box, :kind)",
+      "  end",
+      "  def assigned_tuple(raw) do",
+      "    box = {String.to_atom(raw), :known}",
+      "    box",
+      "  end",
+      "  def returned_store(map, raw), do: Map.put(map, :kind, String.to_atom(raw))",
+      "  def returned_replace(map, raw), do: Map.replace(map, String.to_atom(raw), :known)",
+      "  def returned_keyword_replace(options, raw), do: Keyword.replace(options, String.to_atom(raw), :known)",
+      "  def returned_tuple(raw), do: {:ok, String.to_atom(raw)}",
+      "  def unknown(raw), do: NeutralIndexed.Unknown.keep(String.to_atom(raw))",
+      "  def rebound(map, raw) do",
+      "    kind = String.to_atom(raw)",
+      "    kind = :known",
+      "    Map.has_key?(map, kind)",
+      "  end",
+      "  def callback(values, raw) do",
+      "    Enum.map(values, fn _ -> String.to_atom(raw) end)",
+      "    |> MapSet.new()",
+      "    |> MapSet.member?(:known)",
+      "  end",
+      "  def callback_multiclause(values, raw) do",
+      "    Enum.map(values, fn",
+      "      :first -> String.to_atom(raw)",
+      "      _other -> :known",
+      "    end)",
+      "    |> MapSet.new()",
+      "    |> MapSet.member?(:known)",
+      "  end",
+      "  def callback_intermediate(values, raw) do",
+      "    Enum.map(values, fn _ -> String.to_atom(raw); :known end)",
+      "    |> MapSet.new()",
+      "    |> MapSet.member?(:known)",
+      "  end",
+      "  def callback_argument(values, raw), do: Enum.map(values, String.to_atom(raw))",
+      "  def ambiguous_calls(map, raw) do",
+      "    kind = String.to_atom(raw)",
+      "    {Map.has_key?(map, kind), Map.has_key?(map, kind)}",
+      "  end",
+      "  def ecto_alias(raw), do: Type.equal?(:atom, String.to_atom(raw), :known)",
+      "  def ecto_changeset(changeset, raw) do",
+      "    Changeset.put_change(changeset, :kind, String.to_atom(raw))",
+      "    |> Changeset.get_change(:kind)",
+      "    |> Atom.to_string()",
+      "  end",
+      "  def ecto_imported(changeset, raw) do",
+      "    changeset |> get_change(String.to_atom(raw)) |> Atom.to_string()",
+      "  end",
+      "  def ecto_selector(value, raw), do: Type.cast(String.to_atom(raw), value)",
+      "end",
+    ];
+    const cases = [
+      ["map_key/2", "def map_key", "data"],
+      ["keyword_pipe/2", "def keyword_pipe", "data"],
+      ["member/2", "def member", "data"],
+      ["stringify/1", "def stringify", "data"],
+      ["allowlist/1", "def allowlist", "data"],
+      ["assigned/2", "box =", "data"],
+      ["with_assignment/2", "with kind", "data"],
+      ["assigned_list/1", "values = [String", "data"],
+      ["assigned_keyword/1", "options = [kind: String", "data"],
+      ["assigned_struct/1", "%NeutralIndexed.Box{kind: String", "data"],
+      ["assigned_tuple/1", "box = {String", "escape"],
+      ["returned_store/2", "def returned_store", "escape"],
+      ["returned_replace/2", "def returned_replace", "escape"],
+      ["returned_keyword_replace/2", "def returned_keyword_replace", "escape"],
+      ["returned_tuple/1", "def returned_tuple", "escape"],
+      ["unknown/1", "def unknown", "escape"],
+      ["rebound/2", "    kind = String.to_atom", "escape"],
+      ["callback/2", "Enum.map(values, fn _ -> String", "data"],
+      ["callback_multiclause/2", ":first -> String", "data"],
+      ["callback_intermediate/2", "Enum.map(values, fn _ -> String", "escape"],
+      ["callback_argument/2", "def callback_argument", "invocation"],
+      ["ambiguous_calls/2", "kind = String.to_atom", "escape"],
+      ["ecto_alias/1", "def ecto_alias", "data"],
+      ["ecto_changeset/2", "Changeset.put_change", "data"],
+      ["ecto_imported/2", "get_change(String", "data"],
+      ["ecto_selector/2", "def ecto_selector", "invocation"],
+    ] as const;
+    const lineOf = (needle: string, from = 0): number => {
+      const index = lines.findIndex(
+        (line, lineIndex) => lineIndex >= from && line.includes(needle),
+      );
+      if (index < 0) throw new Error(`missing line: ${needle}`);
+      return index + 1;
+    };
+    const producerEvents = cases.map(([fromFun, needle]) => ({
+      k: "event" as const,
+      kind: "remote" as const,
+      file,
+      line: lineOf(
+        needle,
+        fromFun === "callback_intermediate/2" ? lineOf("def callback_intermediate") - 1 : 0,
+      ),
+      from_mod: "NeutralIndexed.Roles",
+      from_fun: fromFun,
+      to_mod: "String",
+      name: "to_atom",
+      arity: 1,
+      dyn: true,
+      partition: "prod" as const,
+    }));
+    const call = (
+      fromFun: string,
+      needle: string,
+      toMod: string,
+      name: string,
+      arity: number,
+      fromLine = 0,
+    ): TraceEvent => ({
+      k: "event",
+      kind: "remote",
+      file,
+      line: lineOf(needle, fromLine),
+      from_mod: "NeutralIndexed.Roles",
+      from_fun: fromFun,
+      to_mod: toMod,
+      name,
+      arity,
+      dyn: false,
+      partition: "prod",
+    });
+    const trace: TraceResult = {
+      appMod: null,
+      deps: ["ecto"],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod("NeutralIndexed.Roles", file)],
+      functions: [],
+      events: [
+        ...producerEvents,
+        call("map_key/2", "def map_key", "Map", "has_key?", 2),
+        call("keyword_pipe/2", "def keyword_pipe", "Keyword", "has_key?", 2),
+        call("member/2", "def member", "MapSet", "member?", 2),
+        call("stringify/1", "def stringify", "Atom", "to_string", 1),
+        call("assigned/2", "Map.has_key?(box", "Map", "has_key?", 2),
+        call("with_assignment/2", "Map.has_key?(map, kind", "Map", "has_key?", 2),
+        call("assigned_list/1", "Enum.member?(values", "Enum", "member?", 2),
+        call("assigned_keyword/1", "Keyword.has_key?(options", "Keyword", "has_key?", 2),
+        call(
+          "assigned_struct/1",
+          "Map.has_key?(box",
+          "Map",
+          "has_key?",
+          2,
+          lineOf("def assigned_struct") - 1,
+        ),
+        call("returned_store/2", "def returned_store", "Map", "put", 3),
+        call("returned_replace/2", "def returned_replace", "Map", "replace", 3),
+        call("returned_keyword_replace/2", "def returned_keyword_replace", "Keyword", "replace", 3),
+        call("unknown/1", "def unknown", "NeutralIndexed.Unknown", "keep", 1),
+        call(
+          "rebound/2",
+          "Map.has_key?(map, kind",
+          "Map",
+          "has_key?",
+          2,
+          lineOf("def rebound") - 1,
+        ),
+        call("callback/2", "Enum.map(values, fn _ -> String", "Enum", "map", 2),
+        call("callback/2", "|> MapSet.new", "MapSet", "new", 1),
+        call("callback/2", "|> MapSet.member", "MapSet", "member?", 2),
+        call(
+          "callback_multiclause/2",
+          "Enum.map(values, fn",
+          "Enum",
+          "map",
+          2,
+          lineOf("def callback_multiclause") - 1,
+        ),
+        call(
+          "callback_multiclause/2",
+          "|> MapSet.new",
+          "MapSet",
+          "new",
+          1,
+          lineOf("def callback_multiclause") - 1,
+        ),
+        call(
+          "callback_multiclause/2",
+          "|> MapSet.member",
+          "MapSet",
+          "member?",
+          2,
+          lineOf("def callback_multiclause") - 1,
+        ),
+        call(
+          "callback_intermediate/2",
+          "Enum.map(values, fn _ -> String",
+          "Enum",
+          "map",
+          2,
+          lineOf("def callback_intermediate") - 1,
+        ),
+        call(
+          "callback_intermediate/2",
+          "|> MapSet.new",
+          "MapSet",
+          "new",
+          1,
+          lineOf("def callback_intermediate") - 1,
+        ),
+        call(
+          "callback_intermediate/2",
+          "|> MapSet.member",
+          "MapSet",
+          "member?",
+          2,
+          lineOf("def callback_intermediate") - 1,
+        ),
+        call("callback_argument/2", "def callback_argument", "Enum", "map", 2),
+        call("ambiguous_calls/2", "{Map.has_key?", "Map", "has_key?", 2),
+        call("ecto_alias/1", "def ecto_alias", "Ecto.Type", "equal?", 3),
+        call("ecto_changeset/2", "Changeset.put_change", "Ecto.Changeset", "put_change", 3),
+        call("ecto_changeset/2", "Changeset.get_change", "Ecto.Changeset", "get_change", 2),
+        call("ecto_changeset/2", "Atom.to_string()", "Atom", "to_string", 1),
+        call("ecto_imported/2", "get_change(String", "Ecto.Changeset", "get_change", 2),
+        call(
+          "ecto_imported/2",
+          "Atom.to_string()",
+          "Atom",
+          "to_string",
+          1,
+          lineOf("def ecto_imported") - 1,
+        ),
+        call("ecto_selector/2", "def ecto_selector", "Ecto.Type", "cast", 2),
+      ],
+    };
+
+    try {
+      writeFileSync(join(root, file), `${lines.join("\n")}\n`);
+      expect(
+        extractElixirRuntimeConventions(root, trace, summaryProviders).dynamicDispatches.map(
+          (fact) => ({
+            fromFun: fact.fromFun,
+            result:
+              fact.factKind === "computed-atom" && fact.flow === "data"
+                ? "data"
+                : fact.factKind === "dynamic-invocation"
+                  ? "invocation"
+                  : "escape",
+          }),
+        ),
+      ).toEqual(cases.map(([fromFun, , result]) => ({ fromFun, result })));
+
+      const ectoCall = trace.events.find(
+        (event) => event.from_fun === "ecto_alias/1" && event.to_mod === "Ecto.Type",
+      );
+      if (ectoCall === undefined) throw new Error("missing Ecto role event");
+      for (const variant of [
+        { ...trace, deps: [] },
+        { ...trace, modules: [...trace.modules, mod("Ecto.Type", file)] },
+        { ...trace, events: [...trace.events, ectoCall] },
+      ]) {
+        expect(
+          extractElixirRuntimeConventions(root, variant, summaryProviders).dynamicDispatches.find(
+            (fact) => fact.fromFun === "ecto_alias/1",
+          ),
+        ).toMatchObject({ factKind: "computed-atom", flow: "escape", kind: "opaque" });
+      }
+
+      expect(
+        extractElixirRuntimeConventions(
+          root,
+          {
+            ...trace,
+            modules: [...trace.modules, mod("Map", file)],
+          },
+          summaryProviders,
+        ).dynamicDispatches.find((fact) => fact.fromFun === "map_key/2"),
+      ).toMatchObject({ factKind: "computed-atom", flow: "escape", kind: "opaque" });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("joins one source producer independently by exact carrier and partition", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-indexed-atom-partitions-"));
+    const file = "partitioned_atom_role.ex";
+    writeFileSync(
+      join(root, file),
+      [
+        "defmodule NeutralIndexed.Partitioned do",
+        "  def key?(map, raw), do: Map.has_key?(map, String.to_atom(raw))",
+        "end",
+        "",
+      ].join("\n"),
+    );
+    const event = (partition: "prod" | "test", target: "String" | "Map"): TraceEvent => ({
+      k: "event",
+      kind: "remote",
+      file,
+      line: 2,
+      from_mod: "NeutralIndexed.Partitioned",
+      from_fun: "key?/2",
+      to_mod: target,
+      name: target === "String" ? "to_atom" : "has_key?",
+      arity: target === "String" ? 1 : 2,
+      dyn: target === "String",
+      partition,
+    });
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod("NeutralIndexed.Partitioned", file)],
+      functions: [],
+      events: [
+        event("prod", "String"),
+        event("prod", "Map"),
+        event("test", "String"),
+        event("test", "Map"),
+      ],
+    };
+
+    try {
+      const extraction = extractElixirRuntimeConventions(root, trace);
+      expect(extraction.dynamicDispatches).toEqual([
+        expect.objectContaining({ factKind: "computed-atom", flow: "data", world: "production" }),
+        expect.objectContaining({ factKind: "computed-atom", flow: "data", world: "test" }),
+      ]);
+      expect(extraction.atomFlowStats).toMatchObject({ dataSinks: 2, escapes: 0 });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -1496,6 +1861,176 @@ describe("extractElixirRuntimeReferences", () => {
       measure(50);
       const small = median([measure(250), measure(250), measure(250)]);
       const large = median([measure(1_000), measure(1_000), measure(1_000)]);
+      expect(large).toBeLessThan(small * 8 + 30);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  it("joins event-populated local role graphs near-linearly with deterministic counters", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-atom-role-event-scaling-"));
+    const file = "many_atom_roles.ex";
+    const measure = (count: number) => {
+      const functions = Array.from(
+        { length: count },
+        (_, index) =>
+          `  def classify_${index}(map, raw), do: Map.has_key?(map, String.to_atom(raw))\n`,
+      ).join("");
+      writeFileSync(
+        join(root, file),
+        ["defmodule NeutralScale.AtomRoles do\n", functions, "end\n"].join(""),
+      );
+      const events: TraceEvent[] = Array.from({ length: count }, (_, index) => {
+        const base = {
+          k: "event" as const,
+          kind: "remote" as const,
+          file,
+          line: index + 2,
+          from_mod: "NeutralScale.AtomRoles",
+          from_fun: `classify_${index}/2`,
+          partition: "prod" as const,
+        };
+        return [
+          {
+            ...base,
+            to_mod: "String",
+            name: "to_atom",
+            arity: 1,
+            dyn: true,
+          },
+          {
+            ...base,
+            to_mod: "Map",
+            name: "has_key?",
+            arity: 2,
+            dyn: false,
+          },
+        ];
+      }).flat();
+      const trace: TraceResult = {
+        appMod: null,
+        deps: [],
+        compileOk: true,
+        testPartition: "complete",
+        modules: [mod("NeutralScale.AtomRoles", file)],
+        functions: [],
+        events,
+      };
+      const started = performance.now();
+      const extraction = extractElixirRuntimeConventions(root, trace);
+      return { elapsed: performance.now() - started, extraction };
+    };
+    const median = (values: readonly number[]): number =>
+      [...values].sort((left, right) => left - right)[Math.floor(values.length / 2)] ?? 0;
+
+    try {
+      measure(50);
+      const smallRuns = [measure(250), measure(250), measure(250)];
+      const largeRuns = [measure(1_000), measure(1_000), measure(1_000)];
+      const representative = largeRuns[0]?.extraction;
+      if (representative === undefined) throw new Error("missing scaling result");
+      expect(representative.dynamicDispatches).toHaveLength(1_000);
+      expect(representative.atomFlowStats).toMatchObject({
+        sources: 1,
+        producers: 1_000,
+        dataSinks: 1_000,
+        invocationSinks: 0,
+        escapes: 0,
+        summaryMatches: 1_000,
+      });
+      expect(representative.atomFlowStats.roleEdges).toBeGreaterThanOrEqual(1_000);
+      expect(representative.atomFlowStats.queueVisits).toBeGreaterThanOrEqual(1_000);
+      const small = median(smallRuns.map((run) => run.elapsed));
+      const large = median(largeRuns.map((run) => run.elapsed));
+      expect(large).toBeLessThan(small * 8 + 30);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  it("solves shared many-producer and many-use role graphs once", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-atom-role-shared-scaling-"));
+    const file = "shared_atom_roles.ex";
+    const measure = (count: number) => {
+      const lines = [
+        "defmodule NeutralScale.SharedAtomRoles do",
+        "  def classify(values, raw) do",
+        "    computed = [",
+      ];
+      const producerLines: number[] = [];
+      for (let index = 0; index < count; index += 1) {
+        producerLines.push(lines.length + 1);
+        lines.push(`      String.to_atom(raw), # producer ${index}`);
+      }
+      lines.push("    ]");
+      const consumerLines: number[] = [];
+      for (let index = 0; index < count; index += 1) {
+        consumerLines.push(lines.length + 1);
+        lines.push(`    _ = Enum.member?(computed, :known) # consumer ${index}`);
+      }
+      lines.push("    values", "  end", "end", "");
+      writeFileSync(join(root, file), lines.join("\n"));
+      const base = {
+        k: "event" as const,
+        kind: "remote" as const,
+        file,
+        from_mod: "NeutralScale.SharedAtomRoles",
+        from_fun: "classify/2",
+        partition: "prod" as const,
+      };
+      const events: TraceEvent[] = [
+        ...producerLines.map((line) => ({
+          ...base,
+          line,
+          to_mod: "String",
+          name: "to_atom",
+          arity: 1,
+          dyn: true,
+        })),
+        ...consumerLines.map((line) => ({
+          ...base,
+          line,
+          to_mod: "Enum",
+          name: "member?",
+          arity: 2,
+          dyn: false,
+        })),
+      ];
+      const trace: TraceResult = {
+        appMod: null,
+        deps: [],
+        compileOk: true,
+        testPartition: "complete",
+        modules: [mod("NeutralScale.SharedAtomRoles", file)],
+        functions: [],
+        events,
+      };
+      const started = performance.now();
+      const extraction = extractElixirRuntimeConventions(root, trace);
+      return { elapsed: performance.now() - started, extraction };
+    };
+    const median = (values: readonly number[]): number =>
+      [...values].sort((left, right) => left - right)[Math.floor(values.length / 2)] ?? 0;
+
+    try {
+      measure(25);
+      const smallRuns = [measure(250), measure(250), measure(250)];
+      const largeRuns = [measure(1_000), measure(1_000), measure(1_000)];
+      const representative = largeRuns[0]?.extraction;
+      if (representative === undefined) throw new Error("missing shared scaling result");
+      expect(representative.dynamicDispatches).toHaveLength(1_000);
+      expect(representative.atomFlowStats).toMatchObject({
+        sources: 1,
+        producers: 1_000,
+        dataSinks: 1_000,
+        invocationSinks: 0,
+        escapes: 0,
+        summaryMatches: 1_000,
+      });
+      expect(representative.atomFlowStats.roleEdges).toBeLessThan(4_010);
+      expect(representative.atomFlowStats.queueVisits).toBeLessThan(6_020);
+      const small = median(smallRuns.map((run) => run.elapsed));
+      const large = median(largeRuns.map((run) => run.elapsed));
       expect(large).toBeLessThan(small * 8 + 30);
     } finally {
       rmSync(root, { recursive: true, force: true });

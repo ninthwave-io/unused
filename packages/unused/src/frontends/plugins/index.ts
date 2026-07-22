@@ -6,7 +6,11 @@ export {
   rustLanguagePlugin,
   typescriptLanguagePlugin,
 } from "./builtins.js";
-export { elixirRuntimeConventionPlugin } from "./elixir-conventions.js";
+export {
+  ectoElixirAtomRoleSummaryProvider,
+  ectoElixirConventionPlugin,
+  elixirRuntimeConventionPlugin,
+} from "./elixir-conventions.js";
 export {
   prefixRepositoryPath,
   rebaseClaimInputs,

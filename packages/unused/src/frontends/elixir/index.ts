@@ -8,6 +8,18 @@
  */
 
 export { analyzeElixirProject, analyzeElixirProjectWithGraph } from "./analyze.js";
+export type {
+  ElixirAtomArgumentRole,
+  ElixirAtomRoleSummary,
+  ElixirAtomRoleSummaryProvider,
+} from "./atom-role-summaries.js";
+export {
+  createElixirAtomRoleSummaryLookup,
+  defineElixirAtomRoleSummary,
+  ELIXIR_ATOM_ROLE_SUMMARIES,
+  lookupElixirAtomRoleSummary,
+  validateElixirAtomRoleSummaries,
+} from "./atom-role-summaries.js";
 export { detectElixirProject, isElixirProject } from "./detect.js";
 export {
   ElixirCompileError,

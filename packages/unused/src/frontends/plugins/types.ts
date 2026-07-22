@@ -18,6 +18,7 @@ import type {
   Suppression,
 } from "../../core/claims/index.js";
 import type { HazardAnnotation, IREdge, IRGraph, IRNode, Site } from "../../core/ir/index.js";
+import type { ElixirAtomRoleSummaryProvider } from "../elixir/atom-role-summaries.js";
 
 /** Stable, open language id used in graph/claim identity (`ts`, `ex`, `rs`). */
 export type LanguageId = string;
@@ -167,6 +168,8 @@ export interface ConventionPluginContext {
 /** Adds framework/tool roots, references, or hazards within a language boundary. */
 export interface ConventionPlugin extends PluginBase<"convention"> {
   readonly languages: readonly LanguageId[];
+  /** Pre-graph Elixir semantic facts owned by this convention, when present. */
+  readonly elixirAtomRoleSummaryProvider?: ElixirAtomRoleSummaryProvider;
   applies(context: ConventionPluginContext): boolean | Promise<boolean>;
   analyze(context: ConventionPluginContext): Promise<GraphContribution>;
 }

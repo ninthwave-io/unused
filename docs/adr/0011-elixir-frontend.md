@@ -269,8 +269,18 @@ Because interpolation bodies are executable while the literal masker hides
 their text, any later `#{...}` in the function also invalidates the local
 assignment proof, while interpolation in the inline try invalidates that role.
 Non-interpolating literal/comment bodies remain inert. Function, delimiter,
-block, clause-arrow, rescue, identifier, producer, Map, and Enum indexes are
-built once. The classification cost is bounded log-linear:
-O(source bytes + trace events + reflected functions + atom producers ×
-log(indexed roles) + proven local references + emitted candidates). No event
-rescans an entire source.
+block, clause-arrow, rescue, identifier, producer, call, and role indexes are
+built once. ADR 0014 Phase 1B1 replaces per-producer suffix traversal with one
+shared carrier/partition-local value-role graph and a finite bitmask delta
+fixed point. Classification is O(source bytes + trace events + unique
+role/def-use edges + emitted candidates); shared assignments and containers
+are not rescanned per producer.
+
+ADR 0014 Phase 1B1 supersedes the preceding closed list as the current
+implementation contract. The legacy exact shapes remain compatibility
+terminals, while a compiler-corroborated indexed local-flow engine now applies
+sparse declarative standard-library summaries and Ecto summaries owned by the
+registered built-in convention provider.
+Unknown arguments, calls, returns, rebinds, interpolation, ambiguous
+source/event cardinality, and unmodelled boundaries still fail closed. This
+phase is intra-function only; it does not infer helper or module summaries.

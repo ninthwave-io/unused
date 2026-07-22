@@ -1,0 +1,22 @@
+case: atom-role-summaries
+description: >-
+  A compiler-corroborated standard-library key role consumes a computed atom,
+  while an apply selector remains an invocation with a bounded target.
+subjects:
+  - kind: export
+    name: NeutralAtomRoles.Flows.safe_key/2
+    file: lib/neutral_atom_roles/flows.ex
+    expected: alive
+    because: The application calls the function and its computed atom is only a Map predicate key.
+  - kind: export
+    name: NeutralAtomRoles.Flows.genuinely_unused/0
+    file: lib/neutral_atom_roles/flows.ex
+    expected: dead
+    minConfidence: high
+    because: The bounded invocation does not contaminate an unrelated dead export.
+  - kind: export
+    name: NeutralAtomRoles.Target.action/0
+    file: lib/neutral_atom_roles/target.ex
+    expected: dead
+    minConfidence: medium
+    because: The source contains no static call, but a reachable computed apply selector may invoke it.

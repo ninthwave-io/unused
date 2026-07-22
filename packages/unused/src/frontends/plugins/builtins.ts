@@ -7,6 +7,7 @@ import { analyzeRustProjectWithGraph } from "../rust/index.js";
 import { type AnalyzeOptions, analyzeProjectWithGraph } from "../ts/analyze.js";
 import { selectProjectBoundaries } from "./boundaries.js";
 import {
+  ectoElixirConventionPlugin,
   elixirRuntimeConventionPlugin,
   elixirScriptConventionPlugin,
 } from "./elixir-conventions.js";
@@ -171,6 +172,7 @@ export const elixirLanguagePlugin: LanguageFrontendPlugin = {
         emitConfigMatchWarnings: false,
         deferConfigSymbolEntrypoints: true,
         deferredConventions: ["elixir-runtime", "elixir-scripts"],
+        atomRoleSummaryProviders: [ectoElixirConventionPlugin.elixirAtomRoleSummaryProvider],
         elixirSourceFiles: filesWithinBoundary(
           boundary.rootDir,
           context.manifests.elixirSourceFiles,
@@ -220,6 +222,7 @@ export const BUILT_IN_LANGUAGE_PLUGINS = [
 
 export const BUILT_IN_PLUGINS: readonly AnalyzerPlugin[] = [
   ...BUILT_IN_LANGUAGE_PLUGINS,
+  ectoElixirConventionPlugin,
   elixirRuntimeConventionPlugin,
   elixirScriptConventionPlugin,
   rustlerElixirConventionPlugin,

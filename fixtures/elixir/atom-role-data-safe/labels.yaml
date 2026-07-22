@@ -1,0 +1,17 @@
+case: atom-role-data-safe
+description: >-
+  Atom.to_string consumes a compiler-corroborated computed atom as
+  non-executable data. The role leaves an unrelated dead export at high
+  confidence with a supported deletion plan.
+subjects:
+  - kind: export
+    name: NeutralAtomData.Flow.stringify/1
+    file: lib/neutral_atom_data/flow.ex
+    expected: alive
+    because: The application calls the data-only conversion flow.
+  - kind: export
+    name: NeutralAtomData.Flow.genuinely_unused/0
+    file: lib/neutral_atom_data/flow.ex
+    expected: dead
+    minConfidence: high
+    because: The data-only atom role does not contaminate an unrelated dead export.
