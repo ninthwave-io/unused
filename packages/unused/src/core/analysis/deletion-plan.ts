@@ -112,6 +112,30 @@ export function computeDeletionPlan(input: ComputeDeletionPlanInput): DeletionPl
     });
   }
 
+  const targetedRoot = graph
+    .entrypoints()
+    .filter(
+      (entrypoint) =>
+        entrypoint.targetSymbol !== undefined &&
+        (selectedNodeIds.has(entrypoint.targetSymbol) ||
+          (subject.kind === "file" && entrypoint.file === subject.file)),
+    )
+    .sort((left, right) => compare(left.id, right.id))[0];
+  if (targetedRoot?.targetSymbol !== undefined) {
+    const target = graph.nodeOfKind("symbol", targetedRoot.targetSymbol);
+    return finish({
+      schemaVersion: SCHEMA_VERSION,
+      selected: subject,
+      supported: false,
+      unsupportedReason:
+        `configured symbol entrypoint \`${target?.exportedName ?? targetedRoot.targetSymbol}\` ` +
+        `in ${targetedRoot.file} (${targetedRoot.reason}) prevents deletion; ` +
+        "remove or change entrySymbols before deleting it",
+      reExportEdits: [],
+      stages: [],
+    });
+  }
+
   const context =
     input.context?.graph === graph ? input.context : createDeletionPlanningContext(graph);
   let hazardEvaluations = input.hazardEvaluations;
@@ -657,6 +681,12 @@ function cloneWithout(graph: IRGraph, removedNodeIds: ReadonlySet<string>): IRGr
   for (const node of graph.nodes()) {
     if (removedNodeIds.has(node.id)) continue;
     if (node.kind === "entrypoint" && removedFiles.has(node.file)) continue;
+    if (
+      node.kind === "entrypoint" &&
+      node.targetSymbol !== undefined &&
+      removedNodeIds.has(node.targetSymbol)
+    )
+      continue;
     clone.addNode(node);
   }
   for (const edge of graph.edges()) {

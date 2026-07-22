@@ -43,6 +43,18 @@ function addEntry(g: IRGraph, rel: string, reason = "main"): void {
   });
 }
 
+function addSymbolEntry(g: IRGraph, rel: string, name: string, reason: string): void {
+  const targetSymbol = symbolId(rel, name);
+  g.addNode({
+    kind: "entrypoint",
+    id: entrypointId("production", rel, targetSymbol),
+    entryKind: "production",
+    file: rel,
+    targetSymbol,
+    reason,
+  });
+}
+
 function addConfigEntry(g: IRGraph, rel: string): void {
   addFile(g, rel);
   g.addNode({
@@ -201,6 +213,33 @@ describe("export-surface reachability (rule 2)", () => {
     const r = computeReachability(g);
     expect(r.surfaceLiveFiles.has(fileId("src/index.ts"))).toBe(true);
     expect(r.reachableSymbols.has(symbolId("src/index.ts", "publicApi"))).toBe(true);
+  });
+
+  it("an exact symbol entrypoint roots its file and dependencies without surface-live siblings", () => {
+    const g = new IRGraph();
+    addSymbol(g, "src/api.ts", "run");
+    addSymbol(g, "src/api.ts", "unusedSibling");
+    addSymbol(g, "src/dependency.ts", "helper");
+    g.addEdge({
+      kind: "references",
+      referenceKind: "static",
+      from: symbolId("src/api.ts", "run"),
+      to: symbolId("src/dependency.ts", "helper"),
+      site: site("src/api.ts"),
+      name: "helper",
+    });
+    addSymbolEntry(g, "src/api.ts", "run", "configured public operation");
+
+    const r = computeReachability(g);
+    expect(r.reachableFiles).toEqual(new Set([fileId("src/api.ts"), fileId("src/dependency.ts")]));
+    expect(r.surfaceLiveFiles.has(fileId("src/api.ts"))).toBe(false);
+    expect(r.reachableSymbols.has(symbolId("src/api.ts", "run"))).toBe(true);
+    expect(r.reachableSymbols.has(symbolId("src/dependency.ts", "helper"))).toBe(true);
+    expect(r.reachableSymbols.has(symbolId("src/api.ts", "unusedSibling"))).toBe(false);
+    expect(whyReachable(r, symbolId("src/api.ts", "run")).entrypoint).toMatchObject({
+      reason: "configured public operation",
+      targetSymbol: symbolId("src/api.ts", "run"),
+    });
   });
 
   it("a whole-module dynamic-resolved (require) edge makes the target surface live", () => {

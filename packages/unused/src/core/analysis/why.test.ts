@@ -56,12 +56,14 @@ function entrypoint(
   kind: "production" | "config" | "test",
   path: string,
   reason: string,
+  targetSymbol?: string,
 ): void {
   g.addNode({
     kind: "entrypoint",
-    id: entrypointId(kind, path),
+    id: entrypointId(kind, path, targetSymbol),
     entryKind: kind,
     file: path,
+    ...(targetSymbol === undefined ? {} : { targetSymbol }),
     reason,
   });
 }
@@ -101,6 +103,31 @@ describe("whyAlive — alive", () => {
     expect(r.outcome).toBe("alive");
     if (r.outcome !== "alive") return;
     expect(r.entrypointKind).toBe("production");
+  });
+
+  it("starts an exact symbol entrypoint path at the configured declaration", () => {
+    const g = new IRGraph();
+    file(g, "src/operations.ts");
+    exportSym(g, "src/operations.ts", "run", 7);
+    exportSym(g, "src/operations.ts", "unusedSibling", 11);
+    entrypoint(
+      g,
+      "production",
+      "src/operations.ts",
+      "configured public operation",
+      symbolId("src/operations.ts", "run"),
+    );
+
+    const r = ask(g, "run");
+    expect(r.outcome).toBe("alive");
+    if (r.outcome !== "alive") return;
+    expect(r.paths[0]?.hops[0]).toEqual({
+      file: "src/operations.ts",
+      line: 7,
+      symbol: "run",
+      entrypoint: { kind: "production", reason: "configured public operation" },
+    });
+    expect(ask(g, "unusedSibling").outcome).toBe("dead");
   });
 });
 

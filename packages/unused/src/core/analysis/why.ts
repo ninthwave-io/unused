@@ -404,7 +404,17 @@ function buildPath(
   if (!wr.reachable || wr.entrypoint === undefined) return undefined;
   const ep = wr.entrypoint;
 
-  const hops: WhyHop[] = [{ file: ep.file, entrypoint: { kind: ep.entryKind, reason: ep.reason } }];
+  const targetedRoot =
+    ep.targetSymbol === undefined ? undefined : graph.nodeOfKind("symbol", ep.targetSymbol);
+  const hops: WhyHop[] = [
+    {
+      file: ep.file,
+      ...(targetedRoot === undefined
+        ? {}
+        : { line: targetedRoot.span.startLine, symbol: targetedRoot.exportedName }),
+      entrypoint: { kind: ep.entryKind, reason: ep.reason },
+    },
+  ];
   for (const edge of wr.edges) {
     if (edge.referenceKind === "runtime-resolved") {
       const previous = hops.at(-1);

@@ -50,6 +50,7 @@ export type Predecessor =
       readonly file: string;
       readonly reason: string;
       readonly entryKind: EntrypointKind;
+      readonly targetSymbol?: string;
     }
   | { readonly via: "edge"; readonly edge: IREdge };
 
@@ -327,13 +328,24 @@ export function computeReachability(
     if (seedFilter !== undefined && !seedFilter(entry)) continue;
     entrypointFiles.add(fileId(entry.file));
     if (entry.entryKind === "production") productionEntrypointFiles.add(fileId(entry.file));
-    markSurfaceLive(entry.file, {
+    const predecessor: Predecessor = {
       via: "entrypoint",
       entrypointId: entry.id,
       file: entry.file,
       reason: entry.reason,
       entryKind: entry.entryKind,
-    });
+      ...(entry.targetSymbol === undefined ? {} : { targetSymbol: entry.targetSymbol }),
+    };
+    if (entry.targetSymbol === undefined) {
+      markSurfaceLive(entry.file, predecessor);
+      continue;
+    }
+    const target = graph.nodeOfKind("symbol", entry.targetSymbol);
+    if (target === undefined || target.file !== entry.file) {
+      throw new Error(`entrypoint ${entry.id} targets an absent or foreign symbol`);
+    }
+    markFile(entry.file, predecessor);
+    markSymbol(target.id, predecessor);
   }
 
   // --- drain -----------------------------------------------------------------
@@ -433,6 +445,7 @@ export interface WhyReachable {
     readonly file: string;
     readonly reason: string;
     readonly entryKind: EntrypointKind;
+    readonly targetSymbol?: string;
   };
   /**
    * Edges from the entrypoint side down to the queried node, in order. Empty
@@ -474,6 +487,7 @@ export function whyReachable(
           file: pred.file,
           reason: pred.reason,
           entryKind: pred.entryKind,
+          ...(pred.targetSymbol === undefined ? {} : { targetSymbol: pred.targetSymbol }),
         },
         edges,
       };

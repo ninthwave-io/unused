@@ -118,7 +118,14 @@ function rebaseNode(node: IRNode, prefix: string): IRNode {
     }
     case "entrypoint": {
       const file = prefixRepositoryPath(prefix, node.file);
-      return { ...node, id: entrypointId(node.entryKind, file), file };
+      const targetSymbol =
+        node.targetSymbol === undefined ? undefined : prefixNodeId(node.targetSymbol, prefix);
+      return {
+        ...node,
+        id: entrypointId(node.entryKind, file, targetSymbol),
+        file,
+        ...(targetSymbol === undefined ? {} : { targetSymbol }),
+      };
     }
     case "dependency":
       return { ...node, id: dependencyId(node.packageName) };

@@ -201,6 +201,8 @@ export interface EntrypointNode {
   readonly entryKind: EntrypointKind;
   /** POSIX, repo-relative path of the rooted file. */
   readonly file: string;
+  /** Exact symbol root; absent preserves historical whole-file surface liveness. */
+  readonly targetSymbol?: string;
   /** e.g. `"main"`, `"module"`, `"exports"`, `"bin"`, `"fallback:src/index.ts"`. */
   readonly reason: string;
 }
@@ -348,7 +350,12 @@ export function endpointId(protocol: string, route: string): string {
   return `endpoint:${protocol}:${route}`;
 }
 
-/** `entrypoint:<kind>:<posixRelPath>`. */
-export function entrypointId(kind: EntrypointKind, posixRelPath: string): string {
-  return `entrypoint:${kind}:${posixRelPath}`;
+/** Legacy `entrypoint:<kind>:<path>`, optionally qualified by an exact symbol id. */
+export function entrypointId(
+  kind: EntrypointKind,
+  posixRelPath: string,
+  targetSymbol?: string,
+): string {
+  const legacy = `entrypoint:${kind}:${posixRelPath}`;
+  return targetSymbol === undefined ? legacy : `${legacy}:target:${targetSymbol}`;
 }

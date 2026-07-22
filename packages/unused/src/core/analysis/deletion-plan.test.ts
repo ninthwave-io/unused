@@ -26,6 +26,17 @@ function addEntry(graph: IRGraph, file: string): void {
   });
 }
 
+function addSymbolEntry(graph: IRGraph, file: string, name: string, reason: string): void {
+  graph.addNode({
+    kind: "entrypoint",
+    id: entrypointId("production", file, symbolId(file, name)),
+    entryKind: "production",
+    file,
+    targetSymbol: symbolId(file, name),
+    reason,
+  });
+}
+
 function addSymbol(
   graph: IRGraph,
   file: string,
@@ -95,6 +106,35 @@ function subjectFile(id: string): string {
 }
 
 describe("computeDeletionPlan", () => {
+  it("refuses an exact configured root and its file while leaving siblings eligible", () => {
+    const graph = new IRGraph();
+    addSymbol(graph, "src/operations.ts", "run", { line: 3 });
+    addSymbol(graph, "src/operations.ts", "unusedSibling", { line: 8 });
+    addSymbolEntry(graph, "src/operations.ts", "run", "configured public operation");
+    const reachability = computePartitionedReachability(graph);
+
+    for (const subject of [
+      { kind: "export", file: "src/operations.ts", name: "run" } as const,
+      { kind: "file", file: "src/operations.ts" } as const,
+    ]) {
+      expect(computeDeletionPlan({ graph, reachability, subject })).toMatchObject({
+        supported: false,
+        unsupportedReason:
+          "configured symbol entrypoint `run` in src/operations.ts (configured public operation) " +
+          "prevents deletion; remove or change entrySymbols before deleting it",
+        stages: [],
+      });
+    }
+
+    expect(
+      computeDeletionPlan({
+        graph,
+        reachability,
+        subject: { kind: "export", file: "src/operations.ts", name: "unusedSibling" },
+      }),
+    ).toMatchObject({ supported: true });
+  });
+
   it("refuses bounded dynamic targets and their containing file only while the exact carrier is active", () => {
     const build = (carrierReachable: boolean): IRGraph => {
       const graph = new IRGraph();

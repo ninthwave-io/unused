@@ -25,9 +25,14 @@ describe("rebaseGraph", () => {
     });
     graph.addNode({
       kind: "entrypoint",
-      id: entrypointId("production", "lib/callback.ex"),
+      id: entrypointId(
+        "production",
+        "lib/callback.ex",
+        symbolId("lib/callback.ex", "App.callback/1"),
+      ),
       entryKind: "production",
       file: "lib/callback.ex",
+      targetSymbol: symbolId("lib/callback.ex", "App.callback/1"),
       reason: "application-callback",
     });
     graph.addNode({
@@ -66,8 +71,13 @@ describe("rebaseGraph", () => {
           file: "apps/backend/lib/callback.ex",
         }),
         expect.objectContaining({
-          id: entrypointId("production", "apps/backend/lib/callback.ex"),
+          id: entrypointId(
+            "production",
+            "apps/backend/lib/callback.ex",
+            symbolId("apps/backend/lib/callback.ex", "App.callback/1"),
+          ),
           file: "apps/backend/lib/callback.ex",
+          targetSymbol: symbolId("apps/backend/lib/callback.ex", "App.callback/1"),
         }),
         expect.objectContaining({ id: dependencyId("neutral") }),
       ]),
