@@ -105,6 +105,12 @@ export interface ElixirAtomFlowStats {
   readonly privateModuleMetadataEvents: number;
   /** Compiler module-level events accepted as exact inert typespec attributes. */
   readonly privateModuleTypespecEvents: number;
+  /** Exact direct-body alias/import/require declarations accepted as lexical-only. */
+  readonly privateModuleDeclarationConstructs: number;
+  /** Custom attributes whose complete right-hand side is independently parsed literal data. */
+  readonly privateModuleLiteralAttributeConstructs: number;
+  /** Literal custom attributes containing only audited built-in data sigils. */
+  readonly privateModuleSigilAttributeConstructs: number;
   /** Candidate-bearing modules rejected because a direct `use` may expand definitions. */
   readonly privateModuleUseRejections: number;
   /** Candidate-bearing modules rejected because a compile hook attribute was present. */
@@ -113,8 +119,12 @@ export interface ElixirAtomFlowStats {
   readonly privateModuleGeneratedRejections: number;
   /** Candidate-bearing modules rejected because a custom module-body call was present. */
   readonly privateModuleCustomRejections: number;
-  /** Candidate-bearing modules rejected because alias/import/require was not reviewed. */
+  /** Candidate-bearing modules rejected because a declaration was not exact inert syntax. */
   readonly privateModuleDeclarationRejections: number;
+  /** Candidate-bearing modules rejected because a custom attribute RHS was executable/unknown. */
+  readonly privateModuleAttributeRejections: number;
+  /** Candidate-bearing modules rejected because a sigil was custom or ambiguous. */
+  readonly privateModuleSigilRejections: number;
   /** Candidate-bearing modules rejected because an event had no exact source construct. */
   readonly privateModuleUnknownEventRejections: number;
   /** Candidate-bearing modules rejected because a source/event bundle was ambiguous. */
@@ -202,11 +212,16 @@ type PrivateModuleConstructKind =
   | "definition"
   | "metadata"
   | "typespec"
+  | "literal-attribute"
+  | "sigil-attribute"
   | "use"
   | "hook"
   | "generated"
   | "custom"
-  | "declaration";
+  | "declaration"
+  | "declaration-unsafe"
+  | "attribute-unsafe"
+  | "sigil-unsafe";
 
 interface PrivateModuleConstruct {
   readonly module: string;
@@ -214,6 +229,7 @@ interface PrivateModuleConstruct {
   readonly start: number;
   readonly kind: PrivateModuleConstructKind;
   readonly name: string;
+  readonly sigils?: readonly string[];
 }
 
 interface BlockRange {
@@ -283,11 +299,16 @@ export function extractElixirRuntimeConventions(
     privateModuleScaffoldingEvents: 0,
     privateModuleMetadataEvents: 0,
     privateModuleTypespecEvents: 0,
+    privateModuleDeclarationConstructs: 0,
+    privateModuleLiteralAttributeConstructs: 0,
+    privateModuleSigilAttributeConstructs: 0,
     privateModuleUseRejections: 0,
     privateModuleHookRejections: 0,
     privateModuleGeneratedRejections: 0,
     privateModuleCustomRejections: 0,
     privateModuleDeclarationRejections: 0,
+    privateModuleAttributeRejections: 0,
+    privateModuleSigilRejections: 0,
     privateModuleUnknownEventRejections: 0,
     privateModuleAmbiguousEventRejections: 0,
   };
@@ -2017,6 +2038,8 @@ type PrivateModuleRejectionReason =
   | "generated"
   | "custom"
   | "declaration"
+  | "attribute"
+  | "sigil"
   | "unknown-event"
   | "ambiguous-event";
 
@@ -2053,9 +2076,23 @@ function expectedPrivateModuleEventSignatures(
         signature("remote", ":elixir_def", "store_definition", 3),
       ].sort();
     case "metadata":
+    case "literal-attribute":
       return [
         signature("alias", "Module", "", -1),
         signature("imported", "Kernel", "@", 1),
+        signature("remote", "Module", "__put_attribute__", 5),
+      ].sort();
+    case "sigil-attribute":
+      return [
+        signature("alias", "Module", "", -1),
+        signature("imported", "Kernel", "@", 1),
+        ...(construct.sigils ?? []).flatMap((name) => {
+          const policy = PRIVATE_LITERAL_SIGILS.get(name.slice("sigil_".length));
+          return [
+            signature("imported", "Kernel", name, 2),
+            ...(policy?.struct === undefined ? [] : [signature("struct", policy.struct, "", -1)]),
+          ];
+        }),
         signature("remote", "Module", "__put_attribute__", 5),
       ].sort();
     case "typespec":
@@ -2088,6 +2125,15 @@ function classifyPrivateModuleSafety(
 
   for (const construct of constructs) {
     switch (construct.kind) {
+      case "declaration":
+        stats.privateModuleDeclarationConstructs += 1;
+        break;
+      case "literal-attribute":
+        stats.privateModuleLiteralAttributeConstructs += 1;
+        break;
+      case "sigil-attribute":
+        stats.privateModuleSigilAttributeConstructs += 1;
+        break;
       case "use":
         reasons.add("use");
         break;
@@ -2100,8 +2146,14 @@ function classifyPrivateModuleSafety(
       case "custom":
         reasons.add("custom");
         break;
-      case "declaration":
+      case "declaration-unsafe":
         reasons.add("declaration");
+        break;
+      case "attribute-unsafe":
+        reasons.add("attribute");
+        break;
+      case "sigil-unsafe":
+        reasons.add("sigil");
         break;
       default:
         break;
@@ -2131,7 +2183,9 @@ function classifyPrivateModuleSafety(
     }
     if (construct.kind === "metadata") stats.privateModuleMetadataEvents += actual.length;
     else if (construct.kind === "typespec") stats.privateModuleTypespecEvents += actual.length;
-    else stats.privateModuleScaffoldingEvents += actual.length;
+    else if (construct.kind === "module" || construct.kind === "definition") {
+      stats.privateModuleScaffoldingEvents += actual.length;
+    }
   }
 
   // Real compiler traces always contain the exact defmodule scaffolding event.
@@ -2151,6 +2205,8 @@ function classifyPrivateModuleSafety(
   if (reasons.has("generated")) stats.privateModuleGeneratedRejections += 1;
   if (reasons.has("custom")) stats.privateModuleCustomRejections += 1;
   if (reasons.has("declaration")) stats.privateModuleDeclarationRejections += 1;
+  if (reasons.has("attribute")) stats.privateModuleAttributeRejections += 1;
+  if (reasons.has("sigil")) stats.privateModuleSigilRejections += 1;
   if (reasons.has("unknown-event")) stats.privateModuleUnknownEventRejections += 1;
   if (reasons.has("ambiguous-event")) stats.privateModuleAmbiguousEventRejections += 1;
   return { safe: reasons.size === 0, reasons };
@@ -3947,6 +4003,7 @@ function indexSource(content: string): SourceIndex {
     functionRanges,
     moduleRanges,
     privateModuleConstructs: indexPrivateModuleConstructs(
+      content,
       code,
       lineStarts,
       blockIndex.ranges,
@@ -3975,6 +4032,313 @@ function indexModuleRanges(
   return ranges;
 }
 
+interface PrivateInertDataParse {
+  readonly end: number;
+  readonly sigils: readonly string[];
+}
+
+interface PrivateInertParseState {
+  readonly sigils: string[];
+  unsafeSigil: boolean;
+}
+
+interface PrivateLiteralSigilPolicy {
+  readonly interpolation: boolean;
+  readonly modifiers: RegExp;
+  readonly struct?: string;
+}
+
+const PRIVATE_LITERAL_SIGILS: ReadonlyMap<string, PrivateLiteralSigilPolicy> = new Map([
+  ["D", { interpolation: false, modifiers: /^$/u, struct: "Date" }],
+  ["N", { interpolation: false, modifiers: /^$/u, struct: "NaiveDateTime" }],
+  ["S", { interpolation: false, modifiers: /^$/u }],
+  ["s", { interpolation: true, modifiers: /^$/u }],
+  ["T", { interpolation: false, modifiers: /^$/u, struct: "Time" }],
+  ["U", { interpolation: false, modifiers: /^$/u, struct: "DateTime" }],
+  ["W", { interpolation: false, modifiers: /^(?:[asc])?$/u }],
+  ["w", { interpolation: true, modifiers: /^(?:[asc])?$/u }],
+]);
+const PRIVATE_LITERAL_MAX_DEPTH = 32;
+const PRIVATE_LITERAL_SIGIL_DELIMITERS = new Set(['"', "'", "/", "|", "(", "[", "{", "<"]);
+
+function privateLineEnd(content: string, start: number): number {
+  const end = content.indexOf("\n", start);
+  return end < 0 ? content.length : end;
+}
+
+function skipPrivateWhitespace(content: string, start: number, limit: number): number {
+  let index = start;
+  while (index < limit && /\s/u.test(content[index] as string)) index += 1;
+  return index;
+}
+
+function skipPrivateHorizontalWhitespace(content: string, start: number, limit: number): number {
+  let index = start;
+  while (index < limit && (content[index] === " " || content[index] === "\t")) index += 1;
+  return index;
+}
+
+function privateTrailingLineIsInert(content: string, start: number, lineEnd: number): boolean {
+  const tail = content.slice(start, lineEnd).trimStart();
+  return tail === "" || tail.startsWith("#");
+}
+
+function hasUnescapedInterpolation(content: string, start: number, end: number): boolean {
+  for (let index = start; index + 1 < end; index += 1) {
+    if (content[index] !== "#" || content[index + 1] !== "{") continue;
+    let slashes = 0;
+    for (let cursor = index - 1; cursor >= start && content[cursor] === "\\"; cursor -= 1) {
+      slashes += 1;
+    }
+    if (slashes % 2 === 0) return true;
+  }
+  return false;
+}
+
+function parsePrivateQuotedLiteral(
+  content: string,
+  start: number,
+  limit: number,
+): number | undefined {
+  const triple = content.startsWith('"""', start) || content.startsWith("'''", start);
+  const delimiter = triple ? content.slice(start, start + 3) : content[start];
+  if (delimiter !== '"' && delimiter !== "'" && delimiter !== '"""' && delimiter !== "'''") {
+    return undefined;
+  }
+  let index = start + delimiter.length;
+  while (index < limit) {
+    if (content.startsWith(delimiter, index)) {
+      return hasUnescapedInterpolation(content, start + delimiter.length, index)
+        ? undefined
+        : index + delimiter.length;
+    }
+    if (content[index] === "\\") index += 2;
+    else index += 1;
+  }
+  return undefined;
+}
+
+function parsePrivateLiteralSigil(
+  content: string,
+  start: number,
+  limit: number,
+  state: PrivateInertParseState,
+): number | undefined {
+  if (content[start] !== "~") return undefined;
+  const sigil = content[start + 1];
+  if (sigil === undefined || !/[A-Za-z]/u.test(sigil)) return undefined;
+  const policy = PRIVATE_LITERAL_SIGILS.get(sigil);
+  if (policy === undefined) {
+    state.unsafeSigil = true;
+    return undefined;
+  }
+  const delimiterAt = start + 2;
+  const triple = content.startsWith('"""', delimiterAt) || content.startsWith("'''", delimiterAt);
+  const opener = triple ? content.slice(delimiterAt, delimiterAt + 3) : content[delimiterAt];
+  if (opener === undefined || (!triple && !PRIVATE_LITERAL_SIGIL_DELIMITERS.has(opener))) {
+    return undefined;
+  }
+  const closer =
+    opener === "("
+      ? ")"
+      : opener === "["
+        ? "]"
+        : opener === "{"
+          ? "}"
+          : opener === "<"
+            ? ">"
+            : opener;
+  let index = delimiterAt + opener.length;
+  const bodyStart = index;
+  let depth = opener === closer ? 0 : 1;
+  while (index < limit) {
+    if (content.startsWith(closer, index)) {
+      depth -= 1;
+      if (depth <= 0) break;
+      index += closer.length;
+      continue;
+    }
+    if (opener !== closer && content.startsWith(opener, index)) {
+      depth += 1;
+      index += opener.length;
+      continue;
+    }
+    if (content[index] === "\\") index += 2;
+    else index += 1;
+  }
+  if (index >= limit || depth > 1) return undefined;
+  const bodyEnd = index;
+  index += closer.length;
+  const modifierStart = index;
+  while (index < limit && /[A-Za-z]/u.test(content[index] as string)) index += 1;
+  const modifiers = content.slice(modifierStart, index);
+  if (
+    !policy.modifiers.test(modifiers) ||
+    (policy.interpolation && hasUnescapedInterpolation(content, bodyStart, bodyEnd))
+  ) {
+    return undefined;
+  }
+  state.sigils.push(`sigil_${sigil}`);
+  return index;
+}
+
+function parsePrivateKeywordKey(
+  content: string,
+  start: number,
+  limit: number,
+): { readonly end: number; readonly key: string } | undefined {
+  const match = /[a-z_][A-Za-z0-9_]*[!?]?/uy;
+  match.lastIndex = start;
+  const found = match.exec(content);
+  if (found === null) return undefined;
+  const end = skipPrivateHorizontalWhitespace(content, match.lastIndex, limit);
+  if (content[end] !== ":") return undefined;
+  return { end: end + 1, key: found[0] };
+}
+
+function parsePrivateInertSequence(
+  content: string,
+  start: number,
+  limit: number,
+  close: string,
+  state: PrivateInertParseState,
+  map: boolean,
+  depth: number,
+): number | undefined {
+  let index = skipPrivateWhitespace(content, start, limit);
+  if (content[index] === close) return index + 1;
+  while (index < limit) {
+    const keyword = parsePrivateKeywordKey(content, index, limit);
+    if (keyword !== undefined) {
+      index = parsePrivateInertValue(content, keyword.end, limit, state, depth) ?? -1;
+    } else {
+      index = parsePrivateInertValue(content, index, limit, state, depth) ?? -1;
+      if (map && index >= 0) {
+        index = skipPrivateWhitespace(content, index, limit);
+        if (!content.startsWith("=>", index)) return undefined;
+        index = parsePrivateInertValue(content, index + 2, limit, state, depth) ?? -1;
+      }
+    }
+    if (index < 0) return undefined;
+    index = skipPrivateWhitespace(content, index, limit);
+    if (content[index] === close) return index + 1;
+    if (content[index] !== ",") return undefined;
+    index = skipPrivateWhitespace(content, index + 1, limit);
+    if (content[index] === close) return index + 1;
+  }
+  return undefined;
+}
+
+function parsePrivateInertValue(
+  content: string,
+  start: number,
+  limit: number,
+  state: PrivateInertParseState,
+  depth = 0,
+): number | undefined {
+  const index = skipPrivateWhitespace(content, start, limit);
+  if (index >= limit) return undefined;
+  const quoted = parsePrivateQuotedLiteral(content, index, limit);
+  if (quoted !== undefined) return quoted;
+  if (content[index] === "~") return parsePrivateLiteralSigil(content, index, limit, state);
+  if (content.startsWith("%{", index)) {
+    if (depth >= PRIVATE_LITERAL_MAX_DEPTH) return undefined;
+    return parsePrivateInertSequence(content, index + 2, limit, "}", state, true, depth + 1);
+  }
+  if (content[index] === "[") {
+    if (depth >= PRIVATE_LITERAL_MAX_DEPTH) return undefined;
+    return parsePrivateInertSequence(content, index + 1, limit, "]", state, false, depth + 1);
+  }
+  if (content[index] === "{") {
+    if (depth >= PRIVATE_LITERAL_MAX_DEPTH) return undefined;
+    return parsePrivateInertSequence(content, index + 1, limit, "}", state, false, depth + 1);
+  }
+  const atom = /:[A-Za-z_][A-Za-z0-9_]*[!?]?/uy;
+  atom.lastIndex = index;
+  if (atom.exec(content) !== null) return atom.lastIndex;
+  const scalar = /(?:true|false|nil)(?![A-Za-z0-9_])/uy;
+  scalar.lastIndex = index;
+  if (scalar.exec(content) !== null) return scalar.lastIndex;
+  const number = /[-+]?(?:\d(?:_?\d)*)(?:\.\d(?:_?\d)*)?(?:[eE][-+]?\d+)?/uy;
+  number.lastIndex = index;
+  if (number.exec(content) !== null) return number.lastIndex;
+  return undefined;
+}
+
+function parsePrivateAttributeData(
+  content: string,
+  expressionStart: number,
+): { readonly parse?: PrivateInertDataParse; readonly unsafeSigil: boolean } {
+  const firstLineEnd = privateLineEnd(content, expressionStart);
+  const start = skipPrivateHorizontalWhitespace(content, expressionStart, firstLineEnd);
+  if (start >= firstLineEnd || content[start] === "#") return { unsafeSigil: false };
+  const state: PrivateInertParseState = { sigils: [], unsafeSigil: false };
+  const end = parsePrivateInertValue(content, start, firstLineEnd, state);
+  if (end === undefined) return { unsafeSigil: state.unsafeSigil };
+  const lineEnd = privateLineEnd(content, end);
+  if (!privateTrailingLineIsInert(content, end, lineEnd)) {
+    return { unsafeSigil: state.unsafeSigil };
+  }
+  return { parse: { end, sigils: state.sigils }, unsafeSigil: false };
+}
+
+const PRIVATE_DECLARATION_OPTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
+  alias: new Set(["as", "warn"]),
+  import: new Set(["except", "only", "warn"]),
+  require: new Set(["as", "warn"]),
+};
+
+function exactPrivateModuleToken(
+  content: string,
+  start: number,
+  limit: number,
+): number | undefined {
+  const token = new RegExp(MODULE, "uy");
+  token.lastIndex = start;
+  const match = token.exec(content);
+  if (match === null || token.lastIndex > limit) return undefined;
+  return token.lastIndex;
+}
+
+function isExactPrivateModuleDeclaration(
+  content: string,
+  start: number,
+  name: "alias" | "import" | "require",
+): boolean {
+  const lineEnd = privateLineEnd(content, start);
+  let index = skipPrivateHorizontalWhitespace(content, start + name.length, lineEnd);
+  index = exactPrivateModuleToken(content, index, lineEnd) ?? -1;
+  if (index < 0) return false;
+  index = skipPrivateHorizontalWhitespace(content, index, lineEnd);
+  if (privateTrailingLineIsInert(content, index, lineEnd)) return true;
+  if (content[index] !== ",") return false;
+  const keys = new Set<string>();
+  while (index < lineEnd) {
+    index = skipPrivateHorizontalWhitespace(content, index + 1, lineEnd);
+    const keyword = parsePrivateKeywordKey(content, index, lineEnd);
+    if (
+      keyword === undefined ||
+      keys.has(keyword.key) ||
+      PRIVATE_DECLARATION_OPTIONS[name]?.has(keyword.key) !== true
+    ) {
+      return false;
+    }
+    keys.add(keyword.key);
+    index = skipPrivateHorizontalWhitespace(content, keyword.end, lineEnd);
+    if (keyword.key === "as") index = exactPrivateModuleToken(content, index, lineEnd) ?? -1;
+    else {
+      const state: PrivateInertParseState = { sigils: [], unsafeSigil: false };
+      index = parsePrivateInertValue(content, index, lineEnd, state) ?? -1;
+      if (state.sigils.length > 0 || state.unsafeSigil) return false;
+    }
+    if (index < 0) return false;
+    index = skipPrivateHorizontalWhitespace(content, index, lineEnd);
+    if (privateTrailingLineIsInert(content, index, lineEnd)) return true;
+    if (content[index] !== ",") return false;
+  }
+  return false;
+}
+
 const PRIVATE_INERT_METADATA_ATTRIBUTES = new Set([
   "deprecated",
   "doc",
@@ -3993,6 +4357,7 @@ const PRIVATE_INERT_TYPESPEC_ATTRIBUTES = new Set([
 ]);
 const PRIVATE_COMPILE_HOOK_ATTRIBUTES = new Set([
   "after_compile",
+  "after_verify",
   "before_compile",
   "compile",
   "on_definition",
@@ -4001,6 +4366,7 @@ const PRIVATE_COMPILE_HOOK_ATTRIBUTES = new Set([
 const PRIVATE_GENERATING_ATTRIBUTES = new Set(["derive"]);
 
 function indexPrivateModuleConstructs(
+  content: string,
   code: string,
   lineStarts: readonly number[],
   blockRanges: readonly BlockRange[],
@@ -4042,6 +4408,7 @@ function indexPrivateModuleConstructs(
     const name = match[1];
     if (moduleRange === undefined || name === undefined) continue;
     attributeStarts.add(start);
+    const parsedAttribute = parsePrivateAttributeData(content, start + match[0].length);
     const kind: PrivateModuleConstructKind = PRIVATE_INERT_METADATA_ATTRIBUTES.has(name)
       ? "metadata"
       : PRIVATE_INERT_TYPESPEC_ATTRIBUTES.has(name)
@@ -4050,13 +4417,20 @@ function indexPrivateModuleConstructs(
           ? "hook"
           : PRIVATE_GENERATING_ATTRIBUTES.has(name)
             ? "generated"
-            : "custom";
+            : parsedAttribute.parse !== undefined
+              ? parsedAttribute.parse.sigils.length > 0
+                ? "sigil-attribute"
+                : "literal-attribute"
+              : parsedAttribute.unsafeSigil
+                ? "sigil-unsafe"
+                : "attribute-unsafe";
     constructs.push({
       module: moduleRange.module,
       line: lineAt(lineStarts, start),
       start,
       kind,
       name,
+      ...(parsedAttribute.parse?.sigils.length ? { sigils: parsedAttribute.parse.sigils } : {}),
     });
   }
   for (const match of code.matchAll(
@@ -4075,13 +4449,17 @@ function indexPrivateModuleConstructs(
     }
     const name = match[1];
     if (name === undefined || name === "def" || name === "defp" || name === "end") continue;
+    const declaration = name === "alias" || name === "import" || name === "require";
+    const declarationStart = start + (match[0].lastIndexOf(name) ?? 0);
     const kind: PrivateModuleConstructKind =
       name === "use"
         ? "use"
         : name === "quote" || name.startsWith("def")
           ? "generated"
-          : name === "alias" || name === "import" || name === "require"
-            ? "declaration"
+          : declaration
+            ? isExactPrivateModuleDeclaration(content, declarationStart, name)
+              ? "declaration"
+              : "declaration-unsafe"
             : "custom";
     constructs.push({
       module: moduleRange.module,

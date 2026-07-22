@@ -1,9 +1,11 @@
 case: atom-role-private-flow
 description: >-
   Exact same-module private calls propagate computed atoms by parameter and
-  return role through ordinary module metadata and an exact typespec. Data
-  consumption stays hazard-free and does not contaminate an unrelated dead
-  export.
+  return role through ordinary module metadata, an exact typespec, direct
+  lexical alias/import/require declarations, independently parsed nested
+  literal data, and every accepted built-in word, string, date, and time sigil.
+  Data consumption stays hazard-free and does not contaminate an unrelated
+  dead export.
 subjects:
   - kind: export
     name: NeutralPrivateFlow.Safe.lookup?/2

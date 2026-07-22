@@ -1209,15 +1209,23 @@ describe("extractElixirRuntimeReferences", () => {
   it.each([
     ["use", "  use NeutralPrivate.Extension", "privateModuleUseRejections"],
     ["hook", "  @before_compile NeutralPrivate.Extension", "privateModuleHookRejections"],
+    ["after-verify hook", "  @after_verify :neutral_hook", "privateModuleHookRejections"],
     ["custom macro", "  NeutralPrivate.Extension.install()", "privateModuleCustomRejections"],
+    ["schema DSL", '  schema "neutral_records" do\n  end', "privateModuleCustomRejections"],
+    ["test DSL", '  test "neutral behavior" do\n    :ok\n  end', "privateModuleCustomRejections"],
+    ["task DSL", "  task :neutral do\n    :ok\n  end", "privateModuleCustomRejections"],
     [
       "generated quote",
       "  quote do\n    defp hidden(value), do: value\n  end",
       "privateModuleGeneratedRejections",
     ],
-    ["alias", "  alias NeutralPrivate.Extension", "privateModuleDeclarationRejections"],
-    ["import", "  import NeutralPrivate.Extension", "privateModuleDeclarationRejections"],
-    ["require", "  require NeutralPrivate.Extension", "privateModuleDeclarationRejections"],
+    [
+      "dynamic alias",
+      "  alias Module.concat([NeutralPrivate, Extension])",
+      "privateModuleDeclarationRejections",
+    ],
+    ["dynamic import", "  import selected_module", "privateModuleDeclarationRejections"],
+    ["dynamic require", "  require selected_module", "privateModuleDeclarationRejections"],
   ] as const)("rejects a direct module-body %s construct", (_label, construct, counter) => {
     const root = mkdtempSync(join(tmpdir(), "unused-private-module-construct-"));
     const file = "private_module_construct.ex";
@@ -1280,6 +1288,252 @@ describe("extractElixirRuntimeReferences", () => {
         [
           `defmodule ${moduleName} do`,
           ...constructLines,
+          "  def run(raw), do: helper(String.to_atom(raw))",
+          "  defp helper(value), do: Atom.to_string(value)",
+          "end",
+          "",
+        ].join("\n"),
+      );
+      const extraction = extractElixirRuntimeConventions(
+        root,
+        withExactPrivateModuleScaffolding(root, trace),
+      );
+      expect(extraction.atomFlowStats.privateFunctions).toBe(0);
+      expect(extraction.atomFlowStats[counter]).toBe(1);
+      expect(
+        extraction.dynamicDispatches.find((fact) => fact.factKind === "computed-atom"),
+      ).toMatchObject({ fromFun: "run/1", flow: "escape" });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("admits exact lexical declarations and independently parsed literal attributes", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-private-module-literals-"));
+    const file = "private_module_literals.ex";
+    const moduleName = "NeutralPrivate.ModuleLiterals";
+    const moduleEvent = (
+      line: number,
+      kind: TraceEvent["kind"],
+      toMod: string,
+      name?: string,
+      arity?: number,
+    ): TraceEvent => ({
+      k: "event",
+      kind,
+      file,
+      line,
+      from_mod: moduleName,
+      to_mod: toMod,
+      ...(name === undefined ? {} : { name }),
+      ...(arity === undefined ? {} : { arity }),
+      dyn: false,
+      partition: "prod",
+    });
+    const attributeEvents = (line: number, sigil?: string): TraceEvent[] => {
+      const struct =
+        sigil === "sigil_D"
+          ? "Date"
+          : sigil === "sigil_T"
+            ? "Time"
+            : sigil === "sigil_N"
+              ? "NaiveDateTime"
+              : sigil === "sigil_U"
+                ? "DateTime"
+                : undefined;
+      return [
+        moduleEvent(line, "alias", "Module"),
+        moduleEvent(line, "imported", "Kernel", "@", 1),
+        ...(sigil === undefined ? [] : [moduleEvent(line, "imported", "Kernel", sigil, 2)]),
+        moduleEvent(line, "remote", "Module", "__put_attribute__", 5),
+        ...(struct === undefined ? [] : [moduleEvent(line, "struct", struct)]),
+      ];
+    };
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod(moduleName, file)],
+      functions: [],
+      events: [
+        ...attributeEvents(5),
+        ...attributeEvents(6, "sigil_w"),
+        ...attributeEvents(7, "sigil_W"),
+        ...attributeEvents(8, "sigil_s"),
+        ...attributeEvents(9, "sigil_S"),
+        ...attributeEvents(10, "sigil_D"),
+        ...attributeEvents(11, "sigil_T"),
+        ...attributeEvents(12, "sigil_N"),
+        ...attributeEvents(13, "sigil_U"),
+        {
+          k: "event",
+          kind: "remote",
+          file,
+          line: 14,
+          from_mod: moduleName,
+          from_fun: "run/1",
+          to_mod: "String",
+          name: "to_atom",
+          arity: 1,
+          dyn: true,
+          partition: "prod",
+        },
+        {
+          k: "event",
+          kind: "local",
+          file,
+          line: 14,
+          from_mod: moduleName,
+          from_fun: "run/1",
+          to_mod: moduleName,
+          name: "helper",
+          arity: 1,
+          dyn: false,
+          partition: "prod",
+        },
+        {
+          k: "event",
+          kind: "remote",
+          file,
+          line: 15,
+          from_mod: moduleName,
+          from_fun: "helper/1",
+          to_mod: "Atom",
+          name: "to_string",
+          arity: 1,
+          dyn: false,
+          partition: "prod",
+        },
+      ],
+    };
+    try {
+      writeFileSync(
+        join(root, file),
+        [
+          `defmodule ${moduleName} do`,
+          "  alias String, as: NeutralString",
+          "  import Map, only: [has_key?: 2]",
+          "  require Integer",
+          `  @neutral_options ${"[".repeat(32)}:value${"]".repeat(32)}`,
+          "  @neutral_words ~w(alpha beta)a",
+          "  @neutral_words_raw ~W(alpha beta)a",
+          "  @neutral_string ~s(literal string)",
+          "  @neutral_string_raw ~S(literal string)",
+          "  @neutral_date ~D[2026-07-22]",
+          "  @neutral_time ~T[12:34:56]",
+          "  @neutral_naive ~N[2026-07-22 12:34:56]",
+          "  @neutral_utc ~U[2026-07-22 12:34:56Z]",
+          "  def run(raw), do: helper(String.to_atom(raw))",
+          "  defp helper(value), do: Atom.to_string(value)",
+          "end",
+          "",
+        ].join("\n"),
+      );
+      const extraction = extractElixirRuntimeConventions(
+        root,
+        withExactPrivateModuleScaffolding(root, trace),
+      );
+      expect(extraction.atomFlowStats).toMatchObject({
+        privateFunctions: 1,
+        privateModuleDeclarationConstructs: 3,
+        privateModuleLiteralAttributeConstructs: 1,
+        privateModuleSigilAttributeConstructs: 8,
+        privateModuleDeclarationRejections: 0,
+        privateModuleAttributeRejections: 0,
+        privateModuleSigilRejections: 0,
+        privateModuleAmbiguousEventRejections: 0,
+      });
+      expect(
+        extraction.dynamicDispatches.find((fact) => fact.factKind === "computed-atom"),
+      ).toMatchObject({ fromFun: "run/1", flow: "data" });
+
+      const wordEvent = trace.events.find((event) => event.name === "sigil_w");
+      if (wordEvent === undefined) throw new Error("expected word sigil event");
+      const wrongIdentity: TraceResult = {
+        ...trace,
+        events: trace.events.map((event) =>
+          event === wordEvent ? { ...event, to_mod: "NeutralPrivate.CustomSigils" } : event,
+        ),
+      };
+      const duplicateIdentity: TraceResult = {
+        ...trace,
+        events: [...trace.events, { ...wordEvent }],
+      };
+      for (const rejectedTrace of [wrongIdentity, duplicateIdentity]) {
+        expect(
+          extractElixirRuntimeConventions(
+            root,
+            withExactPrivateModuleScaffolding(root, rejectedTrace),
+          ).atomFlowStats,
+        ).toMatchObject({
+          privateFunctions: 0,
+          privateModuleSigilAttributeConstructs: 8,
+          privateModuleAmbiguousEventRejections: 1,
+        });
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    [
+      "attribute call",
+      "@neutral NeutralPrivate.Extension.value()",
+      "privateModuleAttributeRejections",
+    ],
+    ["custom sigil", "@neutral ~x(payload)", "privateModuleSigilRejections"],
+    [
+      "interpolated lowercase sigil",
+      "@neutral ~s(value #{NeutralPrivate.Extension.value()})",
+      "privateModuleAttributeRejections",
+    ],
+    [
+      "over-depth literal",
+      `@neutral ${"[".repeat(33)}:value${"]".repeat(33)}`,
+      "privateModuleAttributeRejections",
+    ],
+    [
+      "comprehension",
+      "@neutral for value <- [:one], do: value",
+      "privateModuleAttributeRejections",
+    ],
+    ["quote", "@neutral quote(do: :value)", "privateModuleAttributeRejections"],
+    ["unquote", "@neutral unquote(:value)", "privateModuleAttributeRejections"],
+  ] as const)("rejects an executable or unknown custom %s", (_label, attribute, counter) => {
+    const root = mkdtempSync(join(tmpdir(), "unused-private-module-attribute-"));
+    const file = "private_module_attribute.ex";
+    const moduleName = "NeutralPrivate.ModuleAttribute";
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod(moduleName, file)],
+      functions: [],
+      events: [
+        {
+          k: "event",
+          kind: "remote",
+          file,
+          line: 3,
+          from_mod: moduleName,
+          from_fun: "run/1",
+          to_mod: "String",
+          name: "to_atom",
+          arity: 1,
+          dyn: true,
+          partition: "prod",
+        },
+      ],
+    };
+    try {
+      writeFileSync(
+        join(root, file),
+        [
+          `defmodule ${moduleName} do`,
+          `  ${attribute}`,
           "  def run(raw), do: helper(String.to_atom(raw))",
           "  defp helper(value), do: Atom.to_string(value)",
           "end",
@@ -1540,13 +1794,16 @@ describe("extractElixirRuntimeReferences", () => {
     }
   });
 
-  it("keeps exact metadata and typespec classification linear from 250 through 1,000 functions", () => {
+  it("keeps exact inert module-scope classification linear from 250 through 1,000 functions", () => {
     const run = (count: number) => {
       const root = mkdtempSync(join(tmpdir(), `unused-private-metadata-scale-${count}-`));
       const file = "private_metadata_scale.ex";
       const moduleName = "NeutralPrivate.MetadataScale";
       const lines = [
         `defmodule ${moduleName} do`,
+        "  alias String, as: NeutralString",
+        "  import Map, only: [has_key?: 2]",
+        "  require Integer",
         "  @moduledoc false",
         "  @spec safe(map(), String.t()) :: boolean()",
         "  def safe(map, raw), do: Map.has_key?(map, step_0(String.to_atom(raw)))",
@@ -1579,20 +1836,26 @@ describe("extractElixirRuntimeReferences", () => {
         moduleEvent(line, "imported", "Kernel", "@", 1),
         moduleEvent(line, "remote", "Kernel.Typespec", "deftypespec", 6),
       ];
+      const literalAttributeEvents = (line: number, sigil?: string): TraceEvent[] => [
+        moduleEvent(line, "alias", "Module"),
+        moduleEvent(line, "imported", "Kernel", "@", 1),
+        ...(sigil === undefined ? [] : [moduleEvent(line, "imported", "Kernel", sigil, 2)]),
+        moduleEvent(line, "remote", "Module", "__put_attribute__", 5),
+      ];
       const definitionEvents = (line: number, name: "def" | "defp"): TraceEvent[] => [
         moduleEvent(line, "imported", "Kernel", name, 2),
         moduleEvent(line, "remote", ":elixir_def", "store_definition", 3),
       ];
       const events: TraceEvent[] = [
         moduleEvent(1, "remote", ":elixir_utils", "noop", 0),
-        ...metadataEvents(2),
-        ...typespecEvents(3),
-        ...definitionEvents(4, "def"),
+        ...metadataEvents(5),
+        ...typespecEvents(6),
+        ...definitionEvents(7, "def"),
         {
           k: "event",
           kind: "remote",
           file,
-          line: 4,
+          line: 7,
           from_mod: moduleName,
           from_fun: "safe/2",
           to_mod: "String",
@@ -1605,7 +1868,7 @@ describe("extractElixirRuntimeReferences", () => {
           k: "event",
           kind: "local",
           file,
-          line: 4,
+          line: 7,
           from_mod: moduleName,
           from_fun: "safe/2",
           to_mod: moduleName,
@@ -1618,7 +1881,7 @@ describe("extractElixirRuntimeReferences", () => {
           k: "event",
           kind: "remote",
           file,
-          line: 4,
+          line: 7,
           from_mod: moduleName,
           from_fun: "safe/2",
           to_mod: "Map",
@@ -1629,13 +1892,22 @@ describe("extractElixirRuntimeReferences", () => {
         },
       ];
       for (let index = 0; index < count; index += 1) {
-        const specLine = index * 2 + 5;
+        const literalLine = index * 4 + 8;
+        const sigilLine = literalLine + 1;
+        const specLine = literalLine + 2;
         const definitionLine = specLine + 1;
         const name = `step_${index}`;
+        lines.push(`  @neutral_${index} [name: :${name}, nested: %{index: ${index}}]`);
+        lines.push(`  @neutral_words_${index} ~w(one two)a`);
         lines.push(`  @spec ${name}(atom()) :: atom()`);
         if (index + 1 === count) lines.push(`  defp ${name}(value), do: value`);
         else lines.push(`  defp ${name}(value), do: step_${index + 1}(value)`);
-        events.push(...typespecEvents(specLine), ...definitionEvents(definitionLine, "defp"));
+        events.push(
+          ...literalAttributeEvents(literalLine),
+          ...literalAttributeEvents(sigilLine, "sigil_w"),
+          ...typespecEvents(specLine),
+          ...definitionEvents(definitionLine, "defp"),
+        );
         if (index + 1 < count) {
           events.push({
             k: "event",
@@ -1682,11 +1954,16 @@ describe("extractElixirRuntimeReferences", () => {
         privateModuleScaffoldingEvents: count * 2 + 3,
         privateModuleMetadataEvents: 3,
         privateModuleTypespecEvents: (count + 1) * 3,
+        privateModuleDeclarationConstructs: 3,
+        privateModuleLiteralAttributeConstructs: count,
+        privateModuleSigilAttributeConstructs: count,
         privateModuleUseRejections: 0,
         privateModuleHookRejections: 0,
         privateModuleGeneratedRejections: 0,
         privateModuleCustomRejections: 0,
         privateModuleDeclarationRejections: 0,
+        privateModuleAttributeRejections: 0,
+        privateModuleSigilRejections: 0,
         privateModuleUnknownEventRejections: 0,
         privateModuleAmbiguousEventRejections: 0,
       });

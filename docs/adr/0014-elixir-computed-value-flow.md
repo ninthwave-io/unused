@@ -384,18 +384,38 @@ event multiset at the same file, line, module, and partition. The implementation
 does not infer safety from `Module.__put_attribute__/5`,
 `Kernel.Typespec.deftypespec/6`, or another inert-looking callee alone.
 
-Direct `use`, compile hooks, quoted/generated definitions, custom or DSL macro
-calls, and unreviewed attributes remain opaque. Source `alias`, `import`, and
-`require` declarations are tracked as a distinct unreviewed class; compiler
-alias events that are part of an exact metadata or typespec bundle do not make
-the source declaration itself safe. An event attributed to another source
-file, an unknown event, a missing event, an extra event, or ambiguous source
-cardinality rejects the entire module. Production rejection is inherited by
-the test world. When trace merging removes exact test re-emissions, an empty
-test module-event set may inherit only an already-safe production
-classification; any surviving test module event requires its own complete
-bundle. This retains the invisible-sibling boundary while allowing ordinary
-inert documentation and exact typespecs.
+Phase 1B2A.2 admits three more exact inert source classes. Direct-body `alias`,
+`import`, and `require` are lexical directives according to the official
+[`Kernel.SpecialForms`](https://hexdocs.pm/elixir/1.20.2/Kernel.SpecialForms.html)
+contract, so a declaration is accepted only when its module and every allowed
+option are independently parsed literal syntax on that line. This does not
+extend to `use`, whose documented contract injects code into the caller.
+Custom attributes are accepted only when a line-bounded recursive parser
+consumes the complete right-hand side as strings/charlists without
+interpolation, atoms, booleans, nil, numbers, or nested list/tuple/map/keyword
+data, with at most 32 nested containers. Bare module aliases, calls, macros,
+comprehensions, quote/unquote, structs, deeper nesting, and all residual syntax
+fail closed.
+
+The literal parser also admits the audited built-in Kernel data sigils
+`~w`/`~W`, `~s`/`~S`, `~D`, `~T`, `~N`, and `~U`, following the
+official [`Kernel`](https://hexdocs.pm/elixir/1.20.2/Kernel.html) contracts for
+word, string, and calendar values. Lowercase interpolating forms are
+accepted only when no unescaped interpolation is present. Every accepted sigil
+must join exactly one canonical compiler event for its exact
+`Kernel.sigil_*/2` identity in addition to the exact attribute bundle. Calendar
+sigils must also join their exact `Date`, `Time`, `NaiveDateTime`, or `DateTime`
+struct-expansion event. A custom owner, missing event, duplicate event,
+unsupported sigil, or extra event rejects the entire module. Direct `use`,
+compile hooks including `@after_verify`, quoted/generated
+definitions, custom or DSL macro calls, executable attributes, and unknown
+declarations remain opaque. An event attributed to another source file, an
+unknown event, a missing event, an extra event, or ambiguous source cardinality
+also rejects the entire module. Production rejection is inherited by the test
+world. When trace merging removes exact test re-emissions, an empty test
+module-event set may inherit only an already-safe production classification;
+any surviving test module event requires its own complete bundle. This retains
+the invisible-sibling boundary while allowing reviewed literal configuration.
 
 Each eligible parameter has a finite data, invocation, escape, delegated-
 invocation, or return effect. Return effects are joined across every exact
@@ -423,13 +443,17 @@ hold semantic density constant and assert linear counter bounds.
 
 Module constructs and compiler events are indexed once, before private
 functions are visited. Deterministic counters separate accepted scaffolding,
-metadata, and typespec events from module rejections for `use`, hooks,
-generated code, custom calls, declarations, unknown events, and ambiguous
-bundles. A metadata-heavy 250/500/1,000-function series retains every function,
-call edge, and typespec event while asserting the same linear solver bounds.
-The real neutral private-flow fixture includes `@moduledoc false` and one exact
-`@spec`; it must materialize nonzero private summaries and preserve supported
-deletion of its unrelated dead export.
+metadata, typespec, declaration, literal-attribute, and sigil-attribute classes
+from module rejections for `use`, hooks, generated code, custom calls, unsafe
+declarations or attributes, unknown events, and ambiguous bundles. A
+250/500/1,000-function series retains every function, call edge, typespec,
+nested literal attribute, and built-in word-sigil attribute while asserting the
+same linear solver bounds; source classification is O(bytes + constructs) and
+event joining remains O(events). The real neutral private-flow fixture combines
+`@moduledoc false`, one exact `@spec`, exact alias/import/require declarations,
+nested literal data, and every accepted built-in word/string/date/time sigil.
+It must materialize nonzero private summaries and preserve supported deletion
+of its unrelated dead export.
 
 This checkpoint intentionally does not infer public or cross-module summaries,
 does not emit private functions as public claim subjects, and does not change
