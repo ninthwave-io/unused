@@ -12,7 +12,8 @@
     },
     "entrySymbols": {
       "type": "array",
-      "description": "Exact language-aware exported symbols seeded as production entrypoints without making sibling exports live.",
+      "description": "Exact language-aware exported symbols seeded as production entrypoints without making sibling exports live. Runtime validation additionally requires each (language, file, name) selector to be unique; JSON Schema cannot express tuple uniqueness independently of reason.",
+      "uniqueItems": true,
       "items": { "$ref": "#/$defs/entrySymbolRule" }
     },
     "project": {
@@ -75,7 +76,7 @@
         "file": {
           "type": "string",
           "minLength": 1,
-          "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[*?{}\\[\\]])[^/]+(?:/[^/]+)*$"
+          "pattern": "^(?!.*\\u0000)(?=.*\\S)(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[*?{}\\[\\]])[^/]+(?:/[^/]+)*$"
         },
         "name": { "type": "string", "minLength": 1, "pattern": "\\S" },
         "reason": { "type": "string", "minLength": 1, "pattern": "\\S" }

@@ -146,7 +146,7 @@ function indexUnitKeys(units: readonly ConfigUnit[]): ReadonlyMap<string, readon
 function appendUnit(index: Map<string, ConfigUnit[]>, key: string, unit: ConfigUnit): void {
   const bucket = index.get(key);
   if (bucket === undefined) index.set(key, [unit]);
-  else if (!bucket.includes(unit)) bucket.push(unit);
+  else bucket.push(unit);
 }
 
 function prefixUnitPath(rootRelDir: string, file: string): string {

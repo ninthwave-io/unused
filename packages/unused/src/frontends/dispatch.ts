@@ -169,6 +169,18 @@ export async function analyzeProjectAutoWithGraph(
   const mergeStarted = options.performance?.now();
   const graph = mergeFragments(fragments);
   if (mergeStarted !== undefined) options.performance?.finish("graph-construction", mergeStarted);
+  const symbolLanguages = new Map<string, "ts" | "ex" | "rs">();
+  const fileLanguages = new Map<string, Set<"ts" | "ex" | "rs">>();
+  for (const fragment of fragments) {
+    const language = entrySymbolLanguage(fragment.language);
+    if (language === undefined) continue;
+    for (const file of fragment.claimInputs.analysisFiles) {
+      const languages = fileLanguages.get(file);
+      if (languages === undefined) fileLanguages.set(file, new Set([language]));
+      else languages.add(language);
+    }
+    recordContributionSymbolLanguages(symbolLanguages, fragment.graph.nodes(), language);
+  }
 
   for (const plugin of registry.conventionPlugins()) {
     for (const fragment of fragments) {
@@ -176,13 +188,14 @@ export async function analyzeProjectAutoWithGraph(
       const pluginContext = { repository: context, fragment };
       if (!(await plugin.applies(pluginContext))) continue;
       const conventionStarted = options.performance?.now();
-      addContribution(
-        graph,
-        await executePluginOperation(plugin.id, fragment.boundary.id, () =>
-          plugin.analyze(pluginContext),
-        ),
-        plugin.id,
+      const contribution = await executePluginOperation(plugin.id, fragment.boundary.id, () =>
+        plugin.analyze(pluginContext),
       );
+      addContribution(graph, contribution, plugin.id);
+      const language = entrySymbolLanguage(fragment.language);
+      if (language !== undefined) {
+        recordContributionSymbolLanguages(symbolLanguages, contribution.nodes ?? [], language);
+      }
       if (conventionStarted !== undefined) {
         options.performance?.finish("convention-config-roots", conventionStarted);
       }
@@ -194,11 +207,17 @@ export async function analyzeProjectAutoWithGraph(
     const pluginContext = { repository: context, fragments, graph };
     if (!(await plugin.applies(pluginContext))) continue;
     const bridgeStarted = options.performance?.now();
-    addContribution(
-      graph,
-      await executePluginOperation(plugin.id, undefined, () => plugin.analyze(pluginContext)),
-      plugin.id,
+    const contribution = await executePluginOperation(plugin.id, undefined, () =>
+      plugin.analyze(pluginContext),
     );
+    addContribution(graph, contribution, plugin.id);
+    for (const node of contribution.nodes ?? []) {
+      if (node.kind !== "symbol") continue;
+      const languages = fileLanguages.get(node.file);
+      if (languages?.size === 1) {
+        symbolLanguages.set(node.id, [...languages][0] as "ts" | "ex" | "rs");
+      }
+    }
     if (bridgeStarted !== undefined) {
       options.performance?.finish("graph-construction", bridgeStarted);
     }
@@ -221,15 +240,6 @@ export async function analyzeProjectAutoWithGraph(
       file: hit.file,
       reason: hit.reason,
     });
-  }
-  const symbolLanguages = new Map<string, "ts" | "ex" | "rs">();
-  for (const fragment of fragments) {
-    if (fragment.language !== "ts" && fragment.language !== "ex" && fragment.language !== "rs") {
-      continue;
-    }
-    for (const node of fragment.graph.nodes()) {
-      if (node.kind === "symbol") symbolLanguages.set(node.id, fragment.language);
-    }
   }
   applyConfigSymbolEntrypoints({
     graph,
@@ -317,6 +327,20 @@ export async function analyzeProjectAutoWithGraph(
     boundaries,
     hazardEvaluations,
   };
+}
+
+function entrySymbolLanguage(language: string): "ts" | "ex" | "rs" | undefined {
+  return language === "ts" || language === "ex" || language === "rs" ? language : undefined;
+}
+
+function recordContributionSymbolLanguages(
+  symbolLanguages: Map<string, "ts" | "ex" | "rs">,
+  nodes: readonly IRNode[],
+  language: "ts" | "ex" | "rs",
+): void {
+  for (const node of nodes) {
+    if (node.kind === "symbol") symbolLanguages.set(node.id, language);
+  }
 }
 
 function byDiagnostic(

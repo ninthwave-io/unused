@@ -105,7 +105,14 @@ describe("unused-config.schema.json", () => {
         entrySymbols: [{ language: "go", file: "src/api.ts", name: "run", reason: "public API" }],
       }),
     ).toBe(false);
-    for (const file of ["/src/api.ts", "src\\api.ts", "src/../api.ts", "src/*.ts"] as const) {
+    for (const file of [
+      "/src/api.ts",
+      "src\\api.ts",
+      "src/../api.ts",
+      "src/*.ts",
+      "   ",
+      "src/\0api.ts",
+    ] as const) {
       expect(
         validate({
           entrySymbols: [{ language: "ts", file, name: "run", reason: "public API" }],
@@ -119,6 +126,13 @@ describe("unused-config.schema.json", () => {
         ],
       }),
     ).toBe(false);
+  });
+
+  it("rejects identical rules and documents tuple uniqueness as runtime-only", () => {
+    const validate = compileSchema();
+    const rule = { language: "ts", file: "src/api.ts", name: "run", reason: "public API" };
+    expect(validate({ entrySymbols: [rule, rule] })).toBe(false);
+    expect(validate({ entrySymbols: [rule, { ...rule, reason: "runtime operation" }] })).toBe(true);
   });
 
   it("rejects an unknown workspace-override field", () => {

@@ -241,6 +241,18 @@ describe("validateConfig", () => {
     ],
     [
       {
+        entrySymbols: [{ language: "ts", file: "   ", name: "run", reason: "public" }],
+      },
+      /entrySymbols\[0\]\.file/,
+    ],
+    [
+      {
+        entrySymbols: [{ language: "ts", file: "src/\0api.ts", name: "run", reason: "public" }],
+      },
+      /entrySymbols\[0\]\.file/,
+    ],
+    [
+      {
         entrySymbols: [{ language: "ts", file: "src/api.ts", name: " ", reason: "public" }],
       },
       /entrySymbols\[0\]\.name/,

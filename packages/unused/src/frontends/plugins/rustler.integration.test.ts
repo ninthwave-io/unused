@@ -20,6 +20,43 @@ afterEach(async () => {
 });
 
 describe.skipIf(!isPolyglotToolchainAvailable())("literal Rustler bridge integration", () => {
+  it("resolves a configured convention-synthesized Rust NIF after composition", {
+    timeout: 120_000,
+  }, async () => {
+    const root = await mkdtemp(join(tmpdir(), "unused-rustler-entry-symbol-"));
+    temporaryRoots.push(root);
+    await cp(fixture, root, {
+      recursive: true,
+      filter: (source) => !["_build", "target"].includes(basename(source)),
+    });
+    await writeFile(
+      join(root, "unused.config.jsonc"),
+      JSON.stringify({
+        workspaces: {
+          native: {
+            entrySymbols: [
+              {
+                language: "rs",
+                file: "src/lib.rs",
+                name: "live_nif",
+                reason: "NIF operation",
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    const analysis = await analyzeProjectAutoWithGraph(root, { now: new Date(0) });
+    expect(analysis.graph.entrypoints()).toContainEqual(
+      expect.objectContaining({
+        file: "native/src/lib.rs",
+        targetSymbol: symbolId("native/src/lib.rs", "live_nif"),
+        reason: "NIF operation",
+      }),
+    );
+  });
+
   it("drives claims, why evidence, and deletion refusal across languages", {
     timeout: 120_000,
   }, async () => {
