@@ -297,7 +297,7 @@ function extractDynamicDispatches(
     if (bucket === undefined) functionsByModule.set(fn.mod, [fn]);
     else bucket.push(fn);
   }
-  const aliasTargetsByCarrierSite = indexAliasTargets(traceResult.events, functionsByModule);
+  const aliasTargetsByCarrierSite = indexAliasTargets(traceResult.events);
 
   const dynamicEventsBySite = indexDynamicEventsBySite(traceResult.events);
   const safeAtomEvents = safeAtomProducerEvents(traceResult.events, sources);
@@ -689,18 +689,20 @@ function resolveTargetModule(
   // module: a local `alias Other, as: Direct` shadows the top-level `Direct`.
   // Ambiguity falls back to the conservative cross-unit name/arity set below.
   const expanded = aliasTargetsByCarrierSite.get(aliasCarrierSiteKey(event)) ?? new Set();
-  if (expanded.size === 1) return [...expanded][0] ?? null;
+  if (expanded.size === 1) {
+    const target = [...expanded][0];
+    return target !== undefined && functionsByModule.has(target) ? target : null;
+  }
   if (expanded.size > 1) return null;
   return functionsByModule.has(expression) ? expression : null;
 }
 
 function indexAliasTargets(
   events: readonly TraceEvent[],
-  functionsByModule: ReadonlyMap<string, FunctionRecord[]>,
 ): ReadonlyMap<string, ReadonlySet<string>> {
   const index = new Map<string, Set<string>>();
   for (const event of events) {
-    if (event.kind !== "alias" || !functionsByModule.has(event.to_mod)) continue;
+    if (event.kind !== "alias") continue;
     const key = aliasCarrierSiteKey(event);
     const targets = index.get(key);
     if (targets === undefined) index.set(key, new Set([event.to_mod]));

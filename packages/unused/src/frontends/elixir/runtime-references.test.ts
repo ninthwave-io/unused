@@ -403,6 +403,41 @@ describe("extractElixirRuntimeReferences", () => {
     );
     expect(extraction.dynamicDispatches).toEqual([expect.objectContaining({ kind: "exact" })]);
   });
+
+  it("does not fall back to a project module when a compiler alias targets externally", () => {
+    const file = "alias_collision.ex";
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod("Direct", file), mod("NeutralAlias.ShadowDispatch", file)],
+      functions: [
+        fn("Direct", "run", 0, file),
+        fn("NeutralAlias.ShadowDispatch", "external_execute", 0, file),
+      ],
+      events: [
+        {
+          ...dynamicApplyEvent("external_execute/0", 19),
+          file,
+          from_mod: "NeutralAlias.ShadowDispatch",
+        },
+        {
+          ...aliasEvent(file, 19, "external_execute/0", "External.Library"),
+          from_mod: "NeutralAlias.ShadowDispatch",
+        },
+      ],
+    };
+
+    const extraction = extractElixirRuntimeConventions(testFixture("dynamic-role-carriers"), trace);
+    expect(extraction.references).toEqual([]);
+    expect(extraction.dynamicDispatches).toEqual([
+      expect.objectContaining({
+        kind: "bounded",
+        targets: [expect.objectContaining({ mod: "Direct", name: "run" })],
+      }),
+    ]);
+  });
 });
 
 function definitionEvent(file: string, line: number, fromMod: string): TraceEvent {

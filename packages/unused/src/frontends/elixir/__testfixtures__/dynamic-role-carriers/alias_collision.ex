@@ -16,4 +16,5 @@ end
 
 defmodule NeutralAlias.ShadowDispatch do
   def execute do; alias NeutralAlias.Other, as: Direct; apply(Direct, :run, []) end
+  def external_execute do; alias External.Library, as: Direct; apply(Direct, :run, []) end
 end
