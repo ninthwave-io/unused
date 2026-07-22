@@ -9,6 +9,7 @@ defmodule NeutralAtomFlow.Application do
     _ = NeutralAtomFlow.Dispatch.assigned_capture(entries, "Elixir.NeutralAtomFlow.Target")
     _ = NeutralAtomFlow.Dispatch.assigned_mfa(entries, "Elixir.NeutralAtomFlow.Target")
     _ = NeutralAtomFlow.Dispatch.mixed(%{known: :value}, "known")
+    _ = NeutralAtomFlow.Dispatch.inline_dynamic_key("known", %{}, :kind)
     _ = NeutralAtomFlow.Dispatch.tuple_only("known", :value)
     _ = NeutralAtomFlow.Dispatch.mfa_pipeline([{"known", :value}])
     _ = NeutralAtomFlow.Dispatch.intervening_pipeline([{"known", :value}])

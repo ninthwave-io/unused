@@ -78,8 +78,9 @@ const FN_TUPLE_CLAUSE_HEAD_RE =
 const ASSIGNMENT_RE = /([a-z_][A-Za-z0-9_]*)\s*=\s*/uy;
 const LOCAL_IDENTIFIER_RE = /[a-z_][A-Za-z0-9_]*/uy;
 const FUNCTION_DEFINITION_RE = /^([ \t]*)defp?\s+[a-z_][A-Za-z0-9_]*[!?]?\b/gmu;
-const BLOCK_TOKEN_RE = /\b(?:do|end|fn)\b/gu;
 const EXACT_BINARY_GUARD_RE = /^when\s+is_binary\s*\(\s*([a-z_][A-Za-z0-9_]*)\s*\)\s+do\s*$/u;
+const CLAUSE_BINDER_RE = /^([a-z_][A-Za-z0-9_]*)\s+when\s+(.+)$/u;
+const LITERAL_ATOM_RE = /^:[a-z_][A-Za-z0-9_]*[!?]?$/u;
 
 interface IdentifierOccurrence {
   readonly start: number;
@@ -96,6 +97,18 @@ interface FunctionRange {
   readonly binaryGuards: ReadonlySet<string>;
 }
 
+interface BlockRange {
+  readonly open: number;
+  readonly close: number;
+  readonly parent?: number;
+}
+
+interface BlockIndex {
+  readonly closeByOpen: ReadonlyMap<number, number>;
+  readonly ranges: readonly BlockRange[];
+  readonly arrowsByOpen: ReadonlyMap<number, readonly number[]>;
+}
+
 interface SourceIndex {
   readonly content: string;
   readonly code: string;
@@ -105,6 +118,10 @@ interface SourceIndex {
   readonly commasByOpen: ReadonlyMap<number, readonly number[]>;
   readonly identifiersByName: ReadonlyMap<string, readonly IdentifierOccurrence[]>;
   readonly interpolationStarts: readonly number[];
+  readonly atomProducerStarts: readonly number[];
+  readonly blockRanges: readonly BlockRange[];
+  readonly arrowsByBlockOpen: ReadonlyMap<number, readonly number[]>;
+  readonly rescuesByBlockOpen: ReadonlyMap<number, readonly number[]>;
   readonly functionRanges: readonly FunctionRange[];
   readonly usingSignatures: readonly { readonly line: number; readonly selector: string }[];
 }
@@ -643,6 +660,7 @@ function safeAtomProducerEvents(
         open,
         close,
       );
+      const safeInlineMapPutValue = inlineMapPutValueConsumer(source, mapCalls, start, open, close);
       append(sourceFacts, atomSiteKey(file, line, name), {
         file,
         line,
@@ -650,6 +668,7 @@ function safeAtomProducerEvents(
         ...(safeMap === null ? {} : { safeMap }),
         ...(safeMapInto === null ? {} : { safeMapInto }),
         ...(safeAssignedMapValues === null ? {} : { safeAssignedMapValues }),
+        ...(safeInlineMapPutValue === null ? {} : { safeInlineMapPutValue }),
       });
     }
   }
@@ -705,26 +724,46 @@ function safeAtomProducerEvents(
       if (mapCalls.length === 1 && intoCalls.length === 1) safe.add(event);
       continue;
     }
-    if (fact.safeAssignedMapValues === undefined) continue;
-    const guardCalls = (
+    if (fact.safeAssignedMapValues !== undefined) {
+      const guardCalls = (
+        ordinaryEventsByCarrier.get(
+          carrierAt(fact.file, fact.safeAssignedMapValues.guardLine, event),
+        ) ?? []
+      ).filter(
+        (candidate) =>
+          candidate.to_mod === "Kernel" && candidate.name === "is_binary" && candidate.arity === 1,
+      );
+      if (guardCalls.length !== 1) continue;
+      const confirmedEnumCalls = fact.safeAssignedMapValues.mapLines.every((mapLine) => {
+        const calls = ordinaryEventsByCarrier.get(carrierAt(fact.file, mapLine, event)) ?? [];
+        return (
+          calls.filter(
+            (candidate) =>
+              candidate.to_mod === "Enum" && candidate.name === "map" && candidate.arity === 2,
+          ).length === 1
+        );
+      });
+      if (confirmedEnumCalls) safe.add(event);
+      continue;
+    }
+    if (fact.safeInlineMapPutValue === undefined) continue;
+    const inlineGuardCalls = (
       ordinaryEventsByCarrier.get(
-        carrierAt(fact.file, fact.safeAssignedMapValues.guardLine, event),
+        carrierAt(fact.file, fact.safeInlineMapPutValue.guardLine, event),
       ) ?? []
     ).filter(
       (candidate) =>
         candidate.to_mod === "Kernel" && candidate.name === "is_binary" && candidate.arity === 1,
     );
-    if (guardCalls.length !== 1) continue;
-    const confirmedEnumCalls = fact.safeAssignedMapValues.mapLines.every((mapLine) => {
-      const calls = ordinaryEventsByCarrier.get(carrierAt(fact.file, mapLine, event)) ?? [];
-      return (
-        calls.filter(
-          (candidate) =>
-            candidate.to_mod === "Enum" && candidate.name === "map" && candidate.arity === 2,
-        ).length === 1
-      );
-    });
-    if (confirmedEnumCalls) safe.add(event);
+    const inlineMapCalls = (
+      ordinaryEventsByCarrier.get(
+        carrierAt(fact.file, fact.safeInlineMapPutValue.mapLine, event),
+      ) ?? []
+    ).filter(
+      (candidate) =>
+        candidate.to_mod === "Map" && candidate.name === "put" && candidate.arity === 3,
+    );
+    if (inlineGuardCalls.length === 1 && inlineMapCalls.length === 1) safe.add(event);
   }
   return safe;
 }
@@ -738,6 +777,10 @@ interface AtomProducerFact {
   readonly safeAssignedMapValues?: {
     readonly guardLine: number;
     readonly mapLines: readonly number[];
+  };
+  readonly safeInlineMapPutValue?: {
+    readonly guardLine: number;
+    readonly mapLine: number;
   };
 }
 
@@ -758,6 +801,7 @@ interface EnumMapCall {
 interface MapCall {
   readonly name: string;
   readonly arity: number;
+  readonly start: number;
   readonly open: number;
   readonly keyArgument: number;
   readonly line: number;
@@ -765,6 +809,199 @@ interface MapCall {
 
 function carrierAt(file: string, line: number, event: TraceEvent): string {
   return [file, line, event.from_mod ?? "", event.from_fun ?? ""].join("\0");
+}
+
+/**
+ * Prove the separate inline request-normalization role:
+ *
+ *   raw when is_binary(raw) ->
+ *     try do
+ *       {:ok, Map.put(map, :literal_key, String.to_existing_atom(raw))}
+ *     rescue
+ *       ...
+ *     end
+ *
+ * The clause binder/guard, lexical case-or-with clause, matching try/rescue,
+ * success tuple, Map.put value position, and producer input are all exact.
+ * Any wrapper or additional use fails closed instead of borrowing the broader
+ * assignment proof below.
+ */
+function inlineMapPutValueConsumer(
+  source: SourceIndex,
+  mapCalls: ReadonlyMap<number, MapCall>,
+  producerStart: number,
+  producerOpen: number,
+  producerClose: number,
+): { readonly guardLine: number; readonly mapLine: number } | null {
+  const inputStart = skipWhitespaceForward(source.code, producerOpen + 1, producerClose);
+  const inputEnd = skipWhitespaceBackward(source.code, producerClose, inputStart);
+  LOCAL_IDENTIFIER_RE.lastIndex = inputStart;
+  const input = LOCAL_IDENTIFIER_RE.exec(source.code);
+  const inputName = input?.[0];
+  if (inputName === undefined || LOCAL_IDENTIFIER_RE.lastIndex !== inputEnd) return null;
+
+  const mapOpen = source.parentByOpen.get(producerOpen);
+  if (mapOpen === undefined) return null;
+  const mapCall = mapCalls.get(mapOpen);
+  if (mapCall === undefined || mapCall.name !== "put" || mapCall.arity !== 3) return null;
+  const valueRange = callArgumentRange(source, mapOpen, 2);
+  if (
+    valueRange === null ||
+    valueRange.start !== producerStart ||
+    valueRange.end !== producerClose + 1
+  ) {
+    return null;
+  }
+  const keyRange = callArgumentRange(source, mapOpen, 1);
+  if (keyRange === null || !LITERAL_ATOM_RE.test(source.code.slice(keyRange.start, keyRange.end)))
+    return null;
+
+  const tupleOpen = source.parentByOpen.get(mapOpen);
+  if (tupleOpen === undefined || source.code[tupleOpen] !== "{") return null;
+  const mapClose = source.closeByOpen.get(mapOpen);
+  const tupleClose = source.closeByOpen.get(tupleOpen);
+  const tupleCommas = source.commasByOpen.get(tupleOpen) ?? [];
+  if (
+    mapClose === undefined ||
+    tupleClose === undefined ||
+    tupleCommas.length !== 1 ||
+    tupleCommas[0] === undefined
+  )
+    return null;
+  const tupleComma = tupleCommas[0];
+  const statusStart = skipWhitespaceForward(source.code, tupleOpen + 1, tupleComma);
+  const statusEnd = skipWhitespaceBackward(source.code, tupleComma, tupleOpen + 1);
+  const payloadStart = skipWhitespaceForward(source.code, tupleComma + 1, tupleClose);
+  const payloadEnd = skipWhitespaceBackward(source.code, tupleClose, tupleComma + 1);
+  if (
+    source.code.slice(statusStart, statusEnd) !== ":ok" ||
+    payloadStart !== mapCall.start ||
+    payloadEnd !== mapClose + 1
+  ) {
+    return null;
+  }
+
+  const tryRange = containingBlockRange(source.blockRanges, producerStart);
+  if (tryRange === null) return null;
+  const tryStart = exactTryStart(source, tryRange.open);
+  if (tryStart === null || tryRange.parent === undefined) return null;
+  const clauseRange = source.blockRanges[tryRange.parent];
+  if (clauseRange === undefined || !isCaseOrWithBlock(source, clauseRange.open)) return null;
+  const rescues = source.rescuesByBlockOpen.get(tryRange.open) ?? [];
+  if (rescues.length !== 1 || rescues[0] === undefined) return null;
+  const rescueStart = rescues[0];
+  if (rescueStart <= tupleClose) return null;
+  if (
+    skipWhitespaceForward(source.code, tryRange.open + 2, rescueStart) !== tupleOpen ||
+    skipWhitespaceBackward(source.code, rescueStart, tryRange.open + 2) !== tupleClose + 1
+  ) {
+    return null;
+  }
+
+  const producerIndex = lowerBoundNumber(source.atomProducerStarts, tryRange.open + 2);
+  if (
+    source.atomProducerStarts[producerIndex] !== producerStart ||
+    (source.atomProducerStarts[producerIndex + 1] ?? Number.POSITIVE_INFINITY) < rescueStart
+  ) {
+    return null;
+  }
+  const interpolationIndex = lowerBoundNumber(source.interpolationStarts, tryRange.open + 2);
+  if ((source.interpolationStarts[interpolationIndex] ?? Number.POSITIVE_INFINITY) < rescueStart)
+    return null;
+
+  const arrows = source.arrowsByBlockOpen.get(clauseRange.open) ?? [];
+  const nextArrowIndex = lowerBoundNumber(arrows, tryStart);
+  const arrow = arrows[nextArrowIndex - 1];
+  if (arrow === undefined || skipWhitespaceForward(source.code, arrow + 2, tryStart) !== tryStart)
+    return null;
+  const nextArrow = arrows[nextArrowIndex];
+  const clauseEnd =
+    nextArrow === undefined
+      ? clauseRange.close
+      : (source.lineStarts[lineAt(source.lineStarts, nextArrow) - 1] ?? nextArrow);
+  if (skipWhitespaceForward(source.code, tryRange.close + 3, clauseEnd) !== clauseEnd) return null;
+
+  const headerLine = lineAt(source.lineStarts, arrow);
+  const headerStart = source.lineStarts[headerLine - 1] ?? 0;
+  const header = source.code.slice(headerStart, arrow).trim();
+  const clause = CLAUSE_BINDER_RE.exec(header);
+  const binder = clause?.[1];
+  const guard = clause?.[2];
+  if (binder === undefined || guard === undefined || binder !== inputName) return null;
+  if (!positiveBinaryConjunct(guard, binder)) return null;
+  if (hasIdentifierBetween(source.identifiersByName.get(inputName) ?? [], arrow + 2, inputStart)) {
+    return null;
+  }
+  return { guardLine: headerLine, mapLine: mapCall.line };
+}
+
+function callArgumentRange(
+  source: SourceIndex,
+  open: number,
+  argument: number,
+): { readonly start: number; readonly end: number } | null {
+  const close = source.closeByOpen.get(open);
+  const commas = source.commasByOpen.get(open) ?? [];
+  if (close === undefined || argument > commas.length) return null;
+  const rawStart = argument === 0 ? open + 1 : (commas[argument - 1] ?? close) + 1;
+  const rawEnd = commas[argument] ?? close;
+  const start = skipWhitespaceForward(source.code, rawStart, rawEnd);
+  const end = skipWhitespaceBackward(source.code, rawEnd, rawStart);
+  return start < end ? { start, end } : null;
+}
+
+function exactTryStart(source: SourceIndex, doOpen: number): number | null {
+  const line = lineAt(source.lineStarts, doOpen);
+  const lineStart = source.lineStarts[line - 1] ?? 0;
+  const keywordEnd = skipWhitespaceBackward(source.code, doOpen, lineStart);
+  let keywordStart = keywordEnd;
+  while (keywordStart > lineStart && /[A-Za-z_]/u.test(source.code[keywordStart - 1] ?? ""))
+    keywordStart -= 1;
+  if (
+    source.code.slice(keywordStart, keywordEnd) !== "try" ||
+    skipWhitespaceForward(source.code, lineStart, keywordStart) !== keywordStart
+  ) {
+    return null;
+  }
+  return keywordStart;
+}
+
+function isCaseOrWithBlock(source: SourceIndex, doOpen: number): boolean {
+  const line = lineAt(source.lineStarts, doOpen);
+  const lineStart = source.lineStarts[line - 1] ?? 0;
+  const headerStart = skipWhitespaceForward(source.code, lineStart, doOpen);
+  const headerEnd = skipWhitespaceBackward(source.code, doOpen, headerStart);
+  return /^(?:case|with)\b[^;\n]+$/u.test(source.code.slice(headerStart, headerEnd));
+}
+
+function positiveBinaryConjunct(guard: string, binder: string): boolean {
+  if (/\b(?:or|xor|not)\b|\|\||!/u.test(guard)) return false;
+  const conjuncts = guard.split(/\band\b|&&/u);
+  const exact = `is_binary(${binder})`;
+  return conjuncts.some((conjunct) => {
+    let normalized = conjunct.replace(/\s+/gu, "").trim();
+    while (normalized.startsWith("(") && normalized.endsWith(")"))
+      normalized = normalized.slice(1, -1);
+    return normalized === exact;
+  });
+}
+
+function containingBlockRange(ranges: readonly BlockRange[], position: number): BlockRange | null {
+  let low = 0;
+  let high = ranges.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if ((ranges[middle]?.open ?? Number.POSITIVE_INFINITY) <= position) low = middle + 1;
+    else high = middle;
+  }
+  let index = low - 1;
+  while (index >= 0) {
+    const candidate = ranges[index];
+    if (candidate === undefined) return null;
+    if (candidate.open < position && position < candidate.close) return candidate;
+    index = candidate.parent ?? -1;
+  }
+  return null;
 }
 
 /**
@@ -1130,13 +1367,16 @@ function indexMapCalls(source: SourceIndex): ReadonlyMap<number, MapCall> {
   for (const match of source.code.matchAll(MAP_CALL_RE)) {
     const name = match[1];
     if (name === undefined) continue;
-    const open = (match.index ?? 0) + match[0].length - 1;
+    const start = match.index ?? 0;
+    if (/[A-Za-z0-9_.]/u.test(source.code[start - 1] ?? "")) continue;
+    const open = start + match[0].length - 1;
     const close = source.closeByOpen.get(open);
     if (close === undefined) continue;
     const commas = source.commasByOpen.get(open) ?? [];
     calls.set(open, {
       name,
       arity: commas.length + 1,
+      start,
       open,
       keyArgument: 1,
       line: lineAt(source.lineStarts, match.index ?? 0),
@@ -1542,6 +1782,7 @@ function indexSource(content: string): SourceIndex {
   const commasByOpen = new Map<number, number[]>();
   const identifiersByName = new Map<string, IdentifierOccurrence[]>();
   const interpolationStarts: number[] = [];
+  const atomProducerStarts: number[] = [];
   const indexedIdentifierNames = new Set(["rescue", "try"]);
   const usingSignatures: Array<{ line: number; selector: string }> = [];
   for (const match of code.matchAll(USING_SELECTOR_RE)) {
@@ -1557,6 +1798,7 @@ function indexSource(content: string): SourceIndex {
     interpolationStarts.push(start);
   for (const match of code.matchAll(ATOM_PRODUCER_RE)) {
     const producerStart = match.index ?? 0;
+    atomProducerStarts.push(producerStart);
     const line = lineAt(lineStarts, producerStart);
     const lineStart = lineStarts[line - 1] ?? 0;
     ASSIGNMENT_RE.lastIndex = skipWhitespaceForward(code, lineStart, producerStart);
@@ -1608,6 +1850,12 @@ function indexSource(content: string): SourceIndex {
     closeByOpen.set(frame.open, index);
     commasByOpen.set(frame.open, frame.commas);
   }
+  const blockIndex = indexBlockStructure(code);
+  const rescuesByBlockOpen = new Map<number, number[]>();
+  for (const rescue of identifiersByName.get("rescue") ?? []) {
+    const block = containingBlockRange(blockIndex.ranges, rescue.start);
+    if (block !== null) append(rescuesByBlockOpen, block.open, rescue.start);
+  }
   return {
     content,
     code,
@@ -1617,29 +1865,55 @@ function indexSource(content: string): SourceIndex {
     commasByOpen,
     identifiersByName,
     interpolationStarts,
-    functionRanges: indexFunctionRanges(code, indexBlockCloses(code)),
+    atomProducerStarts,
+    blockRanges: blockIndex.ranges,
+    arrowsByBlockOpen: blockIndex.arrowsByOpen,
+    rescuesByBlockOpen,
+    functionRanges: indexFunctionRanges(code, blockIndex.closeByOpen),
     usingSignatures,
   };
 }
 
-function indexBlockCloses(code: string): ReadonlyMap<number, number> {
+function indexBlockStructure(code: string): BlockIndex {
   const closeByOpen = new Map<number, number>();
+  const records: Array<{ open: number; close?: number; parent?: number }> = [];
+  const arrowsByOpen = new Map<number, number[]>();
   const stack: number[] = [];
-  for (const match of code.matchAll(BLOCK_TOKEN_RE)) {
+  for (const match of code.matchAll(/\b(?:do|end|fn)\b|->/gu)) {
     const token = match[0];
     const start = match.index ?? 0;
-    const previous = code[start - 1];
-    if (previous === ":" || previous === ".") continue;
-    const next = skipWhitespaceForward(code, start + token.length, code.length);
-    if (code[next] === ":") continue;
-    if (token === "end") {
-      const open = stack.pop();
-      if (open !== undefined) closeByOpen.set(open, start);
+    if (token === "->") {
+      const current = stack.at(-1);
+      const open = current === undefined ? undefined : records[current]?.open;
+      if (open !== undefined) append(arrowsByOpen, open, start);
       continue;
     }
-    stack.push(start);
+    const previous = code[start - 1];
+    if (previous === ":" || previous === ".") continue;
+    const next = skipHorizontalWhitespaceForward(code, start + token.length);
+    if (code[next] === ":") continue;
+    if (token === "end") {
+      const rangeIndex = stack.pop();
+      const record = rangeIndex === undefined ? undefined : records[rangeIndex];
+      if (record !== undefined) {
+        record.close = start;
+        closeByOpen.set(record.open, start);
+      }
+      continue;
+    }
+    const parent = stack.at(-1);
+    records.push({ open: start, ...(parent === undefined ? {} : { parent }) });
+    stack.push(records.length - 1);
   }
-  return closeByOpen;
+  return {
+    closeByOpen,
+    ranges: records.map((record) => ({
+      open: record.open,
+      close: record.close ?? record.open,
+      ...(record.parent === undefined ? {} : { parent: record.parent }),
+    })),
+    arrowsByOpen,
+  };
 }
 
 function indexFunctionRanges(
@@ -1792,6 +2066,12 @@ function maskElixirLiterals(content: string): string {
 function skipWhitespaceForward(content: string, start: number, end: number): number {
   let index = start;
   while (index < end && /\s/u.test(content[index] as string)) index += 1;
+  return index;
+}
+
+function skipHorizontalWhitespaceForward(content: string, start: number): number {
+  let index = start;
+  while (content[index] === " " || content[index] === "\t") index += 1;
   return index;
 }
 

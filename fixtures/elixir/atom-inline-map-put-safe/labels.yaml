@@ -1,0 +1,18 @@
+case: atom-inline-map-put-safe
+description: >-
+  A request-normalization clause positively guards a bound binary value and,
+  inside a matching try/rescue, converts it inline as the complete value of a
+  static Map.put/3 with a literal atom key. The atom remains data and cannot
+  impose a project-wide dynamic-dispatch cap.
+subjects:
+  - kind: export
+    name: NeutralRequestData.Normalizer.normalize/1
+    file: lib/neutral_request_data/normalizer.ex
+    expected: alive
+    because: The application invokes the public request-normalization boundary.
+  - kind: export
+    name: NeutralRequestData.Normalizer.genuinely_unused/0
+    file: lib/neutral_request_data/normalizer.ex
+    expected: dead
+    minConfidence: high
+    because: Inline atom-valued request data does not make an unrelated export dynamically callable.

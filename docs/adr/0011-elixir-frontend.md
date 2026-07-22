@@ -250,15 +250,24 @@ tuple returned as a complete `Enum.map/2` function clause whose result flows
 immediately to `Enum.into(%{})`; or one exact local assignment from a
 binary-guarded variable in a function-level rescued definition, when every
 later same-function reference is the complete value of a map field inside an
-indexed `Enum.map/2` call. Each role requires unique matching compiler events on
-the same carrier. Immediate receivers; apply, capture, MFA, key, reassignment,
-or ambiguous assignment sinks; arbitrary tuples; intervening or otherwise
-unproven pipelines; unknown consumers; and mixed same-line roles remain opaque.
+indexed `Enum.map/2` call. A separate inline role accepts the complete third
+(value) argument of literal `Map.put/3` with a literal atom key only when that
+call is the complete payload of a sole `{:ok, payload}` try body. The matching
+`try/rescue` must be directly inside one lexically matched `case`/`with` clause
+whose exact simple binder is positively and conjunctively guarded by
+`is_binary/1`; the binder cannot be read or rebound before the producer. Each
+role requires unique matching compiler events on the same carrier. The inline
+role additionally requires one producer in the try and unique guard and
+`Map.put/3` events. Immediate receivers; apply, capture, MFA, dynamic Map
+receivers/functions/keys, reassignment, binder mismatch, arbitrary or nested
+tuples, unmatched rescue/clause scopes, intervening or otherwise unproven
+pipelines, unknown consumers, and mixed same-line roles remain opaque.
 Because interpolation bodies are executable while the literal masker hides
 their text, any later `#{...}` in the function also invalidates the local
-assignment proof. Non-interpolating literal/comment bodies remain inert.
-Function ranges, identifiers, delimiters, and Enum calls are indexed once. The
-classification cost is bounded log-linear:
+assignment proof, while interpolation in the inline try invalidates that role.
+Non-interpolating literal/comment bodies remain inert. Function, delimiter,
+block, clause-arrow, rescue, identifier, producer, Map, and Enum indexes are
+built once. The classification cost is bounded log-linear:
 O(source bytes + trace events + reflected functions + atom producers ×
 log(indexed roles) + proven local references + emitted candidates). No event
 rescans an entire source.

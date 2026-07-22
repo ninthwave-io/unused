@@ -37,6 +37,20 @@ defmodule NeutralAtomFlow.Dispatch do
     {Map.fetch!(values, String.to_existing_atom(key)), String.to_atom(key).run()}
   end
 
+  def inline_dynamic_key(value, params, key) do
+    case value do
+      raw when is_binary(raw) ->
+        try do
+          {:ok, Map.put(params, key, String.to_existing_atom(raw))}
+        rescue
+          ArgumentError -> {:error, :invalid}
+        end
+
+      _other ->
+        {:error, :unmatched}
+    end
+  end
+
   def tuple_only(key, value), do: {String.to_atom(key), value}
 
   def mfa_pipeline(data) do

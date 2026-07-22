@@ -500,6 +500,358 @@ describe("extractElixirRuntimeReferences", () => {
     }
   });
 
+  it("proves only clause-guarded inline atoms in exact rescued Map.put values", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-inline-map-put-roles-"));
+    const file = "inline_map_put_roles.ex";
+    const roles = [
+      {
+        name: "safe",
+        clause: "raw when is_binary(raw)",
+        body: ["{:ok, Map.put(params, :kind, String.to_existing_atom(raw))}"],
+        expected: "exact",
+      },
+      {
+        name: "safe_conjunctive",
+        clause: "raw when (is_binary(raw)) and byte_size(raw) > 0",
+        body: ["{:ok, Map.put(params, :kind, String.to_existing_atom(raw))}"],
+        expected: "exact",
+      },
+      {
+        name: "safe_with",
+        container: "with {:error, reason} <- value do",
+        clause: "raw when is_binary(raw)",
+        body: ["{:ok, Map.put(params, :kind, String.to_existing_atom(raw))}"],
+        expected: "exact",
+      },
+      {
+        name: "missing_guard_event",
+        clause: "raw when is_binary(raw)",
+        body: ["{:ok, Map.put(params, :kind, String.to_existing_atom(raw))}"],
+        guardEvents: 0,
+        expected: "opaque",
+      },
+      {
+        name: "duplicate_guard_event",
+        clause: "raw when is_binary(raw)",
+        body: ["{:ok, Map.put(params, :kind, String.to_existing_atom(raw))}"],
+        guardEvents: 2,
+        expected: "opaque",
+      },
+      {
+        name: "missing_map_event",
+        clause: "raw when is_binary(raw)",
+        body: ["{:ok, Map.put(params, :kind, String.to_existing_atom(raw))}"],
+        mapEvents: 0,
+        expected: "opaque",
+      },
+      {
+        name: "duplicate_map_event",
+        clause: "raw when is_binary(raw)",
+        body: ["{:ok, Map.put(params, :kind, String.to_existing_atom(raw))}"],
+        mapEvents: 2,
+        expected: "opaque",
+      },
+      {
+        name: "missing_guard",
+        clause: "raw",
+        body: ["{:ok, Map.put(params, :kind, String.to_existing_atom(raw))}"],
+        expected: "opaque",
+      },
+      {
+        name: "negated_guard",
+        clause: "raw when not is_binary(raw)",
+        body: ["{:ok, Map.put(params, :kind, String.to_existing_atom(raw))}"],
+        expected: "opaque",
+      },
+      {
+        name: "disjunctive_guard",
+        clause: "raw when is_binary(raw) or is_atom(raw)",
+        body: ["{:ok, Map.put(params, :kind, String.to_existing_atom(raw))}"],
+        expected: "opaque",
+      },
+      {
+        name: "binder_mismatch",
+        clause: "other when is_binary(raw)",
+        body: ["{:ok, Map.put(params, :kind, String.to_existing_atom(raw))}"],
+        expected: "opaque",
+      },
+      {
+        name: "rebound",
+        clause: "raw when is_binary(raw)",
+        beforeTry: ["raw = runtime_value()"],
+        body: ["{:ok, Map.put(params, :kind, String.to_existing_atom(raw))}"],
+        expected: "opaque",
+      },
+      {
+        name: "map_arg_rebind",
+        clause: "raw when is_binary(raw)",
+        body: ["{:ok, Map.put((raw = params), :kind, String.to_existing_atom(raw))}"],
+        expected: "opaque",
+      },
+      {
+        name: "missing_rescue",
+        clause: "raw when is_binary(raw)",
+        body: ["{:ok, Map.put(params, :kind, String.to_existing_atom(raw))}"],
+        rescue: false,
+        expected: "opaque",
+      },
+      {
+        name: "dynamic_module",
+        clause: "raw when is_binary(raw)",
+        body: ["{:ok, map_module.put(params, :kind, String.to_existing_atom(raw))}"],
+        expected: "opaque",
+      },
+      {
+        name: "qualified_module",
+        clause: "raw when is_binary(raw)",
+        body: ["{:ok, Other.Map.put(params, :kind, String.to_existing_atom(raw))}"],
+        expected: "opaque",
+      },
+      {
+        name: "dynamic_function",
+        clause: "raw when is_binary(raw)",
+        body: ["{:ok, Map.replace(params, :kind, String.to_existing_atom(raw))}"],
+        expected: "opaque",
+      },
+      {
+        name: "dynamic_key",
+        clause: "raw when is_binary(raw)",
+        body: ["{:ok, Map.put(params, key, String.to_existing_atom(raw))}"],
+        expected: "opaque",
+      },
+      {
+        name: "first_argument",
+        clause: "raw when is_binary(raw)",
+        body: ["{:ok, Map.put(String.to_existing_atom(raw), :kind, :known)}"],
+        expected: "opaque",
+      },
+      {
+        name: "key_receiver",
+        clause: "raw when is_binary(raw)",
+        body: ["{:ok, Map.put(params, String.to_existing_atom(raw).run(), :known)}"],
+        expected: "opaque",
+      },
+      {
+        name: "value_receiver",
+        clause: "raw when is_binary(raw)",
+        body: ["{:ok, Map.put(params, :kind, String.to_existing_atom(raw).run())}"],
+        expected: "opaque",
+      },
+      {
+        name: "value_apply",
+        clause: "raw when is_binary(raw)",
+        body: ["{:ok, Map.put(params, :kind, apply(String.to_existing_atom(raw), :run, []))}"],
+        expected: "opaque",
+      },
+      {
+        name: "value_capture",
+        clause: "raw when is_binary(raw)",
+        body: [
+          "{:ok, Map.put(params, :kind, Function.capture(String.to_existing_atom(raw), :run, 0))}",
+        ],
+        expected: "opaque",
+      },
+      {
+        name: "value_mfa",
+        clause: "raw when is_binary(raw)",
+        body: ["{:ok, Map.put(params, :kind, {String.to_existing_atom(raw), :run, []})}"],
+        expected: "opaque",
+      },
+      {
+        name: "not_success_tuple",
+        clause: "raw when is_binary(raw)",
+        body: ["Map.put(params, :kind, String.to_existing_atom(raw))"],
+        expected: "opaque",
+      },
+      {
+        name: "wrong_status",
+        clause: "raw when is_binary(raw)",
+        body: ["{:error, Map.put(params, :kind, String.to_existing_atom(raw))}"],
+        expected: "opaque",
+      },
+      {
+        name: "nested_payload",
+        clause: "raw when is_binary(raw)",
+        body: ["{:ok, {:wrapped, Map.put(params, :kind, String.to_existing_atom(raw))}}"],
+        expected: "opaque",
+      },
+      {
+        name: "nested_try",
+        clause: "raw when is_binary(raw)",
+        body: [
+          "try do",
+          "  {:ok, Map.put(params, :kind, String.to_existing_atom(raw))}",
+          "rescue",
+          "  ArgumentError -> {:error, :nested}",
+          "end",
+        ],
+        expected: "opaque",
+      },
+      {
+        name: "borrowed_rescue",
+        clause: "raw when is_binary(raw)",
+        body: ["try do", "  {:ok, Map.put(params, :kind, String.to_existing_atom(raw))}", "end"],
+        expected: "opaque",
+      },
+      {
+        name: "masked_producer",
+        clause: "raw when is_binary(raw)",
+        body: ['{:ok, Map.put(params, :kind, "#{String.to_existing_atom(raw)}")}'],
+        expected: "opaque",
+      },
+      {
+        name: "earlier_interpolation",
+        clause: "raw when is_binary(raw)",
+        body: ['{:ok, Map.put(%{note: "#{params}"}, :kind, String.to_existing_atom(raw))}'],
+        expected: "opaque",
+      },
+      {
+        name: "nested_first_producer",
+        clause: "raw when is_binary(raw)",
+        body: [
+          "{:ok,",
+          " Map.put(",
+          "   %{other: String.to_existing_atom(params)},",
+          "   :kind,",
+          "   String.to_existing_atom(raw)",
+          " )}",
+        ],
+        expected: "opaque",
+      },
+      {
+        name: "second_event",
+        clause: "raw when is_binary(raw)",
+        body: [
+          "{:ok, Map.put(params, :kind, String.to_existing_atom(raw))}; String.to_existing_atom(raw)",
+        ],
+        expected: "opaque",
+      },
+    ] as const;
+    const lines = ["defmodule NeutralInline.Roles do"];
+    const metadata: Array<{
+      readonly name: string;
+      readonly atomLines: readonly number[];
+      readonly guardLine: number;
+      readonly mapLine?: number;
+      readonly guardEvents: number;
+      readonly mapEvents: number;
+      readonly expected: string;
+    }> = [];
+    for (const role of roles) {
+      lines.push(`  def ${role.name}(value, params) do`);
+      lines.push(`    ${"container" in role ? role.container : "case value do"}`);
+      if (role.name === "safe_with") lines.push("      :ok", "    else");
+      const guardLine = lines.length + 1;
+      lines.push(`      ${role.clause} ->`);
+      for (const before of "beforeTry" in role ? role.beforeTry : [])
+        lines.push(`        ${before}`);
+      lines.push("        try do");
+      const bodyStart = lines.length + 1;
+      for (const bodyLine of role.body) lines.push(`          ${bodyLine}`);
+      if (!("rescue" in role) || role.rescue !== false) {
+        lines.push("        rescue", "          ArgumentError -> {:error, :invalid}");
+      }
+      lines.push("        end");
+      if (role.name !== "safe_with") {
+        lines.push("", "      _other ->", "        {:error, :unmatched}");
+      }
+      lines.push("    end", "  end");
+      const atomLines = role.body.flatMap((line, index) =>
+        Array.from(line.matchAll(/String\.to_existing_atom/gu), () => bodyStart + index),
+      );
+      const relativeMap = role.body.findIndex((line) => line.includes("Map.put("));
+      metadata.push({
+        name: role.name,
+        atomLines,
+        guardLine,
+        ...(relativeMap < 0 ? {} : { mapLine: bodyStart + relativeMap }),
+        guardEvents:
+          "guardEvents" in role ? role.guardEvents : role.clause.includes("is_binary") ? 1 : 0,
+        mapEvents:
+          "mapEvents" in role
+            ? role.mapEvents
+            : role.body.some((line) => line.includes("Map.put("))
+              ? 1
+              : 0,
+        expected: role.expected,
+      });
+    }
+    lines.push("end");
+    const events: TraceEvent[] = [];
+    for (const role of metadata) {
+      for (const atomLine of role.atomLines) {
+        events.push({
+          k: "event",
+          kind: "remote",
+          file,
+          line: atomLine,
+          from_mod: "NeutralInline.Roles",
+          from_fun: `${role.name}/2`,
+          to_mod: "String",
+          name: "to_existing_atom",
+          arity: 1,
+          dyn: true,
+          partition: "prod",
+        });
+      }
+      for (let index = 0; index < role.guardEvents; index += 1) {
+        events.push({
+          k: "event",
+          kind: "imported",
+          file,
+          line: role.guardLine,
+          from_mod: "NeutralInline.Roles",
+          from_fun: `${role.name}/2`,
+          to_mod: "Kernel",
+          name: "is_binary",
+          arity: 1,
+          dyn: false,
+          partition: "prod",
+        });
+      }
+      for (let index = 0; index < role.mapEvents && role.mapLine !== undefined; index += 1) {
+        events.push({
+          k: "event",
+          kind: "remote",
+          file,
+          line: role.mapLine,
+          from_mod: "NeutralInline.Roles",
+          from_fun: `${role.name}/2`,
+          to_mod: "Map",
+          name: "put",
+          arity: 3,
+          dyn: false,
+          partition: "prod",
+        });
+      }
+    }
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod("NeutralInline.Roles", file)],
+      functions: [],
+      events,
+    };
+
+    try {
+      writeFileSync(join(root, file), `${lines.join("\n")}\n`);
+      const actual = extractElixirRuntimeConventions(root, trace).dynamicDispatches.map(
+        (dispatch) => ({ fromFun: dispatch.fromFun, kind: dispatch.kind }),
+      );
+      const expected = metadata.flatMap((role) =>
+        role.atomLines.map(() => ({
+          fromFun: `${role.name}/2`,
+          kind: role.expected,
+        })),
+      );
+      expect(actual).toEqual(expected);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("retains an opaque fallback when source arguments cannot bound the tracer event", () => {
     const trace: TraceResult = {
       appMod: "Dyn.Application",
@@ -823,6 +1175,57 @@ describe("extractElixirRuntimeReferences", () => {
       writeFileSync(
         join(root, file),
         ["defmodule NeutralScale.AssignedAtoms do\n", functions, "end\n"].join(""),
+      );
+      const started = performance.now();
+      extractElixirRuntimeConventions(root, trace);
+      return performance.now() - started;
+    };
+    const median = (values: readonly number[]): number =>
+      [...values].sort((left, right) => left - right)[Math.floor(values.length / 2)] ?? 0;
+
+    try {
+      measure(50);
+      const small = median([measure(250), measure(250), measure(250)]);
+      const large = median([measure(1_000), measure(1_000), measure(1_000)]);
+      expect(large).toBeLessThan(small * 8 + 30);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  it("indexes repeated inline Map.put atom-data clauses near-linearly", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-inline-map-put-scaling-"));
+    const file = "many_inline_map_puts.ex";
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod("NeutralScale.InlineMapPuts", file)],
+      functions: [],
+      events: [],
+    };
+    const measure = (count: number): number => {
+      const functions = Array.from({ length: count }, (_, index) =>
+        [
+          `  def normalize_${index}(value_${index}, params) do\n`,
+          `    case value_${index} do\n`,
+          `      raw_${index} when is_binary(raw_${index}) ->\n`,
+          "        try do\n",
+          `          {:ok, Map.put(params, :kind, String.to_existing_atom(raw_${index}))}\n`,
+          "        rescue\n",
+          "          ArgumentError -> {:error, :invalid}\n",
+          "        end\n",
+          "\n",
+          "      _other ->\n",
+          "        {:error, :unmatched}\n",
+          "    end\n",
+          "  end\n",
+        ].join(""),
+      ).join("");
+      writeFileSync(
+        join(root, file),
+        ["defmodule NeutralScale.InlineMapPuts do\n", functions, "end\n"].join(""),
       );
       const started = performance.now();
       extractElixirRuntimeConventions(root, trace);
