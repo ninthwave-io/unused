@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { FunctionRecord, ModuleRecord, TraceEvent, TraceResult } from "./events.js";
@@ -438,6 +441,72 @@ describe("extractElixirRuntimeReferences", () => {
       }),
     ]);
   });
+
+  it("indexes adversarial Enum.map sites and tuple producers near-linearly", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-enum-map-scaling-"));
+    const file = "many_maps.ex";
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod("NeutralScale.ManyMaps", file)],
+      functions: [],
+      events: [],
+    };
+    const measure = (count: number): number => {
+      const functions = Array.from(
+        { length: count },
+        (_, index) => `  def map_${index}(data), do: Enum.map(data, fn value -> value end)\n`,
+      ).join("");
+      writeFileSync(
+        join(root, file),
+        ["defmodule NeutralScale.ManyMaps do\n", functions, "end\n"].join(""),
+      );
+      const started = performance.now();
+      extractElixirRuntimeConventions(root, trace);
+      return performance.now() - started;
+    };
+    const measureSequenced = (count: number): number => {
+      const tuples = Array.from(
+        { length: count },
+        (_, index) => `{String.to_atom(key_${index}), value}`,
+      ).join("; ");
+      writeFileSync(
+        join(root, file),
+        [
+          "defmodule NeutralScale.ManyMaps do\n",
+          `  def rebuild(data), do: data |> Enum.map(fn {key, value} -> ${tuples}; {key, value} end) |> Enum.into(%{})\n`,
+          "end\n",
+        ].join(""),
+      );
+      const started = performance.now();
+      extractElixirRuntimeConventions(root, trace);
+      return performance.now() - started;
+    };
+    const median = (values: readonly number[]): number =>
+      [...values].sort((left, right) => left - right)[Math.floor(values.length / 2)] ?? 0;
+
+    try {
+      measure(100);
+      const small = median([measure(4_000), measure(4_000), measure(4_000)]);
+      const large = median([measure(16_000), measure(16_000), measure(16_000)]);
+      expect(large).toBeLessThan(small * 8 + 20);
+      const tupleSmall = median([
+        measureSequenced(4_000),
+        measureSequenced(4_000),
+        measureSequenced(4_000),
+      ]);
+      const tupleLarge = median([
+        measureSequenced(16_000),
+        measureSequenced(16_000),
+        measureSequenced(16_000),
+      ]);
+      expect(tupleLarge).toBeLessThan(tupleSmall * 8 + 20);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 10_000);
 });
 
 function definitionEvent(file: string, line: number, fromMod: string): TraceEvent {

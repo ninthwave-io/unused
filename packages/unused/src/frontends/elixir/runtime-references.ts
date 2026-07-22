@@ -66,6 +66,11 @@ const ATOM_PRODUCER_RE = /\bString\.(to_atom|to_existing_atom)\s*\(/gu;
 const PHOENIX_CONTROLLER = "Phoenix.Controller";
 const MAP_CALL_RE =
   /\bMap\.(fetch!|fetch|get|get_lazy|has_key\?|delete|put|put_new|put_new_lazy|replace|replace!|update|update!)\s*\(/gu;
+const ENUM_MAP_CALL_RE = /\bEnum\.map\s*\(/gu;
+const NEXT_FN_TUPLE_CLAUSE_RE =
+  /\{\s*[a-z_][A-Za-z0-9_]*\s*,\s*[a-z_][A-Za-z0-9_]*\s*\}(?:\s+when\b[^\n]*?)?\s*->/uy;
+const FN_TUPLE_CLAUSE_HEAD_RE =
+  /^\{\s*[a-z_][A-Za-z0-9_]*\s*,\s*[a-z_][A-Za-z0-9_]*\s*\}(?:\s+when\b[^\n]*?)?\s*$/u;
 
 interface SourceIndex {
   readonly content: string;
@@ -521,9 +526,10 @@ function indexDynamicEventsBySite(events: readonly TraceEvent[]): Map<string, Tr
 
 /**
  * A function-scoped atom producer is harmless only when its complete value is
- * the direct key argument of a compiler-confirmed `Map` operation. Every
- * unsupported flow stays dynamic: receiver dispatch, assignment, return,
- * pipeline, and same-line ambiguity all deliberately fail this proof.
+ * either a direct key argument of a compiler-confirmed `Map` operation or the
+ * complete tuple key returned by a proven `Enum.map` → `Enum.into(%{})`
+ * rebuild. Receiver dispatch, assignment, arbitrary tuples, intervening or
+ * unproven pipelines, and same-line ambiguity deliberately fail this proof.
  */
 function safeAtomProducerEvents(
   events: readonly TraceEvent[],
@@ -532,6 +538,7 @@ function safeAtomProducerEvents(
   const sourceFacts = new Map<string, AtomProducerFact[]>();
   for (const [file, source] of sources) {
     const mapCalls = indexMapCalls(source);
+    const mapIntoPipelines = indexEnumMapIntoPipelines(source);
     for (const match of source.code.matchAll(ATOM_PRODUCER_RE)) {
       const name = match[1];
       if (name === undefined) continue;
@@ -541,11 +548,19 @@ function safeAtomProducerEvents(
       if (close === undefined) continue;
       const line = lineAt(source.lineStarts, start);
       const safeMap = directMapKeyConsumer(source, mapCalls, start, open, close);
+      const safeMapInto = directEnumMapIntoKeyConsumer(
+        source,
+        mapIntoPipelines,
+        start,
+        open,
+        close,
+      );
       append(sourceFacts, atomSiteKey(file, line, name), {
         file,
         line,
         name,
         ...(safeMap === null ? {} : { safeMap }),
+        ...(safeMapInto === null ? {} : { safeMapInto }),
       });
     }
   }
@@ -572,21 +587,33 @@ function safeAtomProducerEvents(
     if (facts.length !== 1 || matchingEvents.length !== 1) continue;
     const fact = facts[0];
     const event = matchingEvents[0];
-    if (fact?.safeMap === undefined || event === undefined) continue;
-    const safeMap = fact.safeMap;
-    const mapCarrierSite = [
-      fact.file,
-      safeMap.line,
-      event.from_mod ?? "",
-      event.from_fun ?? "",
-    ].join("\0");
-    const compilerCalls = (ordinaryEventsByCarrier.get(mapCarrierSite) ?? []).filter(
+    if (fact === undefined || event === undefined) continue;
+    if (fact.safeMap !== undefined) {
+      const safeMap = fact.safeMap;
+      const mapCarrierSite = carrierAt(fact.file, safeMap.line, event);
+      const compilerCalls = (ordinaryEventsByCarrier.get(mapCarrierSite) ?? []).filter(
+        (candidate) =>
+          candidate.to_mod === "Map" &&
+          candidate.name === safeMap.name &&
+          candidate.arity === safeMap.arity,
+      );
+      if (compilerCalls.length === 1) safe.add(event);
+      continue;
+    }
+    if (fact.safeMapInto === undefined) continue;
+    const mapCalls = (
+      ordinaryEventsByCarrier.get(carrierAt(fact.file, fact.safeMapInto.mapLine, event)) ?? []
+    ).filter(
       (candidate) =>
-        candidate.to_mod === "Map" &&
-        candidate.name === safeMap.name &&
-        candidate.arity === safeMap.arity,
+        candidate.to_mod === "Enum" && candidate.name === "map" && candidate.arity === 2,
     );
-    if (compilerCalls.length === 1) safe.add(event);
+    const intoCalls = (
+      ordinaryEventsByCarrier.get(carrierAt(fact.file, fact.safeMapInto.intoLine, event)) ?? []
+    ).filter(
+      (candidate) =>
+        candidate.to_mod === "Enum" && candidate.name === "into" && candidate.arity === 2,
+    );
+    if (mapCalls.length === 1 && intoCalls.length === 1) safe.add(event);
   }
   return safe;
 }
@@ -596,6 +623,15 @@ interface AtomProducerFact {
   readonly line: number;
   readonly name: string;
   readonly safeMap?: { readonly name: string; readonly arity: number; readonly line: number };
+  readonly safeMapInto?: { readonly mapLine: number; readonly intoLine: number };
+}
+
+interface EnumMapIntoPipeline {
+  readonly bodyStart: number;
+  readonly bodyEnd: number;
+  readonly resultStart: number;
+  readonly mapLine: number;
+  readonly intoLine: number;
 }
 
 interface MapCall {
@@ -604,6 +640,134 @@ interface MapCall {
   readonly open: number;
   readonly keyArgument: number;
   readonly line: number;
+}
+
+function carrierAt(file: string, line: number, event: TraceEvent): string {
+  return [file, line, event.from_mod ?? "", event.from_fun ?? ""].join("\0");
+}
+
+function indexEnumMapIntoPipelines(source: SourceIndex): readonly EnumMapIntoPipeline[] {
+  const pipelines: EnumMapIntoPipeline[] = [];
+  for (const match of source.code.matchAll(ENUM_MAP_CALL_RE)) {
+    const mapStart = match.index ?? 0;
+    const mapOpen = mapStart + match[0].length - 1;
+    const mapClose = source.closeByOpen.get(mapOpen);
+    if (mapClose === undefined) continue;
+    const fnStart = skipWhitespaceForward(source.code, mapOpen + 1, mapClose);
+    if (
+      !source.code.startsWith("fn", fnStart) ||
+      /[A-Za-z0-9_]/u.test(source.code[fnStart + 2] ?? "")
+    )
+      continue;
+    const endExclusive = skipWhitespaceBackward(source.code, mapClose, fnStart + 2);
+    const bodyEnd = endExclusive - 3;
+    if (
+      bodyEnd < fnStart + 2 ||
+      source.code.slice(bodyEnd, endExclusive) !== "end" ||
+      /[A-Za-z0-9_]/u.test(source.code[bodyEnd - 1] ?? "")
+    ) {
+      continue;
+    }
+    const intoStart = immediateEmptyMapInto(source, mapClose);
+    if (intoStart === null) continue;
+    const clauseHeadStart = skipWhitespaceForward(source.code, fnStart + 2, bodyEnd);
+    const clauseLine = lineAt(source.lineStarts, clauseHeadStart);
+    const clauseLimit = Math.min(source.lineStarts[clauseLine] ?? bodyEnd, bodyEnd);
+    const arrow = findArrow(source.code, clauseHeadStart, clauseLimit);
+    if (arrow === null) continue;
+    if (!FN_TUPLE_CLAUSE_HEAD_RE.test(source.code.slice(clauseHeadStart, arrow))) continue;
+    pipelines.push({
+      bodyStart: fnStart + 2,
+      bodyEnd,
+      resultStart: skipWhitespaceForward(source.code, arrow + 2, bodyEnd),
+      mapLine: lineAt(source.lineStarts, mapStart),
+      intoLine: lineAt(source.lineStarts, intoStart),
+    });
+  }
+  return pipelines;
+}
+
+function findArrow(content: string, start: number, end: number): number | null {
+  for (let index = start; index + 1 < end; index += 1) {
+    if (content[index] === "-" && content[index + 1] === ">") return index;
+  }
+  return null;
+}
+
+function immediateEmptyMapInto(source: SourceIndex, mapClose: number): number | null {
+  let index = skipWhitespaceForward(source.code, mapClose + 1, source.code.length);
+  if (!source.code.startsWith("|>", index)) return null;
+  index = skipWhitespaceForward(source.code, index + 2, source.code.length);
+  const intoStart = index;
+  if (!source.code.startsWith("Enum.into", index)) return null;
+  index = skipWhitespaceForward(source.code, index + "Enum.into".length, source.code.length);
+  if (source.code[index] !== "(") return null;
+  const intoOpen = index;
+  const intoClose = source.closeByOpen.get(intoOpen);
+  if (intoClose === undefined) return null;
+  index = skipWhitespaceForward(source.code, intoOpen + 1, intoClose);
+  if (!source.code.startsWith("%{", index)) return null;
+  const mapOpen = index + 1;
+  const emptyMapClose = source.closeByOpen.get(mapOpen);
+  if (emptyMapClose === undefined || emptyMapClose >= intoClose) return null;
+  if (skipWhitespaceForward(source.code, mapOpen + 1, emptyMapClose) !== emptyMapClose) return null;
+  return skipWhitespaceForward(source.code, emptyMapClose + 1, intoClose) === intoClose
+    ? intoStart
+    : null;
+}
+
+function directEnumMapIntoKeyConsumer(
+  source: SourceIndex,
+  pipelines: readonly EnumMapIntoPipeline[],
+  producerStart: number,
+  producerOpen: number,
+  producerClose: number,
+): { readonly mapLine: number; readonly intoLine: number } | null {
+  const tupleOpen = source.parentByOpen.get(producerOpen);
+  if (tupleOpen === undefined || source.code[tupleOpen] !== "{") return null;
+  const tupleClose = source.closeByOpen.get(tupleOpen);
+  const tupleCommas = source.commasByOpen.get(tupleOpen) ?? [];
+  if (tupleClose === undefined || tupleCommas.length !== 1 || tupleCommas[0] === undefined)
+    return null;
+  const keyEnd = tupleCommas[0];
+  if (
+    skipWhitespaceForward(source.code, tupleOpen + 1, keyEnd) !== producerStart ||
+    skipWhitespaceBackward(source.code, keyEnd, tupleOpen + 1) !== producerClose + 1
+  ) {
+    return null;
+  }
+
+  const pipeline = containingPipeline(pipelines, tupleOpen, tupleClose);
+  if (pipeline === null || pipeline.resultStart !== tupleOpen) return null;
+  const afterTuple = skipWhitespaceForward(source.code, tupleClose + 1, pipeline.bodyEnd + 1);
+  if (afterTuple !== pipeline.bodyEnd) {
+    NEXT_FN_TUPLE_CLAUSE_RE.lastIndex = afterTuple;
+    const nextClause = NEXT_FN_TUPLE_CLAUSE_RE.exec(source.code);
+    if (
+      nextClause === null ||
+      nextClause.index !== afterTuple ||
+      NEXT_FN_TUPLE_CLAUSE_RE.lastIndex > pipeline.bodyEnd
+    ) {
+      return null;
+    }
+  }
+  return { mapLine: pipeline.mapLine, intoLine: pipeline.intoLine };
+}
+
+function containingPipeline(
+  pipelines: readonly EnumMapIntoPipeline[],
+  start: number,
+  end: number,
+): EnumMapIntoPipeline | null {
+  let low = 0;
+  let high = pipelines.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if ((pipelines[middle]?.bodyStart ?? Number.POSITIVE_INFINITY) <= start) low = middle + 1;
+    else high = middle;
+  }
+  const candidate = pipelines[low - 1];
+  return candidate !== undefined && end <= candidate.bodyEnd ? candidate : null;
 }
 
 function indexMapCalls(source: SourceIndex): ReadonlyMap<number, MapCall> {

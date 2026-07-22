@@ -217,11 +217,26 @@ function. A missing, computed, duplicated, or ambiguous invocation retains the
 dynamic-dispatch hazard. Exact helper edges preserve `why` provenance and leave
 unselected siblings independently claimable and deletable.
 
+Nested compiler-emitted `__using__/1` calls attributed to the same outer source
+site do not invalidate that proof when exactly one dispatcher event matches the
+literal outer module; alias fallback still requires a unique compiler alias
+fact. A no-source generated `action/2` apply is bounded to owner-module arity-two
+actions only when the same carrier/site/partition has one external
+`Phoenix.Controller.__using__/1` witness, `phoenix` is a declared dependency,
+and the project does not own `Phoenix.Controller`. A masked generic source
+`apply` at the site, missing/duplicate witnesses, or custom lookalikes stay
+opaque. A module-to-`action/2` convention edge activates the bounded hazard when
+the owner module becomes reachable.
+
 Function-scoped `String.to_atom/1` and `String.to_existing_atom/1` remain
 dynamic proxies by default because an immediate atom receiver can emit no outer
-compiler event. The only non-hazard role is a complete direct key argument to a
-bounded standard-library `Map` operation, confirmed by the matching compiler
-event on the same carrier. Immediate receivers, assignments and later use,
-pipelines, unknown consumers, or mixed same-line roles remain opaque. The
-classification cost is O(total compiler-owned source bytes + trace events +
-reflected functions + emitted candidates); no event rescans an entire source.
+compiler event. A non-hazard role is either a complete direct key argument to a
+bounded standard-library `Map` operation, or the complete first field of a
+two-element tuple returned as a complete `Enum.map/2` function clause whose
+result flows immediately to `Enum.into(%{})`. Both roles require unique matching
+compiler events on the same carrier. Immediate receivers, assignments and later
+use, arbitrary or MFA tuples, intervening or otherwise unproven pipelines,
+unknown consumers, or mixed same-line roles remain opaque. The classification
+cost is bounded log-linear:
+O(source bytes + trace events + reflected functions + atom producers ×
+log(indexed pipelines) + emitted candidates). No event rescans an entire source.

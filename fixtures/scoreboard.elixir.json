@@ -2,7 +2,7 @@
   "analyzer": "elixir-reference-graph",
   "corpus": {
     "cases": 17,
-    "subjects": 55
+    "subjects": 56
   },
   "precision": 1,
   "recall": 0.9583333333333334,
@@ -44,7 +44,7 @@
     },
     {
       "case": "atom-map-key-safe",
-      "subjects": 4,
+      "subjects": 5,
       "deadLabels": 1,
       "precision": 1,
       "recall": 1,

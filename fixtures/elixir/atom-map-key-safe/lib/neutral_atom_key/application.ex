@@ -5,6 +5,7 @@ defmodule NeutralAtomKey.Application do
     _ = NeutralAtomKey.Lookup.fetch(%{known: :value}, "known")
     _ = NeutralAtomKey.Lookup.masked(%{known: :value}, "known")
     _ = NeutralAtomKey.Lookup.predicate(%{known: :value}, "known")
+    _ = NeutralAtomKey.Lookup.rebuild([{"known", "value"}])
     {:ok, self()}
   end
 end

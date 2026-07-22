@@ -21,5 +21,17 @@ defmodule NeutralAtomKey.Lookup do
     Map.has_key?(values, String.to_existing_atom(key))
   end
 
+  def rebuild(data) do
+    data
+    |> Enum.map(fn
+      {key, value} when is_binary(key) ->
+        {String.to_atom(key), String.upcase(value)}
+
+      {key, value} ->
+        {key, value}
+    end)
+    |> Enum.into(%{})
+  end
+
   def genuinely_unused, do: :unused
 end

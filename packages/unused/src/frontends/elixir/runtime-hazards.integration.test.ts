@@ -88,11 +88,33 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
   it("treats direct Map-key atom production as data and masks inert text", async () => {
     const root = fixture("atom-map-key-safe");
     const trace = runTracer(root);
-    expect(trace.events.filter((event) => event.dyn)).toHaveLength(3);
+    expect(trace.events.filter((event) => event.dyn)).toHaveLength(4);
+    expect(
+      trace.events
+        .filter((event) => event.from_fun === "rebuild/1" && event.to_mod === "Enum")
+        .map((event) => `${event.name}/${event.arity}`),
+    ).toEqual(expect.arrayContaining(["map/2", "into/2"]));
     const analysis = await analyzeElixirProjectWithGraph(root, { now: new Date(0) });
     expect(
       analysis.graph.hazards().filter((hazard) => hazard.hazardClass === "elixir-dynamic-dispatch"),
     ).toEqual([]);
+    const rebuilt = whyAlive({
+      graph: analysis.graph,
+      reachability: analysis.reachability,
+      claims: analysis.result.claims,
+      query: "NeutralAtomKey.Lookup.rebuild/1",
+      hazardEvaluations: [analysis.hazardEvaluation],
+    });
+    expect(rebuilt).toMatchObject({ outcome: "alive", entrypointKind: "production" });
+    if (rebuilt.outcome !== "alive") throw new Error("expected map rebuild to be alive");
+    expect(
+      computeDeletionPlan({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        subject: rebuilt.subject,
+        hazardEvaluations: [analysis.hazardEvaluation],
+      }),
+    ).toMatchObject({ supported: false });
     const dead = whyAlive({
       graph: analysis.graph,
       reachability: analysis.reachability,
@@ -112,7 +134,7 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
     ).toMatchObject({ supported: true });
   }, 60_000);
 
-  it("keeps immediate, assigned, and mixed same-line atom flows opaque", async () => {
+  it("keeps receiver, assignment, tuple, intervening, and mixed atom flows opaque", async () => {
     const analysis = await analyzeElixirProjectWithGraph(fixture("atom-dynamic-receiver"), {
       now: new Date(0),
     });
@@ -122,7 +144,12 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
     expect(hazards.map((hazard) => hazard.carrierSymbol).sort()).toEqual([
       expect.stringContaining("assigned/1"),
       expect.stringContaining("immediate/1"),
+      expect.stringContaining("intervening_pipeline/1"),
+      expect.stringContaining("mfa_pipeline/1"),
       expect.stringContaining("mixed/2"),
+      expect.stringContaining("nested_pipeline/1"),
+      expect.stringContaining("sequenced_pipeline/1"),
+      expect.stringContaining("tuple_only/2"),
     ]);
     const dead = whyAlive({
       graph: analysis.graph,

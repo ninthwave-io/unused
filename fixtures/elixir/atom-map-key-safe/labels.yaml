@@ -20,6 +20,13 @@ subjects:
     expected: alive
     because: Predicate punctuation remains code and the atom is solely a Map.has_key? key.
   - kind: export
+    name: NeutralAtomKey.Lookup.rebuild/1
+    file: lib/neutral_atom_key/lookup.ex
+    expected: alive
+    because: >-
+      The atom is the complete key of the complete tuple returned by Enum.map,
+      whose result flows immediately into Enum.into with a literal empty map.
+  - kind: export
     name: NeutralAtomKey.Lookup.genuinely_unused/0
     file: lib/neutral_atom_key/lookup.ex
     expected: dead
