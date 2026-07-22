@@ -260,6 +260,246 @@ describe("extractElixirRuntimeReferences", () => {
     }
   });
 
+  it("proves only guarded rescued assignments whose complete uses stay Enum map values", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-atom-assignment-roles-"));
+    const file = "assigned_atom_roles.ex";
+    const lines = [
+      "defmodule NeutralAssigned.Roles do",
+      "  def safe(entries, raw) when is_binary(raw) do",
+      "    kind = String.to_existing_atom(raw)",
+      "    Enum.map(entries, fn entry -> %{entry: entry, kind: kind} end)",
+      "  rescue",
+      "    ArgumentError -> []",
+      "  end",
+      "  def negated(entries, raw) when not is_binary(raw) do",
+      "    kind = String.to_existing_atom(raw)",
+      "    Enum.map(entries, fn entry -> %{entry: entry, kind: kind} end)",
+      "  rescue",
+      "    ArgumentError -> []",
+      "  end",
+      "  def disjunctive(entries, raw) when is_binary(raw) or is_list(raw) do",
+      "    kind = String.to_existing_atom(raw)",
+      "    Enum.map(entries, fn entry -> %{entry: entry, kind: kind} end)",
+      "  rescue",
+      "    ArgumentError -> []",
+      "  end",
+      "  def rebound(entries, raw) when is_binary(raw) do",
+      "    raw = runtime_value()",
+      "    kind = String.to_existing_atom(raw)",
+      "    Enum.map(entries, fn entry -> %{entry: entry, kind: kind} end)",
+      "  rescue",
+      "    ArgumentError -> []",
+      "  end",
+      "  def reassigned(entries, raw) when is_binary(raw) do",
+      "    kind = String.to_existing_atom(raw)",
+      "    _ = Enum.map(entries, fn entry -> %{entry: entry, kind: kind} end)",
+      "    kind = :other",
+      "  rescue",
+      "    ArgumentError -> []",
+      "  end",
+      "  def same_line(entries, raw) when is_binary(raw) do",
+      "    kind = String.to_existing_atom(raw); other = String.to_existing_atom(raw)",
+      "    Enum.map(entries, fn entry -> %{entry: entry, kind: kind} end)",
+      "  rescue",
+      "    ArgumentError -> []",
+      "  end",
+      "  def no_guard(entries, raw) do",
+      "    kind = String.to_existing_atom(raw)",
+      "    Enum.map(entries, fn entry -> %{entry: entry, kind: kind} end)",
+      "  rescue",
+      "    ArgumentError -> []",
+      "  end",
+      "  def no_rescue(entries, raw) when is_binary(raw) do",
+      "    kind = String.to_existing_atom(raw)",
+      "    Enum.map(entries, fn entry -> %{entry: entry, kind: kind} end)",
+      "  end",
+      "  def mixed(entries, raw) when is_binary(raw) do",
+      "    kind = String.to_existing_atom(raw)",
+      "    _ = Enum.map(entries, fn entry -> %{entry: entry, kind: kind} end)",
+      "    apply(__MODULE__, kind, [])",
+      "  rescue",
+      "    ArgumentError -> []",
+      "  end",
+      "  def map_key(entries, raw) when is_binary(raw) do",
+      "    kind = String.to_existing_atom(raw)",
+      "    Enum.map(entries, fn entry -> %{kind => entry} end)",
+      "  rescue",
+      "    ArgumentError -> []",
+      "  end",
+      "  def receiver(entries, raw) when is_binary(raw) do",
+      "    kind = String.to_existing_atom(raw)",
+      "    _ = Enum.map(entries, fn entry -> %{entry: entry, kind: kind} end)",
+      "    kind.run()",
+      "  rescue",
+      "    ArgumentError -> []",
+      "  end",
+      "  def bang_receiver(entries, raw) when is_binary(raw) do",
+      "    kind = String.to_existing_atom(raw)",
+      "    _ = Enum.map(entries, fn entry -> %{entry: entry, kind: kind} end)",
+      "    !kind.run()",
+      "  rescue",
+      "    ArgumentError -> []",
+      "  end",
+      "  def interpolation(entries, raw) when is_binary(raw) do",
+      "    kind = String.to_existing_atom(raw)",
+      "    _ = Enum.map(entries, fn entry -> %{entry: entry, kind: kind} end)",
+      '    _ = "#{kind.run()}"',
+      "  rescue",
+      "    ArgumentError -> []",
+      "  end",
+      "  def capture(entries, raw) when is_binary(raw) do",
+      "    kind = String.to_existing_atom(raw)",
+      "    _ = Enum.map(entries, fn entry -> %{entry: entry, kind: kind} end)",
+      "    Function.capture(kind, :run, 0)",
+      "  rescue",
+      "    ArgumentError -> []",
+      "  end",
+      "  def mfa(entries, raw) when is_binary(raw) do",
+      "    kind = String.to_existing_atom(raw)",
+      "    _ = Enum.map(entries, fn entry -> %{entry: entry, kind: kind} end)",
+      "    {kind, :run, []}",
+      "  rescue",
+      "    ArgumentError -> []",
+      "  end",
+      "  def nested_try(entries, raw) when is_binary(raw) do",
+      "    try do",
+      "      kind = String.to_existing_atom(raw)",
+      "      Enum.map(entries, fn entry -> %{entry: entry, kind: kind} end)",
+      "  rescue",
+      "      ArgumentError -> []",
+      "    end",
+      "  end",
+      "  def macro_borrow(entries, raw) when is_binary(raw) do",
+      "    kind = String.to_existing_atom(raw)",
+      "    Enum.map(entries, fn entry -> %{entry: entry, kind: kind} end)",
+      "    _metadata = %{fn: :data}",
+      "  end",
+      "  defmacro rescue_decoy do",
+      "  rescue",
+      "    ArgumentError -> []",
+      "  end",
+      "end",
+    ];
+    const lineOf = (needle: string, from = 0): number =>
+      lines.findIndex((line, index) => index >= from && line.includes(needle)) + 1;
+    const functionStart = (name: string): number => lineOf(`def ${name}`);
+    const atomLine = (start: number): number => lineOf("String.to_existing_atom", start - 1);
+    const mapLine = (start: number): number => lineOf("Enum.map", start - 1);
+    const atomEvent = (fromFun: string, line: number): TraceEvent => ({
+      k: "event",
+      kind: "remote",
+      file,
+      line,
+      from_mod: "NeutralAssigned.Roles",
+      from_fun: fromFun,
+      to_mod: "String",
+      name: "to_existing_atom",
+      arity: 1,
+      dyn: true,
+      partition: "prod",
+    });
+    const compilerEvent = (
+      fromFun: string,
+      line: number,
+      toMod: string,
+      name: string,
+      arity: number,
+    ): TraceEvent => ({
+      k: "event",
+      kind: "remote",
+      file,
+      line,
+      from_mod: "NeutralAssigned.Roles",
+      from_fun: fromFun,
+      to_mod: toMod,
+      name,
+      arity,
+      dyn: false,
+      partition: "prod",
+    });
+    const starts = {
+      safe: functionStart("safe"),
+      noGuard: functionStart("no_guard"),
+      noRescue: functionStart("no_rescue"),
+      mixed: functionStart("mixed"),
+      mapKey: functionStart("map_key"),
+      nestedTry: functionStart("nested_try"),
+      negated: functionStart("negated"),
+      disjunctive: functionStart("disjunctive"),
+      rebound: functionStart("rebound"),
+      reassigned: functionStart("reassigned"),
+      sameLine: functionStart("same_line"),
+      receiver: functionStart("receiver"),
+      bangReceiver: functionStart("bang_receiver"),
+      interpolation: functionStart("interpolation"),
+      capture: functionStart("capture"),
+      mfa: functionStart("mfa"),
+      macroBorrow: functionStart("macro_borrow"),
+    };
+    const events: TraceEvent[] = [];
+    const addRoleEvents = (fromFun: string, start: number, guarded: boolean): void => {
+      events.push(atomEvent(fromFun, atomLine(start)));
+      if (guarded) events.push(compilerEvent(fromFun, start, "Kernel", "is_binary", 1));
+      events.push(compilerEvent(fromFun, mapLine(start), "Enum", "map", 2));
+    };
+    addRoleEvents("safe/2", starts.safe, true);
+    addRoleEvents("negated/2", starts.negated, true);
+    addRoleEvents("disjunctive/2", starts.disjunctive, true);
+    addRoleEvents("rebound/2", starts.rebound, true);
+    addRoleEvents("reassigned/2", starts.reassigned, true);
+    addRoleEvents("same_line/2", starts.sameLine, true);
+    addRoleEvents("no_guard/2", starts.noGuard, false);
+    addRoleEvents("no_rescue/2", starts.noRescue, true);
+    addRoleEvents("mixed/2", starts.mixed, true);
+    addRoleEvents("map_key/2", starts.mapKey, true);
+    addRoleEvents("receiver/2", starts.receiver, true);
+    addRoleEvents("bang_receiver/2", starts.bangReceiver, true);
+    addRoleEvents("interpolation/2", starts.interpolation, true);
+    addRoleEvents("capture/2", starts.capture, true);
+    addRoleEvents("mfa/2", starts.mfa, true);
+    addRoleEvents("nested_try/2", starts.nestedTry, true);
+    addRoleEvents("macro_borrow/2", starts.macroBorrow, true);
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod("NeutralAssigned.Roles", file)],
+      functions: [],
+      events,
+    };
+
+    try {
+      writeFileSync(join(root, file), `${lines.join("\n")}\n`);
+      expect(
+        extractElixirRuntimeConventions(root, trace).dynamicDispatches.map((dispatch) => ({
+          fromFun: dispatch.fromFun,
+          kind: dispatch.kind,
+        })),
+      ).toEqual([
+        { fromFun: "safe/2", kind: "exact" },
+        { fromFun: "negated/2", kind: "opaque" },
+        { fromFun: "disjunctive/2", kind: "opaque" },
+        { fromFun: "rebound/2", kind: "opaque" },
+        { fromFun: "reassigned/2", kind: "opaque" },
+        { fromFun: "same_line/2", kind: "opaque" },
+        { fromFun: "no_guard/2", kind: "opaque" },
+        { fromFun: "no_rescue/2", kind: "opaque" },
+        { fromFun: "mixed/2", kind: "opaque" },
+        { fromFun: "map_key/2", kind: "opaque" },
+        { fromFun: "receiver/2", kind: "opaque" },
+        { fromFun: "bang_receiver/2", kind: "opaque" },
+        { fromFun: "interpolation/2", kind: "opaque" },
+        { fromFun: "capture/2", kind: "opaque" },
+        { fromFun: "mfa/2", kind: "opaque" },
+        { fromFun: "nested_try/2", kind: "opaque" },
+        { fromFun: "macro_borrow/2", kind: "opaque" },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("retains an opaque fallback when source arguments cannot bound the tracer event", () => {
     const trace: TraceResult = {
       appMod: "Dyn.Application",
@@ -551,6 +791,94 @@ describe("extractElixirRuntimeReferences", () => {
       measure(100);
       const small = median([measure(500), measure(500), measure(500)]);
       const large = median([measure(2_000), measure(2_000), measure(2_000)]);
+      expect(large).toBeLessThan(small * 8 + 30);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  it("indexes repeated assigned-atom data roles near-linearly", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-assigned-atom-scaling-"));
+    const file = "many_assigned_atoms.ex";
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod("NeutralScale.AssignedAtoms", file)],
+      functions: [],
+      events: [],
+    };
+    const measure = (count: number): number => {
+      const functions = Array.from({ length: count }, (_, index) =>
+        [
+          `  def normalize_${index}(entries, raw_${index}) when is_binary(raw_${index}) do\n`,
+          `    kind = String.to_existing_atom(raw_${index})\n`,
+          "    Enum.map(entries, fn entry -> %{entry: entry, kind: kind} end)\n",
+          "  rescue\n",
+          "    ArgumentError -> []\n",
+          "  end\n",
+        ].join(""),
+      ).join("");
+      writeFileSync(
+        join(root, file),
+        ["defmodule NeutralScale.AssignedAtoms do\n", functions, "end\n"].join(""),
+      );
+      const started = performance.now();
+      extractElixirRuntimeConventions(root, trace);
+      return performance.now() - started;
+    };
+    const median = (values: readonly number[]): number =>
+      [...values].sort((left, right) => left - right)[Math.floor(values.length / 2)] ?? 0;
+
+    try {
+      measure(50);
+      const small = median([measure(250), measure(250), measure(250)]);
+      const large = median([measure(1_000), measure(1_000), measure(1_000)]);
+      expect(large).toBeLessThan(small * 8 + 30);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  it("indexes many assigned-atom fields in one Enum map near-linearly", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-assigned-atom-fields-scaling-"));
+    const file = "many_atom_fields.ex";
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod("NeutralScale.AtomFields", file)],
+      functions: [],
+      events: [],
+    };
+    const measure = (count: number): number => {
+      const fields = Array.from({ length: count }, (_, index) => `field_${index}: kind`).join(", ");
+      writeFileSync(
+        join(root, file),
+        [
+          "defmodule NeutralScale.AtomFields do\n",
+          "  def normalize(entries, raw) when is_binary(raw) do\n",
+          "    kind = String.to_existing_atom(raw)\n",
+          `    Enum.map(entries, fn _entry -> %{${fields}} end)\n`,
+          "  rescue\n",
+          "    ArgumentError -> []\n",
+          "  end\n",
+          "end\n",
+        ].join(""),
+      );
+      const started = performance.now();
+      extractElixirRuntimeConventions(root, trace);
+      return performance.now() - started;
+    };
+    const median = (values: readonly number[]): number =>
+      [...values].sort((left, right) => left - right)[Math.floor(values.length / 2)] ?? 0;
+
+    try {
+      measure(50);
+      const small = median([measure(250), measure(250), measure(250)]);
+      const large = median([measure(1_000), measure(1_000), measure(1_000)]);
       expect(large).toBeLessThan(small * 8 + 30);
     } finally {
       rmSync(root, { recursive: true, force: true });

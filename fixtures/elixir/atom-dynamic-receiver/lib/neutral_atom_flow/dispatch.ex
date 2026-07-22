@@ -1,9 +1,36 @@
 defmodule NeutralAtomFlow.Dispatch do
   def immediate(name), do: String.to_atom(name).run()
 
-  def assigned(name) do
+  def assigned(entries, name) when is_binary(name) do
     receiver = String.to_existing_atom(name)
+    _ = Enum.map(entries, fn entry -> %{entry: entry, kind: receiver} end)
     receiver.run()
+  rescue
+    ArgumentError -> :invalid
+  end
+
+  def assigned_apply(entries, name) when is_binary(name) do
+    receiver = String.to_existing_atom(name)
+    _ = Enum.map(entries, fn entry -> %{entry: entry, kind: receiver} end)
+    apply(receiver, :run, [])
+  rescue
+    ArgumentError -> :invalid
+  end
+
+  def assigned_capture(entries, name) when is_binary(name) do
+    receiver = String.to_existing_atom(name)
+    _ = Enum.map(entries, fn entry -> %{entry: entry, kind: receiver} end)
+    Function.capture(receiver, :run, 0)
+  rescue
+    ArgumentError -> :invalid
+  end
+
+  def assigned_mfa(entries, name) when is_binary(name) do
+    receiver = String.to_existing_atom(name)
+    _ = Enum.map(entries, fn entry -> %{entry: entry, kind: receiver} end)
+    {receiver, :run, []}
+  rescue
+    ArgumentError -> :invalid
   end
 
   def mixed(values, key) do

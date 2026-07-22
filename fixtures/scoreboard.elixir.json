@@ -1,19 +1,19 @@
 {
   "analyzer": "elixir-reference-graph",
   "corpus": {
-    "cases": 19,
-    "subjects": 63
+    "cases": 20,
+    "subjects": 65
   },
   "precision": 1,
-  "recall": 0.9629629629629629,
+  "recall": 0.9642857142857143,
   "falsePositives": 0,
   "confidenceViolations": 0,
   "misses": 1,
   "unlabelledClaims": 0,
   "byConfidenceTier": {
     "high": {
-      "claims": 19,
-      "truePositives": 19,
+      "claims": 20,
+      "truePositives": 20,
       "falsePositives": 0,
       "confidenceViolations": 0
     },
@@ -31,6 +31,17 @@
     }
   },
   "cases": [
+    {
+      "case": "atom-assigned-data-safe",
+      "subjects": 2,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
     {
       "case": "atom-dynamic-receiver",
       "subjects": 1,

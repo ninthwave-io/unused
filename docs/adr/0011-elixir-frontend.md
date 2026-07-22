@@ -244,13 +244,21 @@ cannot refuse deletion of an unrelated module.
 
 Function-scoped `String.to_atom/1` and `String.to_existing_atom/1` remain
 dynamic proxies by default because an immediate atom receiver can emit no outer
-compiler event. A non-hazard role is either a complete direct key argument to a
-bounded standard-library `Map` operation, or the complete first field of a
-two-element tuple returned as a complete `Enum.map/2` function clause whose
-result flows immediately to `Enum.into(%{})`. Both roles require unique matching
-compiler events on the same carrier. Immediate receivers, assignments and later
-use, arbitrary or MFA tuples, intervening or otherwise unproven pipelines,
-unknown consumers, or mixed same-line roles remain opaque. The classification
-cost is bounded log-linear:
+compiler event. A non-hazard role is a complete direct key argument to a bounded
+standard-library `Map` operation; the complete first field of a two-element
+tuple returned as a complete `Enum.map/2` function clause whose result flows
+immediately to `Enum.into(%{})`; or one exact local assignment from a
+binary-guarded variable in a function-level rescued definition, when every
+later same-function reference is the complete value of a map field inside an
+indexed `Enum.map/2` call. Each role requires unique matching compiler events on
+the same carrier. Immediate receivers; apply, capture, MFA, key, reassignment,
+or ambiguous assignment sinks; arbitrary tuples; intervening or otherwise
+unproven pipelines; unknown consumers; and mixed same-line roles remain opaque.
+Because interpolation bodies are executable while the literal masker hides
+their text, any later `#{...}` in the function also invalidates the local
+assignment proof. Non-interpolating literal/comment bodies remain inert.
+Function ranges, identifiers, delimiters, and Enum calls are indexed once. The
+classification cost is bounded log-linear:
 O(source bytes + trace events + reflected functions + atom producers ×
-log(indexed pipelines) + emitted candidates). No event rescans an entire source.
+log(indexed roles) + proven local references + emitted candidates). No event
+rescans an entire source.

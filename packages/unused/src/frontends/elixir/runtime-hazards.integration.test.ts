@@ -223,7 +223,50 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
     ).toMatchObject({ supported: true });
   }, 60_000);
 
-  it("keeps receiver, assignment, tuple, intervening, and mixed atom flows opaque", async () => {
+  it("keeps guarded assigned atoms in compiler-confirmed Enum map values as data", async () => {
+    const root = fixture("atom-assigned-data-safe");
+    const trace = runTracer(root);
+    expect(
+      trace.events.filter(
+        (event) =>
+          event.dyn &&
+          event.from_fun === "normalize_entries/2" &&
+          event.to_mod === "String" &&
+          event.name === "to_existing_atom" &&
+          event.arity === 1,
+      ),
+    ).toHaveLength(1);
+    expect(
+      trace.functions.some(
+        (candidate) =>
+          candidate.mod === "NeutralAtomData.Normalizer" && candidate.name === "normalize_entries",
+      ),
+    ).toBe(false);
+
+    const analysis = await analyzeElixirProjectWithGraph(root, { now: new Date(0) });
+    expect(
+      analysis.graph.hazards().filter((hazard) => hazard.hazardClass === "elixir-dynamic-dispatch"),
+    ).toEqual([]);
+    const dead = whyAlive({
+      graph: analysis.graph,
+      reachability: analysis.reachability,
+      claims: analysis.result.claims,
+      query: "NeutralAtomData.Normalizer.genuinely_unused/0",
+      hazardEvaluations: [analysis.hazardEvaluation],
+    });
+    expect(dead).toMatchObject({ outcome: "dead", confidence: "high" });
+    if (dead.outcome !== "dead") throw new Error("expected unrelated dead normalizer export");
+    expect(
+      computeDeletionPlan({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        subject: dead.subject,
+        hazardEvaluations: [analysis.hazardEvaluation],
+      }),
+    ).toMatchObject({ supported: true });
+  }, 60_000);
+
+  it("keeps invocation-sink, tuple, intervening, and mixed atom flows opaque", async () => {
     const analysis = await analyzeElixirProjectWithGraph(fixture("atom-dynamic-receiver"), {
       now: new Date(0),
     });
@@ -231,7 +274,10 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
       .hazards()
       .filter((hazard) => hazard.hazardClass === "elixir-dynamic-dispatch");
     expect(hazards.map((hazard) => hazard.carrierSymbol).sort()).toEqual([
-      expect.stringContaining("assigned/1"),
+      expect.stringContaining("assigned/2"),
+      expect.stringContaining("assigned_apply/2"),
+      expect.stringContaining("assigned_capture/2"),
+      expect.stringContaining("assigned_mfa/2"),
       expect.stringContaining("immediate/1"),
       expect.stringContaining("intervening_pipeline/1"),
       expect.stringContaining("mfa_pipeline/1"),
@@ -264,6 +310,7 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
     "dynamic-local-dispatch",
     "dynamic-global-dispatch",
     "atom-map-key-safe",
+    "atom-assigned-data-safe",
     "atom-dynamic-receiver",
   ])(
     "preserves Elixir claims after mixed-plugin composition: %s",

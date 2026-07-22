@@ -1,0 +1,18 @@
+case: atom-assigned-data-safe
+description: >-
+  A binary-guarded request value converted to an existing atom, assigned, and
+  used only as a map value inside a compiler-confirmed Enum.map remains data.
+  The private normalizer is rescued and cannot impose a workspace-wide dynamic
+  dispatch cap.
+subjects:
+  - kind: export
+    name: NeutralAtomData.Normalizer.normalize/2
+    file: lib/neutral_atom_data/normalizer.ex
+    expected: alive
+    because: The application invokes the public normalization boundary.
+  - kind: export
+    name: NeutralAtomData.Normalizer.genuinely_unused/0
+    file: lib/neutral_atom_data/normalizer.ex
+    expected: dead
+    minConfidence: high
+    because: Atom-valued request data does not make an unrelated export dynamically callable.

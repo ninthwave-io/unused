@@ -1,10 +1,10 @@
 case: atom-dynamic-receiver
 description: >-
-  Immediate receiver dispatch, assignment, arbitrary/MFA tuples, intervening
-  pipelines, nested callbacks, sequenced tuple expressions, and same-line
-  ambiguous atom flows remain opaque. A direct Map-key producer sharing a line
-  with a receiver is not guessed safe because compiler events have no column
-  provenance.
+  Immediate receiver dispatch, apply/capture/MFA assignment sinks, arbitrary
+  tuples, intervening pipelines, nested callbacks, sequenced tuple expressions,
+  and same-line ambiguous atom flows remain opaque. A direct Map-key producer
+  sharing a line with a receiver is not guessed safe because compiler events
+  have no column provenance.
 subjects:
   - kind: file
     name: lib/neutral_atom_flow/target.ex
