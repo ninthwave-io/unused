@@ -2,7 +2,8 @@ case: dynamic-use-helpers
 description: >-
   A conventional web module selects literal use helpers through
   apply(__MODULE__, which, []). Each selected helper is a live compile-time
-  dependency and unrelated functions remain independently claimable.
+  dependency, including when its quote expands nested use macros at the outer
+  callsite, and unrelated functions remain independently claimable.
 subjects:
   - kind: export
     name: NeutralUse.Web.router/0

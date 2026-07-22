@@ -103,6 +103,7 @@ export function extractElixirRuntimeConventions(
   );
   const useEventsBySite = indexUseEventsBySite(traceResult.events);
   const useFactCountsBySite = indexUseFactCountsBySite(sources);
+  const aliasTargetsByCarrierSite = indexAliasTargets(traceResult.events);
 
   const references: ElixirRuntimeReference[] = [];
   const seen = new Set<string>();
@@ -130,19 +131,30 @@ export function extractElixirRuntimeConventions(
     }
 
     for (const match of searchable.matchAll(USE_RE)) {
+      const sourceModule = match[1];
       const toName = match[2];
-      if (match[1] === undefined || toName === undefined) continue;
+      if (sourceModule === undefined || toName === undefined) continue;
       const line = lineAt(source.lineStarts, match.index ?? 0);
       const siteEvents = useEventsBySite.get(dispatchSiteKey(file, line)) ?? [];
-      if (
-        siteEvents.length !== 1 ||
-        useFactCountsBySite.get(dispatchSiteKey(file, line)) !== 1 ||
-        siteEvents[0] === undefined
-      )
-        continue;
-      const useEvent = siteEvents[0];
+      if (useFactCountsBySite.get(dispatchSiteKey(file, line)) !== 1) continue;
+      const dispatcherEvents = siteEvents.filter((event) => dispatchModules.has(event.to_mod));
+      const literalMatches = dispatcherEvents.filter((event) => event.to_mod === sourceModule);
+      // A selected helper may expand to nested `use` calls that the compiler
+      // attributes to the outer source line. Prefer the literal outer module;
+      // retain the existing unique compiler-expansion path for aliases. More
+      // than one viable dispatcher stays conservative.
+      const aliasMatch =
+        dispatcherEvents.length === 1 && dispatcherEvents[0] !== undefined
+          ? compilerConfirmedAlias(dispatcherEvents[0], aliasTargetsByCarrierSite)
+          : false;
+      const useEvent =
+        literalMatches.length === 1
+          ? literalMatches[0]
+          : aliasMatch
+            ? dispatcherEvents[0]
+            : undefined;
+      if (useEvent === undefined) continue;
       const toMod = useEvent.to_mod;
-      if (!dispatchModules.has(toMod)) continue;
       const targets = (functionsByModuleName.get(`${toMod}\0${toName}`) ?? []).filter(
         (candidate) => candidate.arity === 0,
       );
@@ -709,6 +721,14 @@ function indexAliasTargets(
     else targets.add(event.to_mod);
   }
   return index;
+}
+
+function compilerConfirmedAlias(
+  event: TraceEvent,
+  aliasTargetsByCarrierSite: ReadonlyMap<string, ReadonlySet<string>>,
+): boolean {
+  const targets = aliasTargetsByCarrierSite.get(aliasCarrierSiteKey(event));
+  return targets?.size === 1 && targets.has(event.to_mod);
 }
 
 function aliasCarrierSiteKey(event: TraceEvent): string {

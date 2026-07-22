@@ -13,6 +13,8 @@ defmodule NeutralUse.Web do
 
   def controller do
     quote do
+      use NeutralUse.NestedFirst
+      use NeutralUse.NestedSecond
       def kind, do: :controller
     end
   end

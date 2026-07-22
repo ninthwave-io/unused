@@ -21,7 +21,18 @@ afterEach(async () => {
 
 describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
   it("accounts for every literal guarded use-helper invocation without an opaque cap", async () => {
-    const analysis = await analyzeElixirProjectWithGraph(fixture("dynamic-use-helpers"), {
+    const root = fixture("dynamic-use-helpers");
+    const trace = runTracer(root);
+    expect(
+      trace.events
+        .filter(
+          (event) =>
+            event.file.endsWith("controller.ex") && event.line === 2 && event.name === "__using__",
+        )
+        .map((event) => event.to_mod)
+        .sort(),
+    ).toEqual(["NeutralUse.NestedFirst", "NeutralUse.NestedSecond", "NeutralUse.Web"]);
+    const analysis = await analyzeElixirProjectWithGraph(root, {
       now: new Date(0),
     });
     expect(
@@ -36,6 +47,15 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
       hazardEvaluations: [analysis.hazardEvaluation],
     });
     expect(selected).toMatchObject({ outcome: "alive", entrypointKind: "production" });
+    if (selected.outcome !== "alive") throw new Error("expected selected helper to be alive");
+    expect(
+      computeDeletionPlan({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        subject: selected.subject,
+        hazardEvaluations: [analysis.hazardEvaluation],
+      }),
+    ).toMatchObject({ supported: false });
 
     const dead = whyAlive({
       graph: analysis.graph,
@@ -130,12 +150,16 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
       const mixedRoot = await mixedFixture(name);
       const mixed = await analyzeProjectAutoWithGraph(mixedRoot, { now: new Date(0) });
       const projectPrefix = "apps/beam/";
-      const directClaims = direct.result.claims.map((claim) => ({
-        kind: claim.subject.kind,
-        name: claim.subject.name,
-        file: claim.subject.loc.file,
-        confidence: claim.confidence,
-      }));
+      const directClaims = direct.result.claims
+        .map((claim) => ({
+          kind: claim.subject.kind,
+          name: claim.subject.name,
+          file: claim.subject.loc.file,
+          confidence: claim.confidence,
+        }))
+        .sort((left, right) =>
+          `${left.file}\0${left.name ?? ""}`.localeCompare(`${right.file}\0${right.name ?? ""}`),
+        );
       const mixedClaims = mixed.result.claims
         .filter((claim) => claim.language === "ex")
         .map((claim) => ({
@@ -145,7 +169,10 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
             : claim.subject.name,
           file: claim.subject.loc.file.slice(projectPrefix.length),
           confidence: claim.confidence,
-        }));
+        }))
+        .sort((left, right) =>
+          `${left.file}\0${left.name ?? ""}`.localeCompare(`${right.file}\0${right.name ?? ""}`),
+        );
       expect(mixedClaims).toEqual(directClaims);
     },
     120_000,
