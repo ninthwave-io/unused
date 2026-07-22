@@ -9,13 +9,15 @@
  * (`jsonc.ts`), never a general-purpose parser dependency.
  *
  * ## Fields (PRD §6)
- * `entry` (globs, ADDITIVE to zero-config auto-detection — T2.3's frozen
+ * `entry` (file globs, ADDITIVE to zero-config auto-detection — T2.3's frozen
  * no-config contract is untouched; this layers new production entrypoints on
- * top), `project` (globs narrowing what can be CLAIMED without removing graph
+ * top), `entrySymbols` (strict language/file/exportedName roots that keep one
+ * exact public operation alive without making sibling exports surface-live),
+ * `project` (globs narrowing what can be CLAIMED without removing graph
  * nodes or edges), `suppressions` (structured file-glob + claim-kind policy,
  * applied to emitted claims with a mandatory reason),
  * `ignoreDependencies` (names/glob patterns excluded from dependency-unused
- * claims), `workspaces` (per-package `{ entry?, project?, suppressions? }`
+ * claims), `workspaces` (per-package `{ entry?, entrySymbols?, project?, suppressions? }`
  * overrides, ADDITIVE to the root-level globs for that package's own files),
  * `gate: { threshold }` (parsed and validated now; consumed by `unused check`
  * at M7 — this module does not read it), `presets` (an array naming T4.4
@@ -141,7 +143,7 @@ export const EMPTY_CONFIG: UnusedConfig = {
  * A deterministic hash of the resolved effective config (PRD §4
  * `run.configHash`; docs/phasing.md M7 T7.2 "configHash under-hashing" debt,
  * closed here) — covers every field {@link UnusedConfig} carries: `entry`,
- * `project`, `suppressions`, `ignoreDependencies`, `workspaces` overrides,
+ * `entrySymbols`, `project`, `suppressions`, `ignoreDependencies`, `workspaces` overrides,
  * `presets`, `gate`, `ciSecondsPerTestFile`.
  *
  * An earlier version hashed the resolved production-entrypoint set derived
