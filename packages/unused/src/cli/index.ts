@@ -880,6 +880,7 @@ async function runWhyCommand(argv: readonly string[]): Promise<number> {
     reachability: analysis.reachability,
     claims: analysis.result.claims,
     query: parsed.args.subject,
+    hazardEvaluations: analysis.hazardEvaluations,
     ...(performance === undefined ? {} : { performance }),
   });
   if (performance !== undefined) {
@@ -911,6 +912,7 @@ async function runWhyCommand(argv: readonly string[]): Promise<number> {
       graph: analysis.graph,
       reachability: analysis.reachability,
       subject: result.subject,
+      hazardEvaluations: analysis.hazardEvaluations,
       ...(performance === undefined ? {} : { performance }),
     });
     const assemblyStarted = performance?.now();
@@ -1089,6 +1091,7 @@ async function runReportCommand(argv: readonly string[]): Promise<number> {
       graph: analysis.graph,
       reachability: analysis.reachability,
       context: deletionContext,
+      hazardEvaluations: analysis.hazardEvaluations,
       subject:
         claim.subject.kind === "export"
           ? {
@@ -1332,6 +1335,7 @@ export async function run(argv: readonly string[]): Promise<number> {
           graph: graphOutcome.analysis.graph,
           reachability: graphOutcome.analysis.reachability,
           context: deletionContext,
+          hazardEvaluations: graphOutcome.analysis.hazardEvaluations,
           subject:
             claim.subject.kind === "export"
               ? {

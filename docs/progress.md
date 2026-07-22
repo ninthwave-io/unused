@@ -2,6 +2,33 @@
 
 Updated: 2026-07-22. **Pre-v0.1.0 scaling, runtime reachability, and first-class polyglot delivery are technically accepted; the founder release action remains.** No semver release tag has been created.
 
+Active public follow-up — central hazard evaluation and deletion safety: exact
+symbol carriers and explicit `scope-files`, `affected-symbols`, or `none`
+propagation now prevent reachable sibling code or confidence scope from
+awakening dormant hazards. Exact bounded targets carry their cap through
+executable symbol descendants and can activate exact downstream carriers,
+without activating unrelated file siblings. Claims, `why`, and deletion
+planning consume one final captured evaluation per language fragment; active bounded or opaque effects
+refuse deletion, while inactive hazards do not. Qualified Elixir
+`file:Module.function/arity` queries now resolve correctly, and existing
+compiler-proven callback evidence/deletion refusal is retained. Focused coverage
+passes 7 files / 156 tests; the pinned Elixir/Erlang suite passes 84 files /
+1,210 tests with no skips. Typecheck, build, assumption set 1.14, lint baseline,
+boundaries (926 modules / 2,042 dependencies), all corpus gates, installed-
+tarball schema-1.4 JSON, diff, and privacy checks passed before review. Review
+then found repeated scope expansion, eager effect materialization, cross-
+fragment dependency effects, and missing executable descendant closure; all are
+corrected with successor/range/trie indexes, fragment ownership, and one global
+synthetic-symbol queue. An overlapping-scope lock covers range priority and lazy
+`why` effects; a 500-to-8,000-file evaluator probe is near-linear
+(1.679-to-15.730 ms). The fresh full matrix/package/privacy gates pass and
+independent final code/documentation re-review reports no remaining finding.
+The focused local commit remains.
+The separate next public slice is a neutral standalone-script extractor
+regression for anonymous-function arguments and multiline call openings with no
+arguments. Exact resume state is recorded in
+`docs/delivery/polyglot-first-class.md`.
+
 Active public follow-up — dead inbound deletion prerequisites: the accepted
 language-agnostic correction is implemented without changing claims. Core now
 rejects every external ordinary inbound edge at one deterministic stored site;

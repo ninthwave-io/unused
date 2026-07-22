@@ -236,6 +236,63 @@ describe("whyAlive — resolution outcomes", () => {
     expect(r.subject).toMatchObject({ kind: "export", file: "src/a.ts", name: "dup" });
   });
 
+  it("resolves a file-qualified Elixir function whose identity contains an arity slash", () => {
+    const g = new IRGraph();
+    file(g, "lib/neutral/callback.ex");
+    exportSym(g, "lib/neutral/callback.ex", "Neutral.Callback.handle/1", 7);
+
+    const r = ask(g, "lib/neutral/callback.ex:Neutral.Callback.handle/1");
+    expect(r.outcome).toBe("dead");
+    if (r.outcome !== "dead") return;
+    expect(r.subject).toMatchObject({
+      kind: "export",
+      file: "lib/neutral/callback.ex",
+      name: "Neutral.Callback.handle/1",
+      line: 7,
+    });
+  });
+
+  it("reports only an active bounded hazard against its affected symbol", () => {
+    const build = (carrierReachable: boolean) => {
+      const g = new IRGraph();
+      file(g, "lib/application.ex");
+      entrypoint(g, "production", "lib/application.ex", "application-callback");
+      file(g, "lib/router.ex");
+      exportSym(g, "lib/router.ex", "Neutral.Router.dispatch/0");
+      file(g, "lib/handler.ex");
+      exportSym(g, "lib/handler.ex", "Neutral.Handler.possible/0");
+      exportSym(g, "lib/handler.ex", "Neutral.Handler.live/0");
+      staticRef(g, "lib/application.ex", "lib/handler.ex", "Neutral.Handler.live/0");
+      if (carrierReachable) {
+        staticRef(g, "lib/application.ex", "lib/router.ex", "Neutral.Router.dispatch/0");
+      }
+      g.addHazard({
+        file: fileId("lib/router.ex"),
+        carrierSymbol: symbolId("lib/router.ex", "Neutral.Router.dispatch/0"),
+        hazardClass: "elixir-dynamic-dispatch",
+        detail: "bounded neutral dispatch",
+        site: { file: "lib/router.ex", span: { ...SPAN, startLine: 9, endLine: 9 } },
+        affectedSymbols: [symbolId("lib/handler.ex", "Neutral.Handler.possible/0")],
+      });
+      return ask(g, "Neutral.Handler.possible/0");
+    };
+
+    const inactive = build(false);
+    expect(inactive.outcome).toBe("dead");
+    if (inactive.outcome === "dead") expect(inactive.hazards).toEqual([]);
+    const active = build(true);
+    expect(active.outcome).toBe("dead");
+    if (active.outcome === "dead") {
+      expect(active.hazards).toEqual([
+        {
+          hazardClass: "elixir-dynamic-dispatch",
+          detail: "bounded neutral dispatch",
+          site: "lib/router.ex:9",
+        },
+      ]);
+    }
+  });
+
   it("returns not-found for a nonexistent name", () => {
     expect(ask(dupGraph(), "doesNotExist").outcome).toBe("not-found");
   });

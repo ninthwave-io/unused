@@ -5,6 +5,8 @@ import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path
 import {
   computePartitionedReachability,
   emitClaims,
+  evaluateHazards,
+  type HazardEvaluation,
   type PartitionedReachability,
 } from "../../core/analysis/index.js";
 import {
@@ -44,6 +46,7 @@ export interface AnalyzeRustWithGraph {
   readonly reachability: PartitionedReachability;
   readonly claimInputs: FrontendClaimInputs;
   readonly provenance: Provenance;
+  readonly hazardEvaluation: HazardEvaluation;
 }
 
 export async function analyzeRustProject(
@@ -184,12 +187,21 @@ export async function analyzeRustProjectWithGraph(
     claimableFiles,
   };
   const rustcFacts = new Set(uniqueFacts.map((fact) => `${fact.file}\0${fact.name}`));
+  const hazardEvaluation = evaluateHazards({
+    graph,
+    reachability,
+    units: configUnits,
+    analysisFiles: fileSet,
+    dependencies: [],
+    ...(performance === undefined ? {} : { performance }),
+  });
   const emitted = emitClaims({
     graph,
     reachability,
     provenance,
     language: CLAIM_LANGUAGE,
     ...claimInputs,
+    hazardEvaluation,
     ...(performance === undefined ? {} : { performance }),
   })
     .filter((claim) => rustcFacts.has(`${claim.subject.loc.file}\0${claim.subject.name}`))
@@ -231,7 +243,7 @@ export async function analyzeRustProjectWithGraph(
     units: configUnits,
     gateThreshold: config.gate?.threshold ?? "high",
   };
-  return { result, graph, reachability, claimInputs, provenance };
+  return { result, graph, reachability, claimInputs, provenance, hazardEvaluation };
 }
 
 function annotateRustPackages(

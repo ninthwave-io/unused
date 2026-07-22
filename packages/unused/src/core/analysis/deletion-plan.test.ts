@@ -95,6 +95,85 @@ function subjectFile(id: string): string {
 }
 
 describe("computeDeletionPlan", () => {
+  it("refuses bounded dynamic targets and their containing file only while the exact carrier is active", () => {
+    const build = (carrierReachable: boolean): IRGraph => {
+      const graph = new IRGraph();
+      addEntry(graph, "lib/application.ex");
+      addSymbol(graph, "lib/router.ex", "Neutral.Router.dispatch/0");
+      addSymbol(graph, "lib/target.ex", "Neutral.Target.possible/0");
+      if (carrierReachable) {
+        reference(
+          graph,
+          fileId("lib/application.ex"),
+          symbolId("lib/router.ex", "Neutral.Router.dispatch/0"),
+        );
+      }
+      graph.addHazard({
+        file: fileId("lib/router.ex"),
+        carrierSymbol: symbolId("lib/router.ex", "Neutral.Router.dispatch/0"),
+        hazardClass: "elixir-dynamic-dispatch",
+        detail: "bounded neutral dispatch",
+        site: site("lib/router.ex", 8),
+        affectedSymbols: [symbolId("lib/target.ex", "Neutral.Target.possible/0")],
+      });
+      return graph;
+    };
+
+    const active = build(true);
+    const activeReachability = computePartitionedReachability(active);
+    for (const subject of [
+      { kind: "export", file: "lib/target.ex", name: "Neutral.Target.possible/0" } as const,
+      { kind: "file", file: "lib/target.ex" } as const,
+    ]) {
+      expect(
+        computeDeletionPlan({ graph: active, reachability: activeReachability, subject }),
+      ).toMatchObject({
+        supported: false,
+        unsupportedReason:
+          "active elixir-dynamic-dispatch hazard at lib/router.ex:8 prevents proving deletion safe",
+        stages: [],
+      });
+    }
+
+    const inactive = build(false);
+    expect(
+      computeDeletionPlan({
+        graph: inactive,
+        reachability: computePartitionedReachability(inactive),
+        subject: {
+          kind: "export",
+          file: "lib/target.ex",
+          name: "Neutral.Target.possible/0",
+        },
+      }),
+    ).toMatchObject({ supported: true });
+  });
+
+  it("refuses a subject covered by a reachable opaque unit hazard", () => {
+    const graph = new IRGraph();
+    addEntry(graph, "lib/application.ex");
+    addFile(graph, "lib/candidate.ex");
+    graph.addHazard({
+      file: fileId("lib/application.ex"),
+      hazardClass: "elixir-dynamic-dispatch",
+      detail: "opaque neutral dispatch",
+      site: site("lib/application.ex", 12),
+    });
+
+    expect(
+      computeDeletionPlan({
+        graph,
+        reachability: computePartitionedReachability(graph),
+        subject: { kind: "file", file: "lib/candidate.ex" },
+      }),
+    ).toMatchObject({
+      supported: false,
+      unsupportedReason:
+        "active elixir-dynamic-dispatch hazard at lib/application.ex:12 prevents proving deletion safe",
+      stages: [],
+    });
+  });
+
   it("refuses a subject selected by a reachable literal runtime convention", () => {
     const graph = new IRGraph();
     addEntry(graph, "lib/application.ex");

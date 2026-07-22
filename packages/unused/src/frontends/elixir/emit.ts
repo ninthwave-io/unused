@@ -250,7 +250,7 @@ export function emitElixirIR(input: EmitElixirInput): IRGraph {
     if (fn.name === "child_spec" && fn.arity === 1) supervisableModules.add(fn.mod);
   }
   emitModuleHazards(graph, traceResult.modules, functionsByModule, supervisableModules);
-  emitDynamicDispatchHazards(graph, traceResult, moduleByName, dynamicDispatches);
+  emitDynamicDispatchHazards(graph, traceResult, moduleByName, fnByKey, dynamicDispatches);
 
   // --- entrypoints -----------------------------------------------------------
   const seededProd = new Set<string>();
@@ -436,6 +436,7 @@ function emitDynamicDispatchHazards(
   graph: IRGraph,
   traceResult: TraceResult,
   moduleByName: ReadonlyMap<string, ModuleRecord>,
+  fnByKey: ReadonlyMap<string, FunctionRecord>,
   extracted: readonly ElixirDynamicDispatch[],
 ): void {
   const extractedBySite = new Map<string, ElixirDynamicDispatch[]>();
@@ -445,7 +446,15 @@ function emitDynamicDispatchHazards(
     if (bucket === undefined) extractedBySite.set(key, [dispatch]);
     else bucket.push(dispatch);
   }
-  const byFile = new Map<string, { mod: ModuleRecord; dispatches: ElixirDynamicDispatch[] }>();
+  const byCarrier = new Map<
+    string,
+    {
+      mod: ModuleRecord;
+      file: string;
+      carrierSymbol?: string;
+      dispatches: ElixirDynamicDispatch[];
+    }
+  >();
   for (const ev of traceResult.events) {
     if (!ev.dyn) continue;
     if (ev.from_mod === null) continue;
@@ -461,12 +470,25 @@ function emitDynamicDispatchHazards(
         targets: [],
       },
     ];
-    const current = byFile.get(mod.file);
-    if (current === undefined) byFile.set(mod.file, { mod, dispatches: [...dispatches] });
-    else current.dispatches.push(...dispatches);
+    const sourceFn =
+      ev.from_fun === undefined ? undefined : fnByKey.get(`${ev.from_mod}.${ev.from_fun}`);
+    const carrierSymbol =
+      sourceFn === undefined
+        ? undefined
+        : symbolId(sourceFn.file, `${sourceFn.mod}.${sourceFn.name}/${sourceFn.arity}`);
+    const carrierKey = carrierSymbol ?? fileId(mod.file);
+    const current = byCarrier.get(carrierKey);
+    if (current === undefined) {
+      byCarrier.set(carrierKey, {
+        mod,
+        file: mod.file,
+        ...(carrierSymbol === undefined ? {} : { carrierSymbol }),
+        dispatches: [...dispatches],
+      });
+    } else current.dispatches.push(...dispatches);
   }
 
-  for (const [file, { mod, dispatches }] of byFile) {
+  for (const { file, mod, carrierSymbol, dispatches } of byCarrier.values()) {
     const opaque = dispatches.find((dispatch) => dispatch.kind === "opaque");
     const bounded = dispatches.filter((dispatch) => dispatch.kind === "bounded");
     if (opaque === undefined && bounded.length === 0) continue; // exact edges need no cap
@@ -487,6 +509,7 @@ function emitDynamicDispatchHazards(
     if (source === undefined) continue;
     graph.addHazard({
       file: fileId(file),
+      ...(carrierSymbol === undefined ? {} : { carrierSymbol }),
       hazardClass: "elixir-dynamic-dispatch",
       detail:
         affectedSymbols === undefined

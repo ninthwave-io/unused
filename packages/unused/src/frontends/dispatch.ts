@@ -3,7 +3,10 @@
 import { basename, resolve } from "node:path";
 import {
   computePartitionedReachability,
+  createHazardEvaluationContext,
   emitClaims,
+  evaluateHazards,
+  type HazardEvaluation,
   type PartitionedReachability,
 } from "../core/analysis/index.js";
 import {
@@ -41,6 +44,8 @@ export interface AnalyzeAutoWithGraph {
   readonly reachability: PartitionedReachability;
   /** Internal access to the same completion records also published at `result.run.boundaries`. */
   readonly boundaries: readonly BoundaryRunMetadata[];
+  /** One central evaluation per claim-emitting frontend fragment. */
+  readonly hazardEvaluations: readonly HazardEvaluation[];
 }
 
 export type BoundaryRunMetadata = AnalysisBoundary;
@@ -122,6 +127,7 @@ export async function analyzeProjectAutoWithGraph(
       ...analysis,
       result: withCompletedBoundaries(analysis.result, boundaries),
       boundaries,
+      hazardEvaluations: [analysis.hazardEvaluation],
     };
   }
   if (
@@ -149,6 +155,7 @@ export async function analyzeProjectAutoWithGraph(
       ...analysis,
       result: withCompletedBoundaries(analysis.result, boundaries),
       boundaries,
+      hazardEvaluations: [analysis.hazardEvaluation],
     };
   }
 
@@ -217,16 +224,31 @@ export async function analyzeProjectAutoWithGraph(
   warnOnEmptyConfigMatches(config, analyzedFiles, analyzedFiles, units);
 
   const reachability = computePartitionedReachability(graph, options.performance);
-  let claims = fragments.flatMap((fragment) =>
-    emitClaims({
+  const hazardContext = createHazardEvaluationContext(graph);
+  const hazardEvaluations = fragments.map((fragment) =>
+    evaluateHazards({
+      graph,
+      reachability,
+      context: hazardContext,
+      units: fragment.claimInputs.units,
+      analysisFiles: fragment.claimInputs.analysisFiles,
+      dependencies: fragment.claimInputs.dependencies ?? [],
+      ...(options.performance === undefined ? {} : { performance: options.performance }),
+    }),
+  );
+  let claims = fragments.flatMap((fragment, index) => {
+    const hazardEvaluation = hazardEvaluations[index];
+    if (hazardEvaluation === undefined) return [];
+    return emitClaims({
       graph,
       reachability,
       provenance: fragment.provenance,
       language: fragment.language,
       ...fragment.claimInputs,
+      hazardEvaluation,
       ...(options.performance === undefined ? {} : { performance: options.performance }),
-    }).map((claim) => applyClaimAnnotation(claim, fragment)),
-  );
+    }).map((claim) => applyClaimAnnotation(claim, fragment));
+  });
   claims = claims.filter((claim) =>
     claim.subject.kind === "dependency"
       ? !isIgnoredDependency(claim.subject.name, config)
@@ -276,6 +298,7 @@ export async function analyzeProjectAutoWithGraph(
     graph,
     reachability,
     boundaries,
+    hazardEvaluations,
   };
 }
 

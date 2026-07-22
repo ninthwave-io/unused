@@ -296,6 +296,7 @@ function runWhyAlive(analysis: AnalyzeWithGraph, symbol: string): Record<string,
     reachability: analysis.reachability,
     claims: analysis.result.claims,
     query: symbol,
+    hazardEvaluations: [analysis.hazardEvaluation],
   });
 
   switch (result.outcome) {

@@ -293,6 +293,12 @@ export interface HazardAnnotation {
    * `affectedSymbols` separates those roles for bounded runtime dispatch.
    */
   readonly file: string;
+  /**
+   * Exact symbol node whose reachability activates this hazard when the
+   * frontend can prove the dynamic mechanism belongs to one public function.
+   * Absent means the carrier file is the conservative activation fallback.
+   */
+  readonly carrierSymbol?: string;
   /** Cited hazard class (closed enum; scope/cap in the M3 registry). */
   readonly hazardClass: HazardClass;
   /** One-line human-readable "why" (feeds the M3 report/why-path). */

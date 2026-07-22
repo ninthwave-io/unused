@@ -148,7 +148,7 @@ describe("Elixir analysis policy", () => {
       ).toMatchObject({
         supported: false,
         unsupportedReason:
-          "non-re-export inbound reference remains at scripts/module_caller.exs:1; coordinated caller edits or deletion cohort are not modeled",
+          "active elixir-script-opaque hazard at scripts/module_surface.exs:1 prevents proving deletion safe",
       });
 
       const runnable = spawnSync("mix", ["run", "scripts/neutral_bench.exs"], {

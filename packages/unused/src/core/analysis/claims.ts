@@ -32,12 +32,12 @@
  *
  *  - **`computed-dynamic-import` / `computed-require`** (`directory-subtree`,
  *    cap `medium`, carrier-reachable) — while the importer is reachable from a
- *    production/config/test root or an already-active dynamic scope, every file
+ *    production/config/test root or an explicitly propagated dynamic target, every file
  *    whose path starts with the annotation's `subtreePrefix` (the template's
  *    static prefix; the importer's whole package when there is none) is capped;
- *    the file claim AND any dead-export claim of an in-scope file. Activation
- *    closes to a fixed point; an unreachable importer outside that closure
- *    cannot run, so its outgoing hazard caps nothing.
+ *    the file claim AND any dead-export claim of an in-scope file. An indexed
+ *    carrier queue closes activation to a fixed point; an unreachable importer
+ *    outside that closure cannot run, so its outgoing hazard caps nothing.
  *  - **`config-referenced-file`** (`file`, cap `medium`) — the referenced file
  *    (and its exports) is capped, not suppressed: a config-loaded file is
  *    probably-dead, not proven-dead.
@@ -87,8 +87,13 @@ import type {
   TestClaim,
   TestSubject,
 } from "../claims/types.js";
-import { fileId, type HazardAnnotation, type IRGraph } from "../ir/index.js";
-import { type ConfidenceCap, capIsStrongerOrEqual, lookupHazard } from "./hazard-registry.js";
+import { fileId, type IRGraph } from "../ir/index.js";
+import {
+  type AppliedHazardCap,
+  evaluateHazards,
+  type HazardEvaluation,
+} from "./hazard-evaluation.js";
+import { type ConfidenceCap, capIsStrongerOrEqual } from "./hazard-registry.js";
 import type { PerformanceTracker } from "./performance.js";
 import {
   computeReachability,
@@ -106,14 +111,7 @@ const EVIDENCE_SOURCE = "reference-graph";
 const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
 
 /** A confidence cap plus the hazard site that produced it, for the evidence note. */
-interface AppliedCap {
-  readonly cap: ConfidenceCap;
-  /** The hazard's one-line detail (registry-independent, frontend-authored). */
-  readonly detail: string;
-  /** Provenance of the downgrade — the hazard site, rendered `file:line`. */
-  readonly siteFile: string;
-  readonly siteLine: number;
-}
+type AppliedCap = AppliedHazardCap;
 
 /** Non-suppressing caps map to their claim confidence; `no-claim` handled separately. */
 const CAP_CONFIDENCE: Readonly<Record<Exclude<ConfidenceCap, "no-claim">, Confidence>> = {
@@ -212,6 +210,8 @@ export interface EmitClaimsInput {
   readonly units?: readonly { readonly rootRelDir: string }[];
   /** Optional run-local phase/counter collector. */
   readonly performance?: PerformanceTracker;
+  /** Precomputed once for this graph/fragment and reusable by why/deletion planning. */
+  readonly hazardEvaluation?: HazardEvaluation;
 }
 
 /**
@@ -259,13 +259,17 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
   // `fileCap[F]`   caps F's file claim AND F's export claims (directory-subtree,
   //                file scopes). `exportCap[F]` caps only F's export claims
   //                (symbol-set scope). An unregistered class ⇒ project no-claim.
-  const caps = buildHazardCaps(
-    graph,
-    reachability,
-    input.units ?? DEFAULT_UNITS,
-    input.analysisFiles,
-    input.performance,
-  );
+  const caps =
+    input.hazardEvaluation?.graph === graph
+      ? input.hazardEvaluation
+      : evaluateHazards({
+          graph,
+          reachability,
+          ...(input.units === undefined ? {} : { units: input.units }),
+          ...(input.analysisFiles === undefined ? {} : { analysisFiles: input.analysisFiles }),
+          ...(input.dependencies === undefined ? {} : { dependencies: input.dependencies }),
+          ...(input.performance === undefined ? {} : { performance: input.performance }),
+        });
   if (caps.projectNoClaim) {
     input.performance?.set("claims", 0);
     finishClaimPerformance(input.performance, claimStarted, hazardBefore, evidenceBefore);
@@ -464,292 +468,6 @@ function finishClaimPerformance(
       performance.emitAccumulated("shortest-path-evidence", nestedEvidence);
     }
   }
-}
-
-// ---------------------------------------------------------------------------
-// Hazard caps (registry lookup + scope resolution)
-// ---------------------------------------------------------------------------
-
-interface HazardCaps {
-  /** Set ⇒ an unregistered hazard class forced whole-project no-claim. */
-  readonly projectNoClaim: boolean;
-  /** fileId → strongest cap on the file claim and its export claims. */
-  readonly fileCap: ReadonlyMap<string, AppliedCap>;
-  /** fileId → strongest cap on only the whole-file deletion claim. */
-  readonly fileOnlyCap: ReadonlyMap<string, AppliedCap>;
-  /** fileId → strongest cap on the file's export claims only (symbol-set). */
-  readonly exportCap: ReadonlyMap<string, AppliedCap>;
-  /** symbolId → strongest cap on exactly that exported declaration. */
-  readonly symbolCap: ReadonlyMap<string, AppliedCap>;
-  /**
-   * unit `rootRelDir` → the strongest WHOLE-PACKAGE cap owned by that unit — a
-   * `project`-scope hazard, or a `directory-subtree` hazard with an empty prefix
-   * (a computed require/import with no static prefix, a `project-references`
-   * cap), scoped to the unit that owns the hazard site. This is the ceiling a
-   * dependency claim declared in that unit (which has no file to attach a
-   * per-file cap to) is emitted at. A unit absent from the map ⇒ no whole-package
-   * hazard for it ⇒ its dependency claims stay `high`.
-   */
-  readonly unitCap: ReadonlyMap<string, AppliedCap>;
-  /** Resolve a repo-relative POSIX path to its owning unit's `rootRelDir` (deepest containing unit; `""` for the root). */
-  readonly ownerRootRelDir: (path: string) => string;
-}
-
-/** The single-unit default when a caller supplies no workspace boundaries — the whole run is one package (single-package analysis, and every pre-`units` test caller). */
-const DEFAULT_UNITS: readonly { readonly rootRelDir: string }[] = [{ rootRelDir: "" }];
-
-/**
- * Resolve every hazard annotation through the registry into per-subject caps.
- * An unregistered class degrades the whole project to no-claim (never silent —
- * a loud internal warning fires, once per distinct unknown class).
- * Registered carrier-activated annotations are ignored unless their carrier
- * file is reachable in at least one root partition.
- *
- * WHOLE-PACKAGE caps (a `project`-scope hazard, or a `directory-subtree` hazard
- * with no static prefix) scope to the OWNING WORKSPACE UNIT of the hazard site —
- * the deepest workspace boundary in `units` containing the hazard's file — never
- * the whole shared multi-workspace graph. A file/dependency is then capped only
- * when its own owning unit carries such a hazard, so a computed require in one
- * package cannot downgrade a sibling package's claims (reference-codebase smoke §4.3).
- */
-function buildHazardCaps(
-  graph: IRGraph,
-  reachability: PartitionedReachability,
-  units: readonly { readonly rootRelDir: string }[],
-  analysisFiles?: ReadonlySet<string>,
-  performance?: PerformanceTracker,
-): HazardCaps {
-  const started = performance?.now();
-  const fileCap = new Map<string, AppliedCap>();
-  const fileOnlyCap = new Map<string, AppliedCap>();
-  const exportCap = new Map<string, AppliedCap>();
-  const symbolCap = new Map<string, AppliedCap>();
-  let projectNoClaim = false;
-  const warned = new Set<string>();
-
-  // Owning-unit resolver: the deepest unit `rootRelDir` that is a path prefix of
-  // the file (the root unit `""` owns everything no member claims), mirroring the
-  // frontend's `ownerResolver`. Kept core-local (core has no workspace concept of
-  // its own; the boundaries arrive as plain data on `EmitClaimsInput.units`).
-  const unitsByDepth = [...units].sort((a, b) => b.rootRelDir.length - a.rootRelDir.length);
-  const ownerRootRelDir = (path: string): string => {
-    for (const u of unitsByDepth) {
-      if (u.rootRelDir === "" || path === u.rootRelDir || path.startsWith(`${u.rootRelDir}/`)) {
-        return u.rootRelDir;
-      }
-    }
-    return "";
-  };
-
-  // Per-unit whole-package cap (dependency claims + every file the unit owns).
-  const unitCap = new Map<string, AppliedCap>();
-  const raiseUnitCap = (rootRelDir: string, applied: AppliedCap): void => {
-    const current = unitCap.get(rootRelDir);
-    if (current === undefined || capIsStrongerOrEqual(applied.cap, current.cap)) {
-      unitCap.set(rootRelDir, applied);
-    }
-  };
-
-  // Precompute the file-node (id, path) list ONCE: every directory-subtree
-  // hazard scans it, keeping the whole pass O(hazards + files) rather than
-  // O(hazards × files) with a `getNode` per file per hazard.
-  const fileNodes: Array<{ readonly id: string; readonly path: string }> = [];
-  for (const node of graph.nodes()) {
-    if (node.kind === "file" && isInScope(node.path, analysisFiles)) {
-      fileNodes.push({ id: node.id, path: node.path });
-    }
-  }
-
-  const registeredHazards: Array<{
-    readonly hazard: HazardAnnotation;
-    readonly entry: NonNullable<ReturnType<typeof lookupHazard>>;
-  }> = [];
-  for (const hazard of graph.hazards()) {
-    if (!isInScope(hazard.site.file, analysisFiles)) continue;
-    const entry = lookupHazard(hazard.hazardClass);
-    if (entry === undefined) {
-      projectNoClaim = true;
-      if (!warned.has(hazard.hazardClass)) {
-        warned.add(hazard.hazardClass);
-        // The CLAUDE.md degrade-toward-alive invariant: never a silent pass.
-        console.warn(
-          `[unused] unregistered hazard class "${hazard.hazardClass}" at ` +
-            `${hazard.site.file}:${hazard.site.span.startLine} — treating the whole project ` +
-            "as no-claim (conservative). Add it to core/analysis/hazard-registry.ts.",
-        );
-      }
-      continue;
-    }
-    registeredHazards.push({ hazard, entry });
-  }
-
-  // Outgoing dynamic hazards activate to a fixed point. A statically reachable
-  // carrier can load every file in its conservative scope; any such possible
-  // target may itself carry another outgoing dynamic hazard. Treating only the
-  // first carrier as active would incorrectly restore high confidence one hop
-  // later in a dynamic-loader chain.
-  const potentiallyReachableFiles = new Set<string>([
-    ...reachability.production.reachableFiles,
-    ...reachability.config.reachableFiles,
-    ...reachability.test.reachableFiles,
-  ]);
-  const activeHazards = new Set<HazardAnnotation>();
-  let activationChanged = true;
-  while (activationChanged) {
-    performance?.increment("fixedPointIterations");
-    activationChanged = false;
-    for (const { hazard, entry } of registeredHazards) {
-      if (activeHazards.has(hazard)) continue;
-      if (entry.activation === "carrier-reachable" && !potentiallyReachableFiles.has(hazard.file)) {
-        continue;
-      }
-      activeHazards.add(hazard);
-      activationChanged = true;
-      if (entry.activation !== "carrier-reachable") continue;
-      for (const file of filesCoveredByScope(
-        hazard,
-        entry.scope,
-        fileNodes,
-        ownerRootRelDir,
-        graph,
-      )) {
-        if (!potentiallyReachableFiles.has(file.id)) {
-          potentiallyReachableFiles.add(file.id);
-          activationChanged = true;
-        }
-      }
-    }
-  }
-
-  for (const { hazard, entry } of registeredHazards) {
-    if (!activeHazards.has(hazard)) continue;
-    const applied = appliedCap(hazard, entry.cap);
-    if (hazard.affectedSymbols !== undefined) {
-      for (const symbolId of hazard.affectedSymbols) {
-        const symbol = graph.getNode(symbolId);
-        if (symbol?.kind !== "symbol" || !isInScope(symbol.file, analysisFiles)) continue;
-        mergeCap(symbolCap, symbol.id, applied);
-        // A symbol-set hazard protects exports without changing whether the
-        // containing file itself is dead. Other bounded hazards (notably a
-        // dynamic-dispatch target) must also cap whole-file deletion because
-        // deleting that file would remove a possible runtime target.
-        if (entry.scope !== "symbol-set") mergeCap(fileOnlyCap, fileId(symbol.file), applied);
-      }
-      continue;
-    }
-    switch (entry.scope) {
-      case "none":
-        break; // provenance only
-      case "project":
-        // `no-claim` suppresses the whole project; a `medium`/`low` project cap
-        // instead lowers the ceiling of every file the HAZARD'S OWNING UNIT owns
-        // (applied in the post-pass below) and caps that unit's dependency
-        // claims — a member's unresolvable entrypoint caps that member, not the
-        // whole monorepo.
-        if (entry.cap === "no-claim") {
-          projectNoClaim = true;
-        } else {
-          raiseUnitCap(ownerRootRelDir(hazard.site.file), applied);
-        }
-        break;
-      case "file":
-        mergeCap(fileCap, hazard.file, applied);
-        break;
-      case "symbol-set":
-        mergeCap(exportCap, hazard.file, applied);
-        break;
-      case "directory-subtree": {
-        const prefix = hazard.subtreePrefix ?? "";
-        if (prefix === "") {
-          // No static prefix ⇒ the importer's whole workspace package: cap the
-          // hazard site's OWNING UNIT (post-pass below), never the whole run.
-          raiseUnitCap(ownerRootRelDir(hazard.site.file), applied);
-        } else {
-          for (const f of fileNodes) {
-            if (f.path.startsWith(prefix)) mergeCap(fileCap, f.id, applied);
-          }
-        }
-        break;
-      }
-    }
-  }
-
-  // Apply each unit's whole-package cap to every file that unit owns (a member's
-  // cap covers only that member's files; the root unit's cap covers only files
-  // no member owns — vendored top-level files included).
-  if (unitCap.size > 0) {
-    for (const f of fileNodes) {
-      const cap = unitCap.get(ownerRootRelDir(f.path));
-      if (cap !== undefined) mergeCap(fileCap, f.id, cap);
-    }
-  }
-
-  const result = {
-    projectNoClaim,
-    fileCap,
-    fileOnlyCap,
-    exportCap,
-    symbolCap,
-    unitCap,
-    ownerRootRelDir,
-  };
-  if (started !== undefined && performance !== undefined) {
-    performance.finish("hazard-activation", started);
-  }
-  return result;
-}
-
-/** Files a carrier-activated hazard may load, used only for activation closure. */
-function filesCoveredByScope(
-  hazard: HazardAnnotation,
-  scope: NonNullable<ReturnType<typeof lookupHazard>>["scope"],
-  fileNodes: readonly { readonly id: string; readonly path: string }[],
-  ownerRootRelDir: (path: string) => string,
-  graph: IRGraph,
-): readonly { readonly id: string; readonly path: string }[] {
-  if (hazard.affectedSymbols !== undefined) {
-    const affectedFiles = new Set<string>();
-    for (const id of hazard.affectedSymbols) {
-      const node = graph.getNode(id);
-      if (node?.kind === "symbol") affectedFiles.add(fileId(node.file));
-    }
-    return fileNodes.filter((file) => affectedFiles.has(file.id));
-  }
-  const carrier = graph.getNode(hazard.file);
-  const carrierPath = carrier?.kind === "file" ? carrier.path : hazard.site.file;
-  switch (scope) {
-    case "project": {
-      const owner = ownerRootRelDir(carrierPath);
-      return fileNodes.filter((file) => ownerRootRelDir(file.path) === owner);
-    }
-    case "directory-subtree": {
-      const prefix = hazard.subtreePrefix ?? "";
-      if (prefix !== "") return fileNodes.filter((file) => file.path.startsWith(prefix));
-      const owner = ownerRootRelDir(carrierPath);
-      return fileNodes.filter((file) => ownerRootRelDir(file.path) === owner);
-    }
-    case "file":
-    case "symbol-set":
-      return fileNodes.filter((file) => file.id === hazard.file);
-    case "none":
-      return [];
-  }
-}
-
-function appliedCap(hazard: HazardAnnotation, cap: ConfidenceCap): AppliedCap {
-  return {
-    cap,
-    detail: hazard.detail,
-    siteFile: hazard.site.file,
-    siteLine: hazard.site.span.startLine,
-  };
-}
-
-/** Keep the stronger (more restrictive) cap when a subject is in several scopes. */
-function mergeCap(map: Map<string, AppliedCap>, key: string, applied: AppliedCap): void {
-  const current = map.get(key);
-  if (current === undefined || capIsStrongerOrEqual(applied.cap, current.cap))
-    map.set(key, applied);
 }
 
 function strongerCap(a: AppliedCap | undefined, b: AppliedCap | undefined): AppliedCap | undefined {

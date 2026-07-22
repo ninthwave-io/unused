@@ -28,7 +28,7 @@ import { HAZARD_REGISTRY, type HazardClassEntry } from "./hazard-registry.js";
  * wording or the set of globals (a behaviour-affecting change), so a consumer
  * pinning a version can detect it. Independent of the analyzer/tool version.
  */
-export const ASSUMPTION_SET_VERSION = "1.13.0";
+export const ASSUMPTION_SET_VERSION = "1.14.0";
 
 /** One global analysis assumption (independent of any single hazard class). */
 export interface GlobalAssumption {

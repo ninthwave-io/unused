@@ -35,6 +35,7 @@
 
 import type { Claim, Confidence, DeletionPlanSubject, Evidence, Verdict } from "../claims/types.js";
 import { type EntrypointKind, fileId, type IRGraph, symbolId } from "../ir/index.js";
+import { effectsForSubject, evaluateHazards, type HazardEvaluation } from "./hazard-evaluation.js";
 import type { PerformanceTracker } from "./performance.js";
 import { type PartitionedReachability, type Reachability, whyReachable } from "./reachability.js";
 
@@ -123,6 +124,8 @@ export interface WhyAliveInput {
   /** The user-named subject: a bare export name, `file:name`, or a file path. */
   readonly query: string;
   readonly performance?: PerformanceTracker;
+  /** Reuse the evaluations captured during claim emission; one per frontend fragment. */
+  readonly hazardEvaluations?: readonly HazardEvaluation[];
 }
 
 /** Partition scan order — mirrors the claim engine's liveness priority. */
@@ -149,6 +152,13 @@ const EVIDENCE_SOURCE = "reference-graph";
  */
 export function whyAlive(input: WhyAliveInput): WhyAliveResult {
   const { graph, reachability, claims, query } = input;
+  const hazardEvaluations = input.hazardEvaluations ?? [
+    evaluateHazards({
+      graph,
+      reachability,
+      ...(input.performance === undefined ? {} : { performance: input.performance }),
+    }),
+  ];
   const resolution = resolveSubject(graph, claims, query);
 
   if (resolution.kind === "not-found") return { outcome: "not-found", query };
@@ -159,7 +169,7 @@ export function whyAlive(input: WhyAliveInput): WhyAliveResult {
   const { subject, nodeId } = resolution;
   // Dependency claims come from manifest declarations and import evidence,
   // rather than graph reachability. Return their captured evidence directly.
-  if (subject.kind === "dependency") return deadResult(query, subject, graph, claims);
+  if (subject.kind === "dependency") return deadResult(query, subject, claims, hazardEvaluations);
   const isFile = subject.kind === "file";
 
   // Liveness by partition priority (production ▸ config ▸ test).
@@ -168,7 +178,7 @@ export function whyAlive(input: WhyAliveInput): WhyAliveResult {
 
   const everyAlivePartition = PARTITION_ORDER.filter((p) => reaches[p]);
   if (everyAlivePartition.length === 0) {
-    return deadResult(query, subject, graph, claims);
+    return deadResult(query, subject, claims, hazardEvaluations);
   }
 
   const productionOrConfig = reaches.production === true || reaches.config === true;
@@ -264,7 +274,7 @@ function resolveSubject(graph: IRGraph, claims: readonly Claim[], query: string)
   if (colon > 0) {
     const pathPart = normalizePath(trimmed.slice(0, colon));
     const namePart = trimmed.slice(colon + 1);
-    if (namePart !== "" && !namePart.includes("/")) {
+    if (namePart !== "") {
       const fileNode = graph.getNode(fileId(pathPart));
       if (fileNode?.kind === "file") {
         const symId = symbolId(pathPart, namePart);
@@ -451,31 +461,15 @@ function collapseHops(hops: readonly WhyHop[]): WhyHop[] {
 function deadResult(
   query: string,
   subject: WhySubjectRef,
-  graph: IRGraph,
   claims: readonly Claim[],
+  hazardEvaluations: readonly HazardEvaluation[],
 ): WhyAliveResult {
   const claim = findClaim(claims, subject);
-  const fileNodeId = fileId(subject.file);
-  // "the hazard classes checked" (cli-ux §4): the hazards that could have kept
-  // this subject alive or capped it. Two ways a hazard covers the subject:
-  //  - it is attached directly to the subject's file (a `file`/`symbol-set`/
-  //    `config-referenced-file` annotation), or
-  //  - it is a `directory-subtree` hazard whose static prefix contains the
-  //    subject (a computed `import()`/`require()` elsewhere reaching into this
-  //    file's directory — the one that capped `src/mods/alpha.ts` to medium
-  //    even though its site is the importer, not the subject).
-  const hazards: WhyHazard[] = graph
-    .hazards()
-    .filter(
-      (h) =>
-        h.file === fileNodeId ||
-        (h.subtreePrefix !== undefined && subject.file.startsWith(h.subtreePrefix)),
-    )
-    .map((h) => ({
-      hazardClass: h.hazardClass,
-      detail: h.detail,
-      site: `${h.site.file}:${h.site.span.startLine}`,
-    }));
+  const hazards: WhyHazard[] = effectsForSubject(hazardEvaluations, subject).map((effect) => ({
+    hazardClass: effect.hazardClass,
+    detail: effect.detail,
+    site: `${effect.siteFile}:${effect.siteLine}`,
+  }));
 
   const evidence: readonly Evidence[] =
     claim !== undefined

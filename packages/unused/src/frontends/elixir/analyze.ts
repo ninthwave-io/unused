@@ -22,6 +22,8 @@ import { basename, join } from "node:path";
 import {
   computePartitionedReachability,
   emitClaims,
+  evaluateHazards,
+  type HazardEvaluation,
   type PartitionedReachability,
 } from "../../core/analysis/index.js";
 import {
@@ -62,6 +64,7 @@ export interface AnalyzeElixirWithGraph {
   readonly reachability: PartitionedReachability;
   readonly claimInputs: FrontendClaimInputs;
   readonly provenance: Provenance;
+  readonly hazardEvaluation: HazardEvaluation;
   readonly deferredContributions?: ReadonlyMap<string, GraphContribution>;
 }
 
@@ -230,12 +233,19 @@ export async function analyzeElixirProjectWithGraph(
     claimableFiles: new Set(analyzedFiles.filter((file) => isClaimable(file, config, configUnits))),
   };
 
+  const hazardEvaluation = evaluateHazards({
+    graph,
+    reachability,
+    dependencies: [],
+    ...(performance === undefined ? {} : { performance }),
+  });
   const emittedClaims = emitClaims({
     graph,
     reachability,
     provenance,
     fileLineCounts,
     language: CLAIM_LANGUAGE,
+    hazardEvaluation,
     ...(performance === undefined ? {} : { performance }),
   }).filter(
     (claim) =>
@@ -298,6 +308,7 @@ export async function analyzeElixirProjectWithGraph(
     reachability,
     claimInputs,
     provenance,
+    hazardEvaluation,
     ...(deferredContributions.size === 0 ? {} : { deferredContributions }),
   };
 }

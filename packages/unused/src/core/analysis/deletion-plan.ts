@@ -18,6 +18,13 @@ import {
   SCHEMA_VERSION,
 } from "../claims/types.js";
 import { fileId, type IREdge, IRGraph, type IRNode, symbolId } from "../ir/index.js";
+import {
+  createHazardEvaluationContext,
+  effectsForSubject,
+  evaluateHazards,
+  type HazardEvaluation,
+  type HazardEvaluationContext,
+} from "./hazard-evaluation.js";
 import type { PerformanceTracker } from "./performance.js";
 import { computePartitionedReachability, type PartitionedReachability } from "./reachability.js";
 
@@ -39,6 +46,8 @@ export interface ComputeDeletionPlanInput {
   readonly context?: DeletionPlanningContext;
   /** Optional run-local phase/counter collector. */
   readonly performance?: PerformanceTracker;
+  /** Reuse the evaluations captured during claim emission; one per frontend fragment. */
+  readonly hazardEvaluations?: readonly HazardEvaluation[];
 }
 
 /** Read-only indexes shared by every deletion plan over one captured graph. */
@@ -46,6 +55,8 @@ export interface DeletionPlanningContext {
   readonly graph: IRGraph;
   readonly ordinaryInboundByTarget: ReadonlyMap<string, readonly IREdge[]>;
   readonly reverseReExportsByTarget: ReadonlyMap<string, readonly IREdge[]>;
+  readonly hazardContext: HazardEvaluationContext;
+  readonly hazardEvaluationsByReachability: WeakMap<object, readonly HazardEvaluation[]>;
 }
 
 /** Build the O(E) inbound index once for a captured graph. */
@@ -60,7 +71,13 @@ export function createDeletionPlanningContext(graph: IRGraph): DeletionPlanningC
     if (inbound === undefined) index.set(edge.to, [edge]);
     else inbound.push(edge);
   }
-  return { graph, ordinaryInboundByTarget, reverseReExportsByTarget };
+  return {
+    graph,
+    ordinaryInboundByTarget,
+    reverseReExportsByTarget,
+    hazardContext: createHazardEvaluationContext(graph),
+    hazardEvaluationsByReachability: new WeakMap(),
+  };
 }
 
 /** Compute a deterministic, language-agnostic counterfactual deletion plan. */
@@ -97,6 +114,35 @@ export function computeDeletionPlan(input: ComputeDeletionPlanInput): DeletionPl
 
   const context =
     input.context?.graph === graph ? input.context : createDeletionPlanningContext(graph);
+  let hazardEvaluations = input.hazardEvaluations;
+  if (hazardEvaluations === undefined) {
+    hazardEvaluations = context.hazardEvaluationsByReachability.get(reachability);
+    if (hazardEvaluations === undefined) {
+      hazardEvaluations = [
+        evaluateHazards({
+          graph,
+          reachability,
+          context: context.hazardContext,
+          ...(input.performance === undefined ? {} : { performance: input.performance }),
+        }),
+      ];
+      context.hazardEvaluationsByReachability.set(reachability, hazardEvaluations);
+    }
+  }
+  const hazardBlocker = effectsForSubject(hazardEvaluations, subject)[0];
+  if (hazardBlocker !== undefined) {
+    return finish({
+      schemaVersion: SCHEMA_VERSION,
+      selected: subject,
+      supported: false,
+      unsupportedReason:
+        `active ${hazardBlocker.hazardClass} hazard at ` +
+        `${hazardBlocker.siteFile}:${hazardBlocker.siteLine} prevents proving deletion safe`,
+      reExportEdits: [],
+      stages: [],
+    });
+  }
+
   const directBlockingInbound = findBlockingInboundReference(
     graph,
     context,

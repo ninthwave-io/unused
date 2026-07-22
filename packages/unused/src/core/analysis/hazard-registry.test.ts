@@ -64,11 +64,13 @@ describe("HAZARD_REGISTRY — scope/cap per class group (T3.1a)", () => {
       scope: "directory-subtree",
       cap: "medium",
       activation: "carrier-reachable",
+      propagation: "scope-files",
     });
     expectEntry("computed-require", {
       scope: "directory-subtree",
       cap: "medium",
       activation: "carrier-reachable",
+      propagation: "scope-files",
     });
   });
 
@@ -144,6 +146,11 @@ describe("HAZARD_REGISTRY — scope/cap per class group (T3.1a)", () => {
       }
       expect(entry.activation, cls).toBe("always");
     }
+  });
+
+  it("separates dynamic confidence scope from activation propagation", () => {
+    expect(HAZARD_REGISTRY["elixir-dynamic-dispatch"].propagation).toBe("affected-symbols");
+    expect(HAZARD_REGISTRY["rustler-ambiguous-registration"].propagation).toBe("none");
   });
 
   it("standalone script uncertainty is scoped to that file at medium", () => {

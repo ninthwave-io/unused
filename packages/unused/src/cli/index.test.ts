@@ -2239,7 +2239,7 @@ describe("unused CLI — why (T8.2, cli-ux §4)", () => {
       expect(JSON.parse(deletion.stdout)).toMatchObject({
         supported: false,
         unsupportedReason:
-          "non-re-export inbound reference remains at lib/neutral_mfa/runtime_config.ex:4; coordinated caller edits or deletion cohort are not modeled",
+          "active elixir-dynamic-dispatch hazard at lib/neutral_mfa/runtime.ex:4 prevents proving deletion safe",
       });
     },
     30_000,
@@ -2260,7 +2260,7 @@ describe("unused CLI — why (T8.2, cli-ux §4)", () => {
       expect(JSON.parse(deletion.stdout)).toMatchObject({
         supported: false,
         unsupportedReason:
-          "non-re-export inbound reference remains at lib/neutral_use/router.ex:2; coordinated caller edits or deletion cohort are not modeled",
+          "active elixir-dynamic-dispatch hazard at lib/neutral_use/web.ex:5 prevents proving deletion safe",
       });
     },
     30_000,

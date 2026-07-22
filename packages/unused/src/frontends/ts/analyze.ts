@@ -61,6 +61,8 @@ import { getTsconfig } from "get-tsconfig";
 import {
   computePartitionedReachability,
   emitClaims,
+  evaluateHazards,
+  type HazardEvaluation,
   type PartitionedReachability,
   type PerformanceTracker,
 } from "../../core/analysis/index.js";
@@ -264,6 +266,8 @@ export interface AnalyzeWithGraph {
   /** Inputs needed to re-emit this frontend's claims after repository graph merge. */
   readonly claimInputs: FrontendClaimInputs;
   readonly provenance: Provenance;
+  /** Central hazard result shared by claims, why, and deletion planning. */
+  readonly hazardEvaluation: HazardEvaluation;
 }
 
 /**
@@ -736,6 +740,13 @@ export async function analyzeProjectWithGraph(
     claimableFiles: new Set(filesRel.filter((file) => isClaimable(file, config, configUnits))),
   };
 
+  const hazardEvaluation = evaluateHazards({
+    graph,
+    reachability,
+    units: units.map((unit) => ({ rootRelDir: unit.rootRelDir })),
+    dependencies,
+    ...(performance === undefined ? {} : { performance }),
+  });
   const emittedClaims = emitClaims({
     graph,
     reachability,
@@ -748,6 +759,7 @@ export async function analyzeProjectWithGraph(
     // tsconfig `references`) scopes to the OWNING unit, not the whole run (T4/
     // reference-codebase smoke §4.3). Single-package: one root unit ⇒ whole-run, as before.
     units: units.map((u) => ({ rootRelDir: u.rootRelDir })),
+    hazardEvaluation,
     ...(performance === undefined ? {} : { performance }),
   }).filter(
     (claim) =>
@@ -800,7 +812,7 @@ export async function analyzeProjectWithGraph(
     units: units.map((u) => ({ rootRelDir: u.rootRelDir, name: u.name })),
     gateThreshold: config.gate?.threshold ?? "high",
   };
-  return { result, graph, reachability, claimInputs, provenance };
+  return { result, graph, reachability, claimInputs, provenance, hazardEvaluation };
 }
 
 // ---------------------------------------------------------------------------

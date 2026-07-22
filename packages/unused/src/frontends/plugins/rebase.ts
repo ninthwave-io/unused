@@ -144,6 +144,12 @@ function rebaseHazard(
   return {
     ...hazard,
     file: ids.get(hazard.file) ?? hazard.file,
+    ...(hazard.carrierSymbol === undefined
+      ? {}
+      : {
+          carrierSymbol:
+            ids.get(hazard.carrierSymbol) ?? prefixNodeId(hazard.carrierSymbol, prefix),
+        }),
     site: rebaseSite(hazard.site, prefix),
     ...(hazard.subtreePrefix === undefined || hazard.subtreePrefix === ""
       ? {}

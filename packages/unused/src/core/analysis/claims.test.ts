@@ -15,7 +15,11 @@ import {
   symbolId,
 } from "../ir/index.js";
 import { type DependencyClaimInput, emitClaims } from "./claims.js";
+import { computeDeletionPlan } from "./deletion-plan.js";
+import { effectsForSubject, evaluateHazards } from "./hazard-evaluation.js";
+import { PerformanceTracker } from "./performance.js";
 import { computePartitionedReachability } from "./reachability.js";
+import { whyAlive } from "./why.js";
 
 const PROVENANCE: Provenance = {
   analyzer: "ts-reference-graph",
@@ -136,6 +140,10 @@ function run(g: IRGraph, fileLineCounts?: Map<string, number>): Claim[] {
     provenance: PROVENANCE,
     ...(fileLineCounts !== undefined ? { fileLineCounts } : {}),
   });
+}
+
+function claimConfidence(claims: readonly Claim[], name: string): string | undefined {
+  return claims.find((claim) => claim.subject.name === name)?.confidence;
 }
 
 /** Compact projection for assertions. */
@@ -438,6 +446,319 @@ describe("hazard registry — scoped effects (T3.1)", () => {
     );
   });
 
+  it("activates a dynamic hazard from its exact carrier symbol, not a reachable sibling function", () => {
+    const build = (dispatchReachable: boolean): Claim[] => {
+      const g = new IRGraph();
+      addEntry(g, "lib/application.ex");
+      addSymbol(g, "lib/router.ex", "Neutral.Router.live/0");
+      addSymbol(g, "lib/router.ex", "Neutral.Router.dispatch/0");
+      addSymbol(g, "lib/handlers.ex", "Neutral.Handlers.possible/0");
+      ref(
+        g,
+        "lib/application.ex",
+        symbolId("lib/router.ex", "Neutral.Router.live/0"),
+        "static",
+        "Neutral.Router.live/0",
+      );
+      ref(g, "lib/application.ex", fileId("lib/handlers.ex"), "side-effect");
+      if (dispatchReachable) {
+        ref(
+          g,
+          "lib/application.ex",
+          symbolId("lib/router.ex", "Neutral.Router.dispatch/0"),
+          "static",
+          "Neutral.Router.dispatch/0",
+        );
+      }
+      g.addHazard({
+        file: fileId("lib/router.ex"),
+        carrierSymbol: symbolId("lib/router.ex", "Neutral.Router.dispatch/0"),
+        hazardClass: "elixir-dynamic-dispatch",
+        detail: "bounded neutral dispatch",
+        site: site("lib/router.ex"),
+        affectedSymbols: [symbolId("lib/handlers.ex", "Neutral.Handlers.possible/0")],
+      });
+      const reachability = computePartitionedReachability(g);
+      expect(
+        reachability.production.reachableSymbols.has(
+          symbolId("lib/router.ex", "Neutral.Router.dispatch/0"),
+        ),
+      ).toBe(dispatchReachable);
+      return run(g);
+    };
+
+    expect(claimConfidence(build(false), "Neutral.Handlers.possible/0")).toBe("high");
+    expect(claimConfidence(build(true), "Neutral.Handlers.possible/0")).toBe("medium");
+  });
+
+  it("propagates a bounded dispatch to an exact symbol without activating a file carrier beside it", () => {
+    const g = new IRGraph();
+    addEntry(g, "lib/application.ex");
+    addSymbol(g, "lib/router.ex", "Neutral.Router.dispatch/0");
+    addSymbol(g, "lib/target.ex", "Neutral.Target.possible/0");
+    addFile(g, "lib/unrelated.ex");
+    ref(
+      g,
+      "lib/application.ex",
+      symbolId("lib/router.ex", "Neutral.Router.dispatch/0"),
+      "static",
+      "Neutral.Router.dispatch/0",
+    );
+    g.addHazard({
+      file: fileId("lib/router.ex"),
+      carrierSymbol: symbolId("lib/router.ex", "Neutral.Router.dispatch/0"),
+      hazardClass: "elixir-dynamic-dispatch",
+      detail: "bounded neutral dispatch",
+      site: site("lib/router.ex"),
+      affectedSymbols: [symbolId("lib/target.ex", "Neutral.Target.possible/0")],
+    });
+    g.addHazard({
+      file: fileId("lib/target.ex"),
+      hazardClass: "computed-dynamic-import",
+      detail: "dormant file-level loader beside the possible function",
+      site: site("lib/target.ex"),
+      subtreePrefix: "lib/unrelated",
+    });
+
+    expect(run(g).find((claim) => claim.subject.loc.file === "lib/unrelated.ex")?.confidence).toBe(
+      "high",
+    );
+  });
+
+  it("caps executable descendants and activates their exact downstream carriers", () => {
+    const g = new IRGraph();
+    addEntry(g, "lib/application.ex");
+    addSymbol(g, "lib/router.ex", "Neutral.Router.dispatch/0");
+    addSymbol(g, "lib/first.ex", "Neutral.First.possible/0");
+    addSymbol(g, "lib/second.ex", "Neutral.Second.called/0");
+    addSymbol(g, "lib/final.ex", "Neutral.Final.possible/0");
+    ref(
+      g,
+      "lib/application.ex",
+      symbolId("lib/router.ex", "Neutral.Router.dispatch/0"),
+      "static",
+      "Neutral.Router.dispatch/0",
+    );
+    ref(g, "lib/application.ex", fileId("lib/first.ex"), "side-effect");
+    ref(g, "lib/application.ex", fileId("lib/second.ex"), "side-effect");
+    ref(g, "lib/application.ex", fileId("lib/final.ex"), "side-effect");
+    g.addEdge({
+      kind: "references",
+      from: symbolId("lib/first.ex", "Neutral.First.possible/0"),
+      to: symbolId("lib/second.ex", "Neutral.Second.called/0"),
+      referenceKind: "static",
+      site: site("lib/first.ex"),
+      name: "Neutral.Second.called/0",
+    });
+    g.addHazard({
+      file: fileId("lib/router.ex"),
+      carrierSymbol: symbolId("lib/router.ex", "Neutral.Router.dispatch/0"),
+      hazardClass: "elixir-dynamic-dispatch",
+      detail: "first bounded neutral dispatch",
+      site: site("lib/router.ex"),
+      affectedSymbols: [symbolId("lib/first.ex", "Neutral.First.possible/0")],
+    });
+    g.addHazard({
+      file: fileId("lib/second.ex"),
+      carrierSymbol: symbolId("lib/second.ex", "Neutral.Second.called/0"),
+      hazardClass: "elixir-dynamic-dispatch",
+      detail: "downstream bounded neutral dispatch",
+      site: site("lib/second.ex"),
+      affectedSymbols: [symbolId("lib/final.ex", "Neutral.Final.possible/0")],
+    });
+
+    const claims = run(g);
+    expect(claimConfidence(claims, "Neutral.First.possible/0")).toBe("medium");
+    expect(claimConfidence(claims, "Neutral.Second.called/0")).toBe("medium");
+    expect(claimConfidence(claims, "Neutral.Final.possible/0")).toBe("medium");
+  });
+
+  it("keeps dependency effects isolated to their owning frontend fragment", () => {
+    const g = new IRGraph();
+    addEntry(g, "lib/application.ex");
+    addFile(g, "src/index.ts");
+    g.addHazard({
+      file: fileId("lib/application.ex"),
+      hazardClass: "elixir-dynamic-dispatch",
+      detail: "opaque neutral dispatch",
+      site: site("lib/application.ex"),
+    });
+    const reachability = computePartitionedReachability(g);
+    const typescript = evaluateHazards({
+      graph: g,
+      reachability,
+      analysisFiles: new Set(["src/index.ts"]),
+      dependencies: [{ packageName: "neutral-dependency", loc: { file: "package.json" } }],
+    });
+    const elixir = evaluateHazards({
+      graph: g,
+      reachability,
+      analysisFiles: new Set(["lib/application.ex"]),
+      dependencies: [],
+    });
+
+    expect(
+      effectsForSubject([typescript, elixir], {
+        kind: "dependency",
+        file: "package.json",
+        name: "neutral-dependency",
+      }),
+    ).toEqual([]);
+  });
+
+  it("caps test-reachable targets reached independently by a production-active hazard", () => {
+    const g = new IRGraph();
+    addEntry(g, "lib/application.ex");
+    addTestEntry(g, "test/router_test.exs");
+    addSymbol(g, "lib/router.ex", "Neutral.Router.dispatch/0");
+    addSymbol(g, "lib/first.ex", "Neutral.First.possible/0");
+    addSymbol(g, "lib/second.ex", "Neutral.Second.called/0");
+    ref(
+      g,
+      "lib/application.ex",
+      symbolId("lib/router.ex", "Neutral.Router.dispatch/0"),
+      "static",
+      "Neutral.Router.dispatch/0",
+    );
+    ref(
+      g,
+      "test/router_test.exs",
+      symbolId("lib/first.ex", "Neutral.First.possible/0"),
+      "static",
+      "Neutral.First.possible/0",
+    );
+    g.addEdge({
+      kind: "references",
+      from: symbolId("lib/first.ex", "Neutral.First.possible/0"),
+      to: symbolId("lib/second.ex", "Neutral.Second.called/0"),
+      referenceKind: "static",
+      site: site("lib/first.ex"),
+      name: "Neutral.Second.called/0",
+    });
+    g.addHazard({
+      file: fileId("lib/router.ex"),
+      carrierSymbol: symbolId("lib/router.ex", "Neutral.Router.dispatch/0"),
+      hazardClass: "elixir-dynamic-dispatch",
+      detail: "production-active bounded dispatch",
+      site: site("lib/router.ex"),
+      affectedSymbols: [symbolId("lib/first.ex", "Neutral.First.possible/0")],
+    });
+
+    const claims = run(g);
+    expect(claims.find((claim) => claim.subject.loc.file === "lib/first.ex")).toMatchObject({
+      verdict: "test-only",
+      confidence: "medium",
+    });
+    expect(claims.find((claim) => claim.subject.loc.file === "lib/second.ex")).toMatchObject({
+      verdict: "test-only",
+      confidence: "medium",
+    });
+  });
+
+  it("shares one captured evaluation across claims, why, and deletion planning", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/loader.ts");
+    addFile(g, "src/plugins/dead.ts");
+    hazard(g, "src/loader.ts", "computed-dynamic-import", "src/plugins/");
+    const reachability = computePartitionedReachability(g);
+    const performance = new PerformanceTracker();
+    const evaluation = evaluateHazards({ graph: g, reachability, performance });
+    const claims = emitClaims({
+      graph: g,
+      reachability,
+      provenance: PROVENANCE,
+      performance,
+      hazardEvaluation: evaluation,
+    });
+
+    expect(
+      whyAlive({
+        graph: g,
+        reachability,
+        claims,
+        query: "src/plugins/dead.ts",
+        performance,
+        hazardEvaluations: [evaluation],
+      }).outcome,
+    ).toBe("dead");
+    expect(
+      computeDeletionPlan({
+        graph: g,
+        reachability,
+        subject: { kind: "file", file: "src/plugins/dead.ts" },
+        performance,
+        hazardEvaluations: [evaluation],
+      }).supported,
+    ).toBe(false);
+    expect(performance.snapshot().counters.fixedPointIterations).toBe(1);
+  });
+
+  it("combines overlapping subtree effects lazily while retaining the strongest cap", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/loader.ts");
+    addFile(g, "src/plugins/narrow/candidate.ts");
+    addFile(g, "src/plugins/narrow/broken.ts");
+    hazard(g, "src/loader.ts", "computed-dynamic-import", "src/plugins/");
+    hazard(g, "src/loader.ts", "project-references", "src/plugins/narrow/");
+    hazard(g, "src/plugins/narrow/broken.ts", "parse-error");
+    const reachability = computePartitionedReachability(g);
+    const evaluation = evaluateHazards({ graph: g, reachability });
+    const claims = emitClaims({
+      graph: g,
+      reachability,
+      provenance: PROVENANCE,
+      hazardEvaluation: evaluation,
+    });
+
+    expect(claims.find((claim) => claim.subject.loc.file.endsWith("candidate.ts"))).toMatchObject({
+      confidence: "medium",
+    });
+    expect(claims.find((claim) => claim.subject.loc.file.endsWith("broken.ts"))).toBeUndefined();
+    const candidateWhy = whyAlive({
+      graph: g,
+      reachability,
+      claims,
+      query: "src/plugins/narrow/candidate.ts",
+      hazardEvaluations: [evaluation],
+    });
+    expect(candidateWhy).toMatchObject({
+      outcome: "dead",
+      hazards: [{ hazardClass: "computed-dynamic-import" }, { hazardClass: "project-references" }],
+    });
+    const brokenWhy = whyAlive({
+      graph: g,
+      reachability,
+      claims,
+      query: "src/plugins/narrow/broken.ts",
+      hazardEvaluations: [evaluation],
+    });
+    expect(brokenWhy).toMatchObject({
+      outcome: "dead",
+      hazards: expect.arrayContaining([
+        expect.objectContaining({ hazardClass: "computed-dynamic-import" }),
+        expect.objectContaining({ hazardClass: "project-references" }),
+        expect.objectContaining({ hazardClass: "parse-error" }),
+      ]),
+    });
+  });
+
+  it("drains a reverse-ordered loader chain in one indexed activation pass", () => {
+    const g = new IRGraph();
+    const count = 200;
+    addEntry(g, "src/root.ts");
+    for (let index = count - 1; index >= 0; index -= 1) {
+      const file = `src/layer_${index}/loader.ts`;
+      addFile(g, file);
+      hazard(g, file, "computed-dynamic-import", `src/layer_${index + 1}/`);
+    }
+    ref(g, "src/root.ts", fileId("src/layer_0/loader.ts"), "side-effect");
+    const performance = new PerformanceTracker();
+    const reachability = computePartitionedReachability(g);
+    emitClaims({ graph: g, reachability, provenance: PROVENANCE, performance });
+
+    expect(performance.snapshot().counters.fixedPointIterations).toBe(1);
+  });
+
   it("bounds a symbol-set hazard without suppressing its owning file", () => {
     const dead = new IRGraph();
     addEntry(dead, "lib/application.ex");
@@ -462,7 +783,17 @@ describe("hazard registry — scoped effects (T3.1)", () => {
     addEntry(reachable, "lib/application.ex");
     addSymbol(reachable, "lib/server.ex", "Neutral.Server.handle_call/3");
     addSymbol(reachable, "lib/server.ex", "Neutral.Server.ordinary/0");
+    addSymbol(reachable, "lib/helper.ex", "Neutral.Helper.ordinary/0");
     ref(reachable, "lib/application.ex", fileId("lib/server.ex"), "side-effect");
+    ref(reachable, "lib/application.ex", fileId("lib/helper.ex"), "side-effect");
+    reachable.addEdge({
+      kind: "references",
+      from: symbolId("lib/server.ex", "Neutral.Server.handle_call/3"),
+      to: symbolId("lib/helper.ex", "Neutral.Helper.ordinary/0"),
+      referenceKind: "static",
+      site: site("lib/server.ex"),
+      name: "Neutral.Helper.ordinary/0",
+    });
     reachable.addHazard({
       file: fileId("lib/server.ex"),
       hazardClass: "elixir-behaviour-callback",
@@ -478,6 +809,7 @@ describe("hazard registry — scoped effects (T3.1)", () => {
     expect(
       reachableClaims.find((claim) => claim.subject.name.endsWith("ordinary/0")),
     ).toMatchObject({ verdict: "unused", confidence: "high" });
+    expect(claimConfidence(reachableClaims, "Neutral.Helper.ordinary/0")).toBe("high");
   });
 
   it("config-referenced-file yields a file claim at medium (scoped, not suppressed)", () => {

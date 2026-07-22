@@ -28,11 +28,22 @@ export {
   surfaceNameHasUniqueOrigin,
 } from "./deletion-plan.js";
 export {
+  type AppliedHazardCap,
+  createHazardEvaluationContext,
+  effectsForSubject,
+  evaluateHazards,
+  type HazardEvaluation,
+  type HazardEvaluationContext,
+  type HazardEvaluationInput,
+  type HazardSubject,
+} from "./hazard-evaluation.js";
+export {
   type ConfidenceCap,
   capIsStrongerOrEqual,
   HAZARD_REGISTRY,
   type HazardActivation,
   type HazardClassEntry,
+  type HazardPropagation,
   type HazardScope,
   lookupHazard,
 } from "./hazard-registry.js";

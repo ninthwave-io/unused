@@ -991,3 +991,124 @@ optional-parentheses/capture coverage, separate opaque and bounded hazards,
 framework-owned path rules, shared carrier cache, one-time exact-load membership
 set, and both adversarial scaling series. No private access or review artifact
 entered the repository.
+
+### Central hazard evaluation and deletion-safety follow-up
+
+Status: complete and independently approved
+
+Resume objective: make hazard activation and subject effects a single captured
+analysis result shared by claims, `why`, and deletion planning, while preventing
+a reachable sibling function from activating a dormant dynamic mechanism.
+
+Frozen public design and acceptance:
+
+- a hazard may identify an exact carrier symbol; file carrier is the conservative
+  fallback when no exact symbol exists;
+- carrier activation starts from the partitioned reachable file/symbol indexes
+  and drains an indexed queue. Each hazard class declares propagation separately
+  from confidence scope: `scope-files`, executable `affected-symbols`, or `none`;
+- confidence scope never implicitly activates every hazard inside that scope.
+  A bounded Elixir target propagates through exact static/runtime/safety symbol
+  descendants, including exact downstream carriers, but never to an unrelated
+  symbol merely sharing a file. An opaque unit cap does not awaken dormant code;
+- one final merged-graph evaluation per captured language fragment is passed to
+  claims, `why`, and deletion planning. Final fragment evaluations share one
+  graph-wide node/hazard/edge index; ordinary report and fix planning reuse the
+  results rather than evaluating hazards per claim or deletion simulation;
+- deletion planning refuses an active bounded or opaque hazard-covered subject,
+  while inactive hazards do not block. Exact callback/runtime edges continue to
+  refuse deletion through the ordinary inbound-reference rule;
+- qualified Elixir `file:Module.function/arity` queries resolve as exports and
+  retain their real reachability/hazard evidence; and
+- keep the producer/sink tracer-classification audit outside this slice unless
+  required for correctness. Schema 1.4 and claim ids remain unchanged.
+
+Implemented public coverage:
+
+- a reachable sibling cannot activate an exact dormant carrier; the exact
+  reachable carrier does activate it;
+- exact affected-symbol propagation does not activate a separate file-carrier
+  hazard in the same target file;
+- affected executable descendants inherit the bounded cap and activate an exact
+  downstream carrier, while non-propagating behaviour hazards remain exact;
+- a reverse-ordered 200-layer carrier chain drains through one queue evaluation;
+- mixed-fragment dependency evidence cannot inherit another language's unit
+  effect, and claims/`why`/deletion reuse leaves the fixed-point counter at one;
+- active bounded and opaque subjects refuse deletion while inactive subjects
+  remain eligible;
+- `why` reports active effects only and resolves a neutral qualified Elixir
+  function query; and
+- compiler-proven Elixir callbacks retain their existing alive evidence and
+  deletion refusal.
+
+Verification checkpoint (2026-07-22):
+
+- focused coverage passes 7 files / 156 tests; the complete suite under Elixir
+  1.20.2 / Erlang 29.0.3 passes 84 files / 1,210 tests with no skips;
+- typecheck, build, assumption-set 1.14 generation/sync, lint (the established
+  2 warnings / 48 infos), dependency boundaries (926 modules / 2,042
+  dependencies), and diff checks pass;
+- all corpus gates retain zero false positives, confidence violations, and
+  unlabelled claims: TypeScript 52 cases / 237 subjects (precision 1.0, recall
+  0.826530612244898), Elixir 15 cases (precision 1.0, recall
+  0.9473684210526315, no toolchain skips), Rust 4 cases (precision 1.0, recall
+  0.8333333333333334), and polyglot 1 case (precision/recall 1.0);
+- a packed tarball installs under Node 22.16.0, contains the CLI, schema,
+  README, LICENSE, and package metadata, and emits diagnostic-free schema-1.4
+  JSON from a neutral TypeScript entrypoint; and
+- scans of the complete public diff and new evaluator for consuming-project
+  identifiers, host paths, private-key markers, and common credential forms are
+  clean.
+
+Independent review drove the corrections below. Final code and documentation
+re-review reports no remaining finding; only the focused commit remains.
+
+Review correction checkpoint:
+
+- sorted prefix intervals plus a successor index return each newly propagated
+  file at most once, including overlapping scopes;
+- an interval heap applies strongest subtree caps without a hazard-by-file scan,
+  while a prefix trie and unit descriptors resolve `why`/deletion effects lazily
+  instead of retaining O(hazards × files) references;
+- a single synthetic-symbol queue carries one deterministic originating hazard
+  through executable adjacency, so each newly possible symbol is drained once;
+- final mixed-fragment evaluations share one graph context, dependency subjects
+  are fragment-owned, and reusable deletion contexts cache their fallback
+  evaluation; and
+- the built-in analyzers still perform a bounded preliminary local evaluation
+  to derive fragment claim annotations before conventions/bridges are merged.
+  That local graph is distinct from the final captured repository graph; the
+  final shared result is the one used by claims, `why`, and deletion planning.
+
+The corrected focused suite passes 7 files / 156 tests and typecheck/build pass.
+A seven-repeat neutral direct evaluator probe (all files, hazards, and scopes
+retained) measured these medians on Node 22.16.0:
+
+| Files | Active hazards | Median evaluation |
+| ---: | ---: | ---: |
+| 500 | 250 | 1.679 ms |
+| 1,000 | 500 | 3.092 ms |
+| 2,000 | 1,000 | 3.088 ms |
+| 4,000 | 2,000 | 6.337 ms |
+| 8,000 | 4,000 | 15.730 ms |
+
+The curve is near-linear over a 16× workload increase. A fresh post-review run
+produced the complete test/static/corpus/package/privacy evidence above. The
+installed CLI emits one neutral claim as diagnostic-free schema-1.4 JSON.
+
+Residual deferred edge: if tracing can attribute a dynamic mechanism only to a
+file fallback (for example an unreflected private producer), an exact synthetic
+symbol descendant does not awaken that unrelated file carrier. The separate
+producer/sink tracer-classification audit must decide how to encode such private
+delegation without restoring sibling-wide activation.
+
+Next exact action: make one focused local commit without pushing, then resume
+the separately recorded standalone-script slice.
+
+Separate next neutral-fixture slice (do not fold it into this commit): extend
+the standalone-script literal remote-call extractor for a call whose arguments
+contain an anonymous `fn -> ... end`, and for a multiline call whose opening
+line contains no arguments. Independently generated fixtures must prove the
+literal target stays alive, `why` exposes the source edge, and deletion planning
+refuses target-only deletion. No consuming-project input or wording may enter
+the public fixture or documentation.

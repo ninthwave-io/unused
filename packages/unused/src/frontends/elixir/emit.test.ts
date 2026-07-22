@@ -150,7 +150,12 @@ describe("emitElixirIR — clean scenario", () => {
     const reachability = computePartitionedReachability(graph);
     const callbackId = symbolId("lib/app/worker.ex", "App.Worker.handle_call/3");
     expect(reachability.production.reachableSymbols.has(callbackId)).toBe(true);
-    const why = whyAlive({ graph, reachability, claims, query: "App.Worker.handle_call/3" });
+    const why = whyAlive({
+      graph,
+      reachability,
+      claims,
+      query: "lib/app/worker.ex:App.Worker.handle_call/3",
+    });
     expect(why).toMatchObject({ outcome: "alive", testOnly: false });
     if (why.outcome !== "alive") throw new Error("expected behaviour callback liveness");
     expect(why.paths[0]?.hops.at(-1)).toMatchObject({
@@ -400,6 +405,16 @@ const DYNAMIC: TraceResult = {
 
 describe("emitElixirIR — dynamic dispatch", () => {
   const claims = claimsFor(DYNAMIC);
+
+  it("attributes a traced dispatch to its exact reflected public-function carrier", () => {
+    const graph = emitElixirIR({ traceResult: DYNAMIC, configReferencedModules: new Set() });
+    expect(
+      graph.hazards().find((hazard) => hazard.hazardClass === "elixir-dynamic-dispatch"),
+    ).toMatchObject({
+      file: fileId("lib/app/router.ex"),
+      carrierSymbol: symbolId("lib/app/router.ex", "App.Router.dispatch/1"),
+    });
+  });
 
   it("caps a dead function to medium when the unit performs apply/3", () => {
     const c = claim(claims, "App.Handlers.dead_handler/0");

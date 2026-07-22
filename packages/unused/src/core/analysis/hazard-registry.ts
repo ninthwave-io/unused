@@ -15,10 +15,11 @@
  *    `medium`/`low` downgrade (PRD §4 confidence contract), `no-claim`
  *    suppresses entirely.
  *  - **activation** — whether the annotation always applies, or only while its
- *    carrier file is reachable from a production, config, or test root, or is
- *    itself inside an already-active outgoing hazard's conservative scope. The
- *    latter is computed to a fixed point: dead code cannot dynamically load
- *    anything, but a dynamically loadable carrier can.
+ *    exact carrier symbol (when supplied) or carrier file is reachable from a
+ *    production, config, or test root. Active hazards may propagate only
+ *    through their explicit propagation rule. The indexed queue reaches a
+ *    fixed point without rescanning the graph: dead code cannot dynamically
+ *    load anything, but a dynamically loadable carrier can.
  *  - **rationale** — the per-hazard downgrade clause the assumption-set doc is
  *    generated from (T3.3).
  *
@@ -66,10 +67,22 @@ export type ConfidenceCap = "medium" | "low" | "no-claim";
 /** When a registered annotation is allowed to affect claims. */
 export type HazardActivation = "always" | "carrier-reachable";
 
+/**
+ * Which nodes a carrier-activated hazard may make eligible to activate another
+ * hazard. This is deliberately separate from {@link HazardScope}: confidence
+ * scope says which claims are uncertain, while propagation says which code may
+ * actually execute another dynamic mechanism. `affected-symbols` includes the
+ * exact targets and their statically proven executable symbol descendants, but
+ * never unrelated symbols merely sharing a file.
+ */
+export type HazardPropagation = "none" | "scope-files" | "affected-symbols";
+
 export interface HazardClassEntry {
   readonly hazardClass: HazardClass;
   readonly scope: HazardScope;
   readonly activation: HazardActivation;
+  /** Required for carrier-activated hazards; always-active hazards default to `none`. */
+  readonly propagation?: HazardPropagation;
   /** Ignored for `scope: "none"` (no subject is ever in scope). */
   readonly cap: ConfidenceCap;
   /** One-line downgrade clause; feeds the generated assumption set (T3.3). */
@@ -86,17 +99,19 @@ export const HAZARD_REGISTRY: Readonly<Record<HazardClass, HazardClassEntry>> = 
     hazardClass: "computed-dynamic-import",
     scope: "directory-subtree",
     activation: "carrier-reachable",
+    propagation: "scope-files",
     cap: "medium",
     rationale:
-      "When its carrier file is reachable from a production, config, test, or already-active dynamic-hazard scope, a dynamic import() with a computed specifier may resolve at runtime to any module under the specifier's static prefix (or, when there is no static prefix, the importer's own workspace package — never the whole monorepo: a computed import in one package cannot reach a sibling package's private modules). Files in that scope cannot be proven unreferenced, so they are capped at medium confidence. An unreachable carrier does not activate the hazard.",
+      "When its carrier is reachable from a production, config, test, or explicitly propagated dynamic-hazard target, a dynamic import() with a computed specifier may resolve at runtime to any module under the specifier's static prefix (or, when there is no static prefix, the importer's own workspace package — never the whole monorepo: a computed import in one package cannot reach a sibling package's private modules). Files in that scope cannot be proven unreferenced, so they are capped at medium confidence. An unreachable carrier does not activate the hazard.",
   },
   "computed-require": {
     hazardClass: "computed-require",
     scope: "directory-subtree",
     activation: "carrier-reachable",
+    propagation: "scope-files",
     cap: "medium",
     rationale:
-      "When its carrier file is reachable from a production, config, test, or already-active dynamic-hazard scope, a require() with a computed (non-string-literal) argument may resolve at runtime to any module under the argument's static prefix (or, when there is no static prefix, the importer's own workspace package — never the whole monorepo: a computed require in one package cannot reach a sibling package's private modules). Files in that scope cannot be proven unreferenced, so they are capped at medium confidence. An unreachable carrier does not activate the hazard.",
+      "When its carrier is reachable from a production, config, test, or explicitly propagated dynamic-hazard target, a require() with a computed (non-string-literal) argument may resolve at runtime to any module under the argument's static prefix (or, when there is no static prefix, the importer's own workspace package — never the whole monorepo: a computed require in one package cannot reach a sibling package's private modules). Files in that scope cannot be proven unreferenced, so they are capped at medium confidence. An unreachable carrier does not activate the hazard.",
   },
   "computed-cjs-exports": {
     hazardClass: "computed-cjs-exports",
@@ -254,9 +269,10 @@ export const HAZARD_REGISTRY: Readonly<Record<HazardClass, HazardClassEntry>> = 
     hazardClass: "elixir-dynamic-dispatch",
     scope: "project",
     activation: "carrier-reachable",
+    propagation: "affected-symbols",
     cap: "medium",
     rationale:
-      "When its carrier file is reachable from a production, config, test, or already-active dynamic-hazard scope, a file that performs dynamic dispatch — `apply/3`, `Kernel.apply/3`, `:erlang.apply/3`, or a `Module.concat`/atom-computed module target — can invoke at runtime a module and function that no static reference names. The resolved target is structurally invisible to the compiler tracer and to `mix xref` alike (confirmed in the ADR 0011 research). When source arguments bound the candidate set, the annotation names the exact affected symbols and only those symbols (plus their whole-file deletion claims) are capped at medium; a literal exact target is emitted as a runtime edge instead. When the module/function identity remains opaque, the annotation omits targets and the whole workspace unit that owns the dispatching file remains capped at medium. An unreachable carrier does not activate either form.",
+      "When its exact public-function carrier (or conservative file fallback) is reachable from a production, config, test, or explicitly affected dynamic target, code that performs dynamic dispatch — `apply/3`, `Kernel.apply/3`, `:erlang.apply/3`, or a `Module.concat`/atom-computed module target — can invoke at runtime a module and function that no static reference names. The resolved target is structurally invisible to the compiler tracer and to `mix xref` alike (confirmed in the ADR 0011 research). When source arguments bound the candidate set, the annotation names the exact affected symbols; those symbols and their statically proven executable symbol descendants (plus their whole-file deletion claims) are capped at medium, while a literal exact target is emitted as a runtime edge instead. Activation can continue through that exact executable symbol closure, never through unrelated functions sharing a file. When the module/function identity remains opaque, the annotation omits targets and the whole workspace unit that owns the dispatching file remains capped at medium without synthetically activating dormant hazards elsewhere in that unit. An unreachable carrier does not activate either form.",
   },
   "elixir-script-opaque": {
     hazardClass: "elixir-script-opaque",
@@ -278,6 +294,7 @@ export const HAZARD_REGISTRY: Readonly<Record<HazardClass, HazardClassEntry>> = 
     hazardClass: "rustler-ambiguous-registration",
     scope: "symbol-set",
     activation: "carrier-reachable",
+    propagation: "none",
     cap: "no-claim",
     rationale:
       "A reachable Rust or Elixir source file uses Rustler registration syntax whose literal module/function/arity identity cannot be proven (for example a computed init module, an unsupported NIF rename, or duplicate loaders). Runtime dispatch may therefore reach any convention-exposed symbol in that file. Its symbol surface is not claimed; unrelated files remain fully analyzable. An unreachable carrier does not activate the hazard.",

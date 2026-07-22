@@ -1,7 +1,7 @@
 <!-- GENERATED FILE — do not edit by hand. Regenerate with `pnpm run assumptions`.
      Source: packages/unused/src/core/analysis/assumption-set.ts + hazard-registry.ts. -->
 
-# Analysis assumption set (v1.13.0)
+# Analysis assumption set (v1.14.0)
 
 `unused`'s `high`-confidence verdicts hold under the assumptions enumerated
 here (PRD §4): `high` means "safe to act without re-deriving the reference
@@ -112,7 +112,7 @@ A computed CommonJS export assignment (`module.exports[k] = …` / `exports[k] =
 - **Scope:** directory-subtree
 - **Confidence cap:** medium
 
-When its carrier file is reachable from a production, config, test, or already-active dynamic-hazard scope, a dynamic import() with a computed specifier may resolve at runtime to any module under the specifier's static prefix (or, when there is no static prefix, the importer's own workspace package — never the whole monorepo: a computed import in one package cannot reach a sibling package's private modules). Files in that scope cannot be proven unreferenced, so they are capped at medium confidence. An unreachable carrier does not activate the hazard.
+When its carrier is reachable from a production, config, test, or explicitly propagated dynamic-hazard target, a dynamic import() with a computed specifier may resolve at runtime to any module under the specifier's static prefix (or, when there is no static prefix, the importer's own workspace package — never the whole monorepo: a computed import in one package cannot reach a sibling package's private modules). Files in that scope cannot be proven unreferenced, so they are capped at medium confidence. An unreachable carrier does not activate the hazard.
 
 ### computed-require
 
@@ -120,7 +120,7 @@ When its carrier file is reachable from a production, config, test, or already-a
 - **Scope:** directory-subtree
 - **Confidence cap:** medium
 
-When its carrier file is reachable from a production, config, test, or already-active dynamic-hazard scope, a require() with a computed (non-string-literal) argument may resolve at runtime to any module under the argument's static prefix (or, when there is no static prefix, the importer's own workspace package — never the whole monorepo: a computed require in one package cannot reach a sibling package's private modules). Files in that scope cannot be proven unreferenced, so they are capped at medium confidence. An unreachable carrier does not activate the hazard.
+When its carrier is reachable from a production, config, test, or explicitly propagated dynamic-hazard target, a require() with a computed (non-string-literal) argument may resolve at runtime to any module under the argument's static prefix (or, when there is no static prefix, the importer's own workspace package — never the whole monorepo: a computed require in one package cannot reach a sibling package's private modules). Files in that scope cannot be proven unreferenced, so they are capped at medium confidence. An unreachable carrier does not activate the hazard.
 
 ### conditional-exports-divergence
 
@@ -168,7 +168,7 @@ An Elixir module that declares one or more behaviours (`@behaviour`, or `use Gen
 - **Scope:** project
 - **Confidence cap:** medium
 
-When its carrier file is reachable from a production, config, test, or already-active dynamic-hazard scope, a file that performs dynamic dispatch — `apply/3`, `Kernel.apply/3`, `:erlang.apply/3`, or a `Module.concat`/atom-computed module target — can invoke at runtime a module and function that no static reference names. The resolved target is structurally invisible to the compiler tracer and to `mix xref` alike (confirmed in the ADR 0011 research). When source arguments bound the candidate set, the annotation names the exact affected symbols and only those symbols (plus their whole-file deletion claims) are capped at medium; a literal exact target is emitted as a runtime edge instead. When the module/function identity remains opaque, the annotation omits targets and the whole workspace unit that owns the dispatching file remains capped at medium. An unreachable carrier does not activate either form.
+When its exact public-function carrier (or conservative file fallback) is reachable from a production, config, test, or explicitly affected dynamic target, code that performs dynamic dispatch — `apply/3`, `Kernel.apply/3`, `:erlang.apply/3`, or a `Module.concat`/atom-computed module target — can invoke at runtime a module and function that no static reference names. The resolved target is structurally invisible to the compiler tracer and to `mix xref` alike (confirmed in the ADR 0011 research). When source arguments bound the candidate set, the annotation names the exact affected symbols; those symbols and their statically proven executable symbol descendants (plus their whole-file deletion claims) are capped at medium, while a literal exact target is emitted as a runtime edge instead. Activation can continue through that exact executable symbol closure, never through unrelated functions sharing a file. When the module/function identity remains opaque, the annotation omits targets and the whole workspace unit that owns the dispatching file remains capped at medium without synthetically activating dormant hazards elsewhere in that unit. An unreachable carrier does not activate either form.
 
 ### elixir-phoenix-runtime
 
