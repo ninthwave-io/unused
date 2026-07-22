@@ -593,7 +593,9 @@ Implementation and verification:
   duplicate records; trace reads are size-bounded before allocation;
 - production/test module and function re-emission must be semantically equal,
   and production-owned test edges are discarded only when an equivalent
-  production edge exists; novel facts make the test partition partial;
+  production edge exists; an additive edge from a compatibly re-emitted module
+  is retained as test-scoped after strict owner-source validation, while novel
+  module/function semantics or unprovable ownership make the partition partial;
 - effective dependency build paths and `:app` resource contracts come from
   `Mix.Dep` in each phase: required resources are validated, absent optional or
   `compile: false, app: false` artifacts remain optional, `app: false` requires
@@ -628,6 +630,59 @@ Implementation and verification:
 - the privacy scan finds zero consuming-project identifiers, absolute user
   paths, credential/private-key markers, or non-neutral source material in the
   tracked diff and untracked delivery files.
+
+#### Test-scoped production-edge follow-up
+
+Status: implementation and public verification complete; independent review pending
+
+Resume objective: retain additive `MIX_ENV=test` references emitted by a
+semantically compatible production module without weakening the fail-closed
+ownership boundary or relabelling evidence provenance.
+
+Design and acceptance:
+
+- discard exact production event duplicates; accept a novel event from a
+  production-owned module only after its test reflection is semantically
+  compatible;
+- require the event's exact reflected owner source, or normalize only a single
+  safe extensionless compiler pseudo-source to that unique owner; ownerless
+  events remain restricted to the explicit test inventory, and all ambiguous,
+  external, substituted, path-like, or extension-bearing sources fail closed;
+- for an exact semantic duplicate only, allow a raw compiler/library source
+  that exactly matches the bounded provenance recorded when production
+  validation normalized that same event to its owner; keep this weakly held,
+  internal, and limited to actually normalized production events so ordinary
+  event streams incur no duplicate provenance allocation;
+- represent the accepted event as a test-scoped IR edge: production/config
+  traverse shared edges, while the effective test world traverses shared plus
+  test edges from immutable roots retaining their actual ids, kinds, and
+  reasons;
+- derive test-only claims by subtracting production/config reachability; make
+  `why`, per-test zombie walks, and deletion consequences honor the same edge
+  activity without introducing synthetic roots;
+- neutral generated Mix coverage must prove both exact-owner and extensionless
+  pseudo-source cases, plus complete/partial merge negatives; shared-edge and
+  production/config regressions must remain green; and
+- before commit: synchronize assumption set 1.11, run all public quality gates,
+  corpus gates, packaging and privacy smokes, then obtain independent review.
+
+Verification checkpoint (2026-07-22):
+
+- targeted graph, merge, deletion, reporting, CLI, and MCP coverage passes 7
+  files / 260 tests with 8 expected environment-gated skips; the neutral
+  real-Mix suite passes 24/24;
+- the full Elixir-equipped suite passes 83 files / 1,168 tests with no skips;
+  typecheck, build, assumption-set 1.11 sync, lint (the established 2 warnings /
+  48 infos), dependency boundaries (923 modules / 2,014 dependencies), and diff
+  checks pass;
+- all corpus gates retain zero false positives, confidence violations, and
+  unlabelled claims: TypeScript 52 cases / 237 subjects (precision 1.0, recall
+  0.826530612244898), Elixir 13 cases / 33 subjects (precision 1.0, recall
+  0.9090909090909091, no toolchain skips), Rust 4 cases (precision 1.0, recall
+  0.8333333333333334), and polyglot 1 case (precision/recall 1.0); and
+- a packed tarball installs under Node 22.16.0 and emits diagnostic-free schema
+  1.4.0 JSON. Its archive contains the CLI, claim-run schema, README, LICENSE,
+  and package metadata. The public-diff privacy scan is clean.
 
 #### Load-free BEAM reflection follow-up
 

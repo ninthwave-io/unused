@@ -33,10 +33,13 @@ const TEST_ONLY: WhyReportInput = {
   testOnly: true,
   paths: [
     {
-      entrypointKind: "test",
-      entrypointReason: "test-file",
+      entrypointKind: "production",
+      entrypointReason: "application-callback",
       hops: [
-        { file: "src/helper.spec.ts", entrypoint: { kind: "test", reason: "test-file" } },
+        {
+          file: "lib/application.ex",
+          entrypoint: { kind: "production", reason: "application-callback" },
+        },
         { file: "src/helper.ts", line: 3, symbol: "helper" },
       ],
     },
@@ -143,13 +146,13 @@ describe("renderWhy", () => {
 
   it("test-only (tier-2 note)", () => {
     expect(renderWhy(TEST_ONLY, false)).toMatchInlineSnapshot(`
-      "src/helper.ts:3 helper — test-only (production-dead, kept alive by tests)
+      "src/helper.ts:3 helper — test-only (reachable only in the test environment)
 
-        reachable only from a test entrypoint:
-          src/helper.spec.ts (test entrypoint) → src/helper.ts:3 helper
+        reachable only in the test environment from:
+          lib/application.ex (production entrypoint) → src/helper.ts:3 helper
 
-        tier-2: no production or config entrypoint reaches this. It is alive only
-        because a test imports it — deleting it (and its zombie test) removes dead weight.
+        tier-2: the production and config worlds do not reach this. Its path above
+        preserves the real root; use \`unused why --delete\` before removal.
       "
     `);
   });

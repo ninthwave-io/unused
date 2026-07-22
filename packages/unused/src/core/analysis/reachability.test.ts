@@ -95,6 +95,7 @@ function ref(
   toId: string,
   referenceKind: ReferenceKind,
   name?: string,
+  partitions?: IREdge["partitions"],
 ): IREdge {
   const edge: IREdge = {
     kind: "references",
@@ -103,6 +104,7 @@ function ref(
     to: toId,
     site: site(fromRel),
     ...(name !== undefined ? { name } : {}),
+    ...(partitions !== undefined ? { partitions } : {}),
   };
   g.addEdge(edge);
   return edge;
@@ -263,15 +265,92 @@ describe("partitioned reachability (T5.1)", () => {
     );
 
     const p = computePartitionedReachability(g);
-    // Production code is in the production partition, not the test partition.
+    // The test world includes the production baseline, while the independent
+    // production walk remains the authority for alive-vs-test-only priority.
     expect(p.production.reachableFiles.has(fileId("src/prod.ts"))).toBe(true);
-    expect(p.test.reachableFiles.has(fileId("src/prod.ts"))).toBe(false);
+    expect(p.test.reachableFiles.has(fileId("src/prod.ts"))).toBe(true);
     // The test-only file is reachable only from the test partition.
     expect(p.test.reachableFiles.has(fileId("src/feature.ts"))).toBe(true);
     expect(p.production.reachableFiles.has(fileId("src/feature.ts"))).toBe(false);
     expect(p.config.reachableFiles.size).toBe(0);
     // The production partition still records the production root.
     expect(p.production.productionEntrypointFiles.size).toBe(1);
+    // The effective test world preserves the production root's provenance while
+    // adding test-only edges and roots.
+    expect(p.test.productionEntrypointFiles.size).toBe(1);
+  });
+
+  it("activates test-scoped edges from production and config baselines only in the test world", () => {
+    const g = new IRGraph();
+    addEntry(g, "lib/application.ex");
+    addSymbol(g, "lib/test_target.ex", "TestTarget.callback/0");
+    ref(
+      g,
+      "lib/application.ex",
+      symbolId("lib/test_target.ex", "TestTarget.callback/0"),
+      "static",
+      "TestTarget.callback/0",
+      ["test"],
+    );
+    addConfigEntry(g, "config/runtime.exs");
+    addSymbol(g, "lib/config_target.ex", "ConfigTarget.callback/0");
+    ref(
+      g,
+      "config/runtime.exs",
+      symbolId("lib/config_target.ex", "ConfigTarget.callback/0"),
+      "static",
+      "ConfigTarget.callback/0",
+      ["test"],
+    );
+    addTestEntry(g, "test/neutral_test.exs");
+
+    const p = computePartitionedReachability(g);
+    for (const [id, entryKind, reason] of [
+      [symbolId("lib/test_target.ex", "TestTarget.callback/0"), "production", "main"],
+      [symbolId("lib/config_target.ex", "ConfigTarget.callback/0"), "config", "config-root"],
+    ] as const) {
+      expect(p.production.reachableSymbols.has(id)).toBe(false);
+      expect(p.config.reachableSymbols.has(id)).toBe(false);
+      expect(p.test.reachableSymbols.has(id)).toBe(true);
+      expect(whyReachable(p.test, id).entrypoint).toMatchObject({
+        entryKind,
+        reason,
+      });
+    }
+  });
+
+  it("leaves ordinary shared edges active in production, config, and the effective test world", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addConfigEntry(g, "vite.config.ts");
+    addTestEntry(g, "test/index.test.ts");
+    addSymbol(g, "src/prod.ts", "prod");
+    addSymbol(g, "src/config.ts", "config");
+    addSymbol(g, "src/test.ts", "test");
+    ref(g, "src/index.ts", symbolId("src/prod.ts", "prod"), "static", "prod");
+    ref(g, "vite.config.ts", symbolId("src/config.ts", "config"), "static", "config");
+    ref(g, "test/index.test.ts", symbolId("src/test.ts", "test"), "static", "test");
+
+    const p = computePartitionedReachability(g);
+    expect(p.production.reachableSymbols.has(symbolId("src/prod.ts", "prod"))).toBe(true);
+    expect(p.config.reachableSymbols.has(symbolId("src/config.ts", "config"))).toBe(true);
+    expect(p.test.reachableSymbols.has(symbolId("src/prod.ts", "prod"))).toBe(true);
+    expect(p.test.reachableSymbols.has(symbolId("src/config.ts", "config"))).toBe(true);
+    expect(p.test.reachableSymbols.has(symbolId("src/test.ts", "test"))).toBe(true);
+  });
+
+  it("does not resolve a production named import through a test-scoped star re-export", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addFile(g, "src/barrel.ts");
+    addSymbol(g, "src/target.ts", "value");
+    ref(g, "src/index.ts", fileId("src/barrel.ts"), "static", "value");
+    ref(g, "src/barrel.ts", fileId("src/target.ts"), "re-export", "*", ["test"]);
+
+    const p = computePartitionedReachability(g);
+    expect(p.production.reachableSymbols.has(symbolId("src/target.ts", "value"))).toBe(false);
+    expect(p.config.reachableSymbols.has(symbolId("src/target.ts", "value"))).toBe(false);
+    expect(p.test.reachableSymbols.has(symbolId("src/target.ts", "value"))).toBe(true);
   });
 
   it("a symbol imported by BOTH production and a test is in the production partition (the shared-util trap)", () => {

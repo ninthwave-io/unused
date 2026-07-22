@@ -14,9 +14,9 @@ exports[`renderTtyReport — cli-ux §2 mockup shape (four degradation modes) > 
   [33m◐[0m getFlags   src/flags.ts:9
       unused, but dynamic import nearby
 
-[1mTEST-ONLY (production-dead, kept alive by tests)[0m
+[1mTEST-ONLY (reachable only in test environment)[0m
   [32m●[0m OrderMapper   src/orders/mapper.ts:30
-      \`OrderMapper\` is reachable only from test entrypoint…
+      \`OrderMapper\` is reachable only in the test…
   [32m●[0m orders.spec.ts   orders.spec.ts:1
       exercises only test-only or dead code
   1 zombie test — ~14s CI per run (estimated).
@@ -38,8 +38,8 @@ unused  export  formatCurrency  src/utils/currency.ts:12  high  no refs from any
 unused  export  parseLegacyId  src/utils/ids.ts:44  high  no refs from any entrypoint
 unused  export  getFlags  src/flags.ts:9  medium  unused, but dynamic import nearby
 
-TEST-ONLY (production-dead, kept alive by tests)
-test-only  export  OrderMapper  src/orders/mapper.ts:30  high  \`OrderMapper\` is reachable only from test entrypoint \`orders.spec.ts\`; no production or config entrypoint references it.
+TEST-ONLY (reachable only in test environment)
+test-only  export  OrderMapper  src/orders/mapper.ts:30  high  \`OrderMapper\` is reachable only in the test environment from root \`orders.spec.ts\`; the production and config worlds do not reach it.
 test-only  test  orders.spec.ts  orders.spec.ts:1  high  exercises only test-only or dead code
   1 zombie test -- ~14s CI per run (estimated).
 
@@ -60,8 +60,8 @@ unused  export  formatCurrency  src/utils/currency.ts:12  high  no refs from any
 unused  export  parseLegacyId  src/utils/ids.ts:44  high  no refs from any entrypoint
 unused  export  getFlags  src/flags.ts:9  medium  unused, but dynamic import nearby
 
-TEST-ONLY (production-dead, kept alive by tests)
-test-only  export  OrderMapper  src/orders/mapper.ts:30  high  \`OrderMapper\` is reachable only from test entrypoint \`orders.spec.ts\`; no production or config entrypoint references it.
+TEST-ONLY (reachable only in test environment)
+test-only  export  OrderMapper  src/orders/mapper.ts:30  high  \`OrderMapper\` is reachable only in the test environment from root \`orders.spec.ts\`; the production and config worlds do not reach it.
 test-only  test  orders.spec.ts  orders.spec.ts:1  high  exercises only test-only or dead code
   1 zombie test -- ~14s CI per run (estimated).
 
@@ -82,7 +82,7 @@ exports[`renderTtyReport — cli-ux §2 mockup shape (four degradation modes) > 
   [32m●[0m parseLegacyId   src/utils/ids.ts:44       no refs from any entrypoint
   [33m◐[0m getFlags        src/flags.ts:9            unused, but dynamic import nearby
 
-[1mTEST-ONLY (production-dead, kept alive by tests)[0m                      [2mconfidence[0m
+[1mTEST-ONLY (reachable only in test environment)[0m                        [2mconfidence[0m
   [32m●[0m OrderMapper     src/orders/mapper.ts:30  \`OrderMapper\` is reachable only…
   [32m●[0m orders.spec.ts  orders.spec.ts:1         exercises only test-only or dead…
   1 zombie test — ~14s CI per run (estimated).

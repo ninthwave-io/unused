@@ -33,6 +33,7 @@ function edgeCmp(a: IREdge, b: IREdge): number {
     cmp(a.referenceKind ?? "", b.referenceKind ?? "") ||
     cmp(a.name ?? "", b.name ?? "") ||
     cmp(a.hazardClass ?? "", b.hazardClass ?? "") ||
+    cmp(a.partitions?.join("\0") ?? "", b.partitions?.join("\0") ?? "") ||
     (a.typeOnly ? 1 : 0) - (b.typeOnly ? 1 : 0) ||
     a.site.span.start - b.site.span.start ||
     a.site.span.end - b.site.span.end

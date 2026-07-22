@@ -104,6 +104,15 @@ describe("MCP server — tool discovery", () => {
     });
     expect(names).toEqual(["find_unused", "usage_evidence", "why_alive"]);
   });
+
+  it("describes test-only evidence as environment-specific with real root provenance", async () => {
+    const description = await withMcpClient(DEAD_FIXTURE, async (client) => {
+      const { tools } = await client.listTools();
+      return tools.find((tool) => tool.name === "why_alive")?.description;
+    });
+    expect(description).toContain("alive only in the effective test environment");
+    expect(description).toContain("actual root kind and reason");
+  });
 });
 
 describe("MCP config staleness signature", () => {

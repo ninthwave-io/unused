@@ -543,7 +543,7 @@ describe("unused CLI — zombie-tests CI-seconds line (T5.3)", () => {
     const result = runCli(["--cwd", ZOMBIE_TEST_FIXTURE]);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("unused  export  deadHelper  src/util.ts:7  high");
-    expect(result.stdout).toContain("TEST-ONLY (production-dead, kept alive by tests)");
+    expect(result.stdout).toContain("TEST-ONLY (reachable only in test environment)");
     expect(result.stdout).toContain("test-only  file  src/feature.ts  src/feature.ts:1  high");
     expect(result.stdout).toContain(
       "test-only  test  test/feature.test.ts  test/feature.test.ts:1  high",
@@ -1994,8 +1994,9 @@ describe("unused CLI — why (T8.2, cli-ux §4)", () => {
   it("flags a test-only subject with the tier-2 note (exit 0)", () => {
     const result = runCli(["why", "src/feature.ts", "--cwd", ZOMBIE_TEST_FIXTURE]);
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("test-only (production-dead, kept alive by tests)");
+    expect(result.stdout).toContain("test-only (reachable only in the test environment)");
     expect(result.stdout).toContain("(test entrypoint)");
+    expect(result.stdout).toContain("use `unused why --delete` before removal");
     expect(result.stdout).toContain("tier-2:");
   });
 

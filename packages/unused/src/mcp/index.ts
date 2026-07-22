@@ -217,7 +217,7 @@ const TOOLS = [
   {
     name: "why_alive",
     description:
-      "Explain whether a symbol or file is alive and how. Answers for ANY symbol, not only flagged-dead ones. Returns `{ alive, paths, entrypointKind }`: `paths` are shortest reference paths (entrypoint → … → subject), `entrypointKind` is production|config|test. Additive extensions: `testOnly` (alive only via tests), `pathDetails` (structured hops), and for a dead subject `verdict`/`confidence`/`evidence`/`hazards`. `symbol` may be a bare export name, `file.ts:exportName`, or a file path.",
+      "Explain whether a symbol or file is alive and how. Answers for ANY symbol, not only flagged-dead ones. Returns `{ alive, paths, entrypointKind }`: `paths` are shortest reference paths (root → … → subject), `entrypointKind` is production|config|test. Additive extensions: `testOnly` (alive only in the effective test environment; paths preserve the actual root kind and reason), `pathDetails` (structured hops), and for a dead subject `verdict`/`confidence`/`evidence`/`hazards`. `symbol` may be a bare export name, `file.ts:exportName`, or a file path.",
     inputSchema: {
       type: "object",
       properties: {

@@ -266,6 +266,12 @@ export interface IREdge {
   readonly typeOnly?: boolean;
   /** Present iff `referenceKind === "hazard"` — the cited hazard class (closed enum). */
   readonly hazardClass?: HazardClass;
+  /**
+   * Present only when this reference exists in the effective test world.
+   * Absent means the edge is shared by production, config, and test. Keeping
+   * this deliberately narrow avoids implying unsupported per-root edge worlds.
+   */
+  readonly partitions?: readonly ["test"];
 }
 
 // ---------------------------------------------------------------------------

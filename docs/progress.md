@@ -1,6 +1,21 @@
 # Progress — unused
 
-Updated: 2026-07-21. **Pre-v0.1.0 scaling, runtime reachability, and first-class polyglot delivery are technically accepted; the founder release action remains.** No semver release tag has been created.
+Updated: 2026-07-22. **Pre-v0.1.0 scaling, runtime reachability, and first-class polyglot delivery are technically accepted; the founder release action remains.** No semver release tag has been created.
+
+Active public follow-up — test-scoped Elixir production edges: the test trace
+now distinguishes exact production duplicates from additive references emitted
+only under `MIX_ENV=test`. Additive edges require compatible reflected module
+semantics and fail-closed source ownership; a bounded extensionless compiler
+pseudo-source is normalized only to its uniquely named owner. The IR records
+test edge activity explicitly. Production/config walks use shared edges, while
+the effective test world retains actual root provenance and adds test edges;
+`why`, zombie analysis, and deletion consequences use that same model. Neutral
+complete/partial and real-Mix regressions are implemented. The full suite is
+green at 83 files / 1,168 tests with no skips; typecheck, lint (the established
+2 warnings / 48 infos), boundaries (923 modules / 2,014 dependencies), build,
+assumption-set 1.11, all corpus gates, installed-tarball JSON, diff, and privacy
+checks pass. Independent review remains before commit; exact resume details are
+in the P9 follow-up in `docs/delivery/polyglot-first-class.md`.
 
 Active public checkpoint — isolated Mix test environment: the approved
 phase-delimited production plus explicit `MIX_ENV=test` correction is implemented

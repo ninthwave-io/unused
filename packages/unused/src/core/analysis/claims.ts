@@ -13,14 +13,14 @@
  * `high` and the cap is the only thing that can lower it.
  *
  * ## Tier-2 partition (T5.1/T5.2)
- * Reachability arrives split into production/config/test partitions. A subject
- * reachable from production or config is alive (never flagged). A subject
- * reachable ONLY from tests is `test-only` (export/file/dependency); a test file
- * exercising only test-only/dead code is a zombie `test` claim. A subject
- * reachable from nothing stays `unused`. The `test-only` verdict runs through
- * the identical hazard-cap machinery (`high` when clean); its evidence names the
- * test entrypoint keeping it alive, read from the test partition's stored
- * predecessor map.
+ * Reachability arrives as authoritative production/config worlds plus an
+ * effective test world. A subject reached by production/config is alive (never
+ * flagged). A subject reached only in the test world is `test-only`
+ * (export/file/dependency); a test file exercising only test-only/dead code is a
+ * zombie `test` claim. A subject reachable from nothing stays `unused`. The
+ * `test-only` verdict runs through the identical hazard-cap machinery (`high`
+ * when clean); its evidence names the actual effective-world root, which may be
+ * production/config when a test-scoped edge leaves that root.
  *
  * ## Hazard scoping (T3.1 — replaces M2's blanket whole-project suppression)
  * Each hazard annotation is looked up in the registry (`hazard-registry.ts`),
@@ -148,9 +148,10 @@ export interface DependencyClaimInput {
 export interface EmitClaimsInput {
   readonly graph: IRGraph;
   /**
-   * The three per-partition reachability walks (T5.1). Production ∪ config
-   * reachable is alive; test-reachable-only is `test-only`; reachable-from-
-   * nothing is `unused`. Built by `computePartitionedReachability`.
+   * Authoritative production/config walks plus the effective test world (T5.1).
+   * Production or config reachability is alive; effective-test-world-only is
+   * `test-only`; unreachable in all three is `unused`. Built by
+   * `computePartitionedReachability`.
    */
   readonly reachability: PartitionedReachability;
   /** Provenance stamped on every claim (analyzer / version / generatedAt). */
@@ -218,8 +219,8 @@ export interface EmitClaimsInput {
  * partitions (T5.1):
  *  - `alive`     — production ∪ config reachable ⇒ never a file claim; its dead
  *                  exports are still individually claimable in the symbol pass.
- *  - `test-only` — test-reachable but NOT production/config-reachable ⇒ one
- *                  whole-file `test-only` claim, subsuming its exports.
+ *  - `test-only` — effective-test-world reachable but NOT production/config
+ *                  reachable ⇒ one whole-file claim, subsuming its exports.
  *  - `unused`    — reachable from nothing, including a file referenced only by
  *                  other unreachable code ⇒ a whole-file `unused` claim,
  *                  subsuming its exports (ADR 0012 complete reachability).
@@ -231,10 +232,11 @@ type FileClass = "alive" | "test-only" | "unused";
  * `[]` when there is no production root or an unscoped hazard forces whole-
  * project keep-alive.
  *
- * M5 partitions liveness: a subject reachable only from tests is `test-only`
- * (export/file/dependency), a test file exercising only test-only/dead code is a
- * zombie `test` claim, and code reachable from production or config is alive as
- * before. The hazard-cap machinery is applied identically to every verdict.
+ * M5 partitions liveness: a subject reachable only in the effective test world
+ * is `test-only` (export/file/dependency), a test file exercising only
+ * test-only/dead code is a zombie `test` claim, and code reachable in production
+ * or config is alive as before. The hazard-cap machinery is applied identically
+ * to every verdict.
  */
 export function emitClaims(input: EmitClaimsInput): Claim[] {
   const claimStarted = input.performance?.now();
@@ -249,7 +251,7 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
   // entry, or a project the frontend could not root). Claiming here would flag
   // the whole codebase — the entrypoint-detection contract's "no confident
   // root" case. This also gates `test-only`: without a production baseline we
-  // cannot tell "reachable only from tests" from "the whole project". Emit
+  // cannot tell "reachable only in the test world" from "the whole project". Emit
   // nothing; the caller surfaces "no entrypoints detected".
   if (!hasProductionAnchor(graph, production, input.analysisFiles)) return [];
 
@@ -322,7 +324,7 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
             confidence,
             noteForCap(applied),
             "test-only",
-            testEntrypointFor(test, node.id, input.performance),
+            testWorldRootFor(test, node.id, input.performance),
           ),
         );
       } else {
@@ -367,7 +369,7 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
             confidence,
             noteForCap(applied),
             "test-only",
-            testEntrypointFor(test, node.id, input.performance),
+            testWorldRootFor(test, node.id, input.performance),
           ),
         );
       } else {
@@ -773,12 +775,13 @@ function noteForCap(applied: AppliedCap | undefined): string | undefined {
 // ---------------------------------------------------------------------------
 
 /**
- * The test entrypoint keeping `nodeId` alive, for a `test-only` claim's evidence
- * detail — read from the test partition's stored predecessor map (no re-
- * analysis, PRD §8). `undefined` if the node is not test-reachable (should not
- * happen for a `test-only` subject, but degrade gracefully rather than lie).
+ * The effective test-world root keeping `nodeId` alive, for a `test-only`
+ * claim's evidence detail — read from the test world's stored predecessor map
+ * (no re-analysis, PRD §8). This may be a real production/config root whose
+ * outgoing test-scoped edge exists only under test compilation. `undefined` if
+ * the node is not test-reachable (degrade gracefully rather than lie).
  */
-function testEntrypointFor(
+function testWorldRootFor(
   test: Reachability,
   nodeId: string,
   performance?: PerformanceTracker,
@@ -855,6 +858,7 @@ function emitZombieTestClaims(
     // reaches production-alive code in its first few hops.
     const reach = computeReachability(graph, {
       seedFilter: (e) => e.id === entry.id,
+      edgeWorld: "test",
       ...(input.performance === undefined ? {} : { performance: input.performance }),
       stopWhen: (nodeId) => {
         if (nodeId === testFileId) return false;
@@ -920,7 +924,7 @@ function buildLivenessEvidence(
   const type: EvidenceType = verdict === "test-only" ? "test-only" : "static-reachability";
   const detail =
     verdict === "test-only"
-      ? `${subjectRef} is reachable only from test entrypoint ${testEntry !== undefined ? `\`${testEntry}\`` : "(s)"}; no production or config entrypoint references it.${capNote ?? ""}`
+      ? `${subjectRef} is reachable only in the test environment from root ${testEntry !== undefined ? `\`${testEntry}\`` : "(s)"}; the production and config worlds do not reach it.${capNote ?? ""}`
       : `0 inbound references to ${subjectRef} from any production entrypoint in the reference graph.${capNote ?? ""}`;
   return { type, detail, source: EVIDENCE_SOURCE };
 }

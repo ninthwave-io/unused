@@ -77,6 +77,7 @@ function reference(
   line = 1,
   referenceKind: "static" | "runtime-resolved" | "re-export" | "side-effect" = "static",
   name?: string,
+  partitions?: readonly ["test"],
 ): void {
   graph.addEdge({
     kind: "references",
@@ -85,6 +86,7 @@ function reference(
     to,
     site: site(subjectFile(from), line),
     ...(name === undefined ? {} : { name }),
+    ...(partitions === undefined ? {} : { partitions }),
   });
 }
 
@@ -157,6 +159,49 @@ describe("computeDeletionPlan", () => {
     });
   });
 
+  it("refuses deletion through a live test-environment-only reference", () => {
+    const graph = new IRGraph();
+    addEntry(graph, "lib/application.ex");
+    addSymbol(graph, "lib/application.ex", "Application.start/2");
+    addSymbol(graph, "lib/test_callback.ex", "TestCallback.perform/0");
+    reference(
+      graph,
+      symbolId("lib/application.ex", "Application.start/2"),
+      symbolId("lib/test_callback.ex", "TestCallback.perform/0"),
+      9,
+      "static",
+      "TestCallback.perform/0",
+      ["test"],
+    );
+
+    const reachability = computePartitionedReachability(graph);
+    expect(
+      reachability.production.reachableSymbols.has(
+        symbolId("lib/test_callback.ex", "TestCallback.perform/0"),
+      ),
+    ).toBe(false);
+    expect(
+      reachability.test.reachableSymbols.has(
+        symbolId("lib/test_callback.ex", "TestCallback.perform/0"),
+      ),
+    ).toBe(true);
+    expect(
+      computeDeletionPlan({
+        graph,
+        reachability,
+        subject: {
+          kind: "export",
+          file: "lib/test_callback.ex",
+          name: "TestCallback.perform/0",
+        },
+      }),
+    ).toMatchObject({
+      supported: false,
+      unsupportedReason: "selected subject has a live static reference at lib/application.ex:9",
+      stages: [],
+    });
+  });
+
   it("groups a newly-dead reference chain into deterministic causal stages", () => {
     const graph = new IRGraph();
     addEntry(graph, "src/index.ts");
@@ -180,6 +225,99 @@ describe("computeDeletionPlan", () => {
         { stage: 2, newlyDead: [{ kind: "file", file: "src/leaf.ts" }] },
       ],
     });
+  });
+
+  it("ignores an inactive test-scoped shortcut when staging an active causal chain", () => {
+    const graph = new IRGraph();
+    addEntry(graph, "src/selected.ts");
+    addSymbol(graph, "src/selected.ts", "start");
+    graph.addNode({
+      kind: "symbol",
+      id: symbolId("src/selected.ts", "privateShortcut"),
+      file: "src/selected.ts",
+      exportedName: "privateShortcut",
+      isDefault: false,
+      typeOnly: false,
+      local: true,
+      span: span(2),
+    });
+    addSymbol(graph, "src/a.ts", "a");
+    addSymbol(graph, "src/b.ts", "b");
+    addSymbol(graph, "src/target.ts", "target");
+    reference(graph, symbolId("src/selected.ts", "start"), symbolId("src/a.ts", "a"));
+    reference(graph, symbolId("src/a.ts", "a"), symbolId("src/b.ts", "b"));
+    reference(graph, symbolId("src/b.ts", "b"), symbolId("src/target.ts", "target"));
+    reference(
+      graph,
+      symbolId("src/selected.ts", "privateShortcut"),
+      symbolId("src/target.ts", "target"),
+      2,
+      "static",
+      "target",
+      ["test"],
+    );
+
+    const reachability = computePartitionedReachability(graph);
+    expect(
+      reachability.test.reachableSymbols.has(symbolId("src/selected.ts", "privateShortcut")),
+    ).toBe(false);
+    const plan = computeDeletionPlan({
+      graph,
+      reachability,
+      subject: { kind: "file", file: "src/selected.ts" },
+    });
+
+    expect(plan.stages).toEqual([
+      { stage: 1, newlyDead: [{ kind: "file", file: "src/a.ts" }] },
+      { stage: 2, newlyDead: [{ kind: "file", file: "src/b.ts" }] },
+      { stage: 3, newlyDead: [{ kind: "file", file: "src/target.ts" }] },
+    ]);
+  });
+
+  it("ignores an inactive test-scoped reverse re-export when staging a causal chain", () => {
+    const graph = new IRGraph();
+    addEntry(graph, "src/selected.ts");
+    addSymbol(graph, "src/selected.ts", "origin");
+    addSymbol(graph, "src/a.ts", "a");
+    addSymbol(graph, "src/b.ts", "b");
+    addSymbol(graph, "src/target.ts", "target");
+    addSymbol(graph, "src/inactive-barrel.ts", "forwarded", { local: false });
+    reference(graph, symbolId("src/selected.ts", "origin"), symbolId("src/a.ts", "a"));
+    reference(graph, symbolId("src/a.ts", "a"), symbolId("src/b.ts", "b"));
+    reference(graph, symbolId("src/b.ts", "b"), symbolId("src/target.ts", "target"));
+    reference(
+      graph,
+      symbolId("src/inactive-barrel.ts", "forwarded"),
+      symbolId("src/selected.ts", "origin"),
+      4,
+      "re-export",
+      "origin",
+      ["test"],
+    );
+    reference(
+      graph,
+      fileId("src/inactive-barrel.ts"),
+      symbolId("src/target.ts", "target"),
+      5,
+      "static",
+      "target",
+    );
+
+    const reachability = computePartitionedReachability(graph);
+    expect(
+      reachability.test.reachableSymbols.has(symbolId("src/inactive-barrel.ts", "forwarded")),
+    ).toBe(false);
+    const plan = computeDeletionPlan({
+      graph,
+      reachability,
+      subject: { kind: "export", file: "src/selected.ts", name: "origin", line: 1 },
+    });
+
+    expect(plan.stages).toEqual([
+      { stage: 1, newlyDead: [{ kind: "file", file: "src/a.ts" }] },
+      { stage: 2, newlyDead: [{ kind: "file", file: "src/b.ts" }] },
+      { stage: 3, newlyDead: [{ kind: "file", file: "src/target.ts" }] },
+    ]);
   });
 
   it("puts file-level descendants after the selected export's newly-dead owning file", () => {

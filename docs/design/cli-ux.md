@@ -21,7 +21,7 @@ UNUSED EXPORTS                                        confidence
   ● parseLegacyId    src/utils/ids.ts:44        no refs from any entrypoint
   ◐ getFlags         src/flags.ts:9             unused, but dynamic import nearby
 
-TEST-ONLY (production-dead, kept alive by tests)
+TEST-ONLY (reachable only in test environment)
   ● OrderMapper      src/orders/mapper.ts:30    only ref: orders.spec.ts — ~14 CI s/run
 
   ○ 3 low-confidence candidates hidden — `unused --min-confidence low` to show

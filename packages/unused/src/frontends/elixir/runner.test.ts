@@ -360,53 +360,239 @@ describe("test-phase compatibility filtering", () => {
   const reemittedModule = { ...firstModule, partition: "test" as const };
   const reemittedFunction = { ...firstFunction, partition: "test" as const };
 
-  it("accepts and removes an exact compiler-generated production duplicate", () => {
-    const result = validateTestTraceOwnership(
-      compatibleProduction,
-      {
-        modules: [reemittedModule],
-        functions: [reemittedFunction],
-        events: [
-          {
-            ...productionCoreEvent,
-            file: "/neutral/compiler/generated.ex",
-            partition: "test",
-          },
-        ],
-        testPartition: "complete",
-      },
-      inventory,
-    );
-    expect(result).toEqual({ events: [], modules: [], functions: [], testPartition: "complete" });
-  });
+  it.each(["lib/app/core.ex", "neutral_generated"])(
+    "accepts and removes an owned production duplicate from %s",
+    (file) => {
+      const result = validateTestTraceOwnership(
+        compatibleProduction,
+        {
+          modules: [reemittedModule],
+          functions: [reemittedFunction],
+          events: [
+            {
+              ...productionCoreEvent,
+              file,
+              partition: "test",
+            },
+          ],
+          testPartition: "complete",
+        },
+        inventory,
+      );
+      expect(result).toEqual({ events: [], modules: [], functions: [], testPartition: "complete" });
+    },
+  );
 
   it.each([
-    [
-      "novel function",
-      {
-        modules: [reemittedModule],
-        functions: [{ ...reemittedFunction, name: "test_only_helper" }],
-        events: [],
-        testPartition: "complete" as const,
-      },
-    ],
-    [
-      "novel edge",
-      {
-        modules: [reemittedModule],
-        functions: [reemittedFunction],
-        events: [{ ...productionCoreEvent, to_mod: "App.Novel", partition: "test" as const }],
-        testPartition: "complete" as const,
-      },
-    ],
-  ])("makes the test partition partial for a %s in a production-owned module", (_label, test) => {
-    expect(validateTestTraceOwnership(compatibleProduction, test, inventory)).toMatchObject({
+    "/neutral/compiler/generated.ex",
+    "generated/neutral",
+    "neutral_generated.ex",
+    "test/core_test.exs",
+  ])("rejects an exact production duplicate with invalid source %s", (file) => {
+    expect(
+      validateTestTraceOwnership(
+        compatibleProduction,
+        {
+          modules: [reemittedModule],
+          functions: [reemittedFunction],
+          events: [{ ...productionCoreEvent, file, partition: "test" }],
+          testPartition: "complete",
+        },
+        inventory,
+      ),
+    ).toMatchObject({ testPartition: "incomplete", testPartitionReason: "ownership" });
+  });
+
+  it("discards exact raw-source duplicates normalized in production independent of order", () => {
+    const first = {
+      ...productionCoreEvent,
+      file: "/neutral/compiler/application.ex",
+      partition: "prod" as const,
+    };
+    const second = {
+      ...productionCoreEvent,
+      file: "/neutral/compiler/kernel.ex",
+      to_mod: "Kernel",
+      partition: "prod" as const,
+    };
+    const validatedProduction = validateProductionTraceOwnership(
+      { ...production, events: [first, second] },
+      ["lib"],
+    );
+
+    expect(
+      validateTestTraceOwnership(
+        validatedProduction,
+        {
+          modules: [reemittedModule],
+          functions: [reemittedFunction],
+          events: [
+            { ...second, partition: "test" },
+            { ...first, partition: "test" },
+          ],
+          testPartition: "complete",
+        },
+        inventory,
+      ),
+    ).toEqual({ events: [], modules: [], functions: [], testPartition: "complete" });
+  });
+
+  it.each(["/neutral/compiler/spoofed.ex", "test/core_test.exs", "neutral_generated.ex"])(
+    "rejects a duplicate whose raw source does not match production provenance: %s",
+    (file) => {
+      const rawProductionEvent = {
+        ...productionCoreEvent,
+        file: "/neutral/compiler/application.ex",
+        partition: "prod" as const,
+      };
+      const validatedProduction = validateProductionTraceOwnership(
+        { ...production, events: [rawProductionEvent] },
+        ["lib"],
+      );
+      expect(
+        validateTestTraceOwnership(
+          validatedProduction,
+          {
+            modules: [reemittedModule],
+            functions: [reemittedFunction],
+            events: [{ ...rawProductionEvent, file, partition: "test" }],
+            testPartition: "complete",
+          },
+          inventory,
+        ),
+      ).toMatchObject({ testPartition: "incomplete", testPartitionReason: "ownership" });
+    },
+  );
+
+  it("makes the test partition partial for a novel function in a production-owned module", () => {
+    expect(
+      validateTestTraceOwnership(
+        compatibleProduction,
+        {
+          modules: [reemittedModule],
+          functions: [{ ...reemittedFunction, name: "test_only_helper" }],
+          events: [],
+          testPartition: "complete",
+        },
+        inventory,
+      ),
+    ).toMatchObject({
       testPartition: "incomplete",
       testPartitionReason: "ownership",
       events: [],
       modules: [],
       functions: [],
     });
+  });
+
+  it("accepts an additive MIX_ENV=test edge from a compatible production-owned module", () => {
+    const event = {
+      ...productionCoreEvent,
+      to_mod: "App.TestTarget",
+      partition: "test" as const,
+    };
+    expect(
+      validateTestTraceOwnership(
+        compatibleProduction,
+        {
+          modules: [reemittedModule],
+          functions: [reemittedFunction],
+          events: [event],
+          testPartition: "complete",
+        },
+        inventory,
+      ),
+    ).toEqual({ events: [event], modules: [], functions: [], testPartition: "complete" });
+  });
+
+  it("rejects an additive production-owned edge without a compatible re-emitted module", () => {
+    expect(
+      validateTestTraceOwnership(
+        compatibleProduction,
+        {
+          modules: [],
+          functions: [],
+          events: [
+            {
+              ...productionCoreEvent,
+              to_mod: "App.TestTarget",
+              partition: "test",
+            },
+          ],
+          testPartition: "complete",
+        },
+        inventory,
+      ),
+    ).toMatchObject({ testPartition: "incomplete", testPartitionReason: "ownership" });
+  });
+
+  it("accepts an ownerless event only from an exact test inventory source", () => {
+    const event = {
+      ...productionCoreEvent,
+      file: "test/core_test.exs",
+      from_mod: null,
+      to_mod: "App.TestTarget",
+      partition: "test" as const,
+    };
+    expect(
+      validateTestTraceOwnership(
+        compatibleProduction,
+        { modules: [], functions: [], events: [event], testPartition: "complete" },
+        inventory,
+      ),
+    ).toEqual({ events: [event], modules: [], functions: [], testPartition: "complete" });
+  });
+
+  it("normalizes an extensionless compiler pseudo-source through its unique reflected owner", () => {
+    const event = {
+      ...productionCoreEvent,
+      file: "neutral_generated",
+      to_mod: "App.TestTarget",
+      partition: "test" as const,
+    };
+    expect(
+      validateTestTraceOwnership(
+        compatibleProduction,
+        {
+          modules: [reemittedModule],
+          functions: [reemittedFunction],
+          events: [event],
+          testPartition: "complete",
+        },
+        inventory,
+      ),
+    ).toEqual({
+      events: [{ ...event, file: "lib/app/core.ex" }],
+      modules: [],
+      functions: [],
+      testPartition: "complete",
+    });
+  });
+
+  it.each([
+    [
+      "ownerless pseudo-source",
+      { ...productionCoreEvent, file: "neutral_generated", from_mod: null },
+    ],
+    [
+      "unknown owner",
+      { ...productionCoreEvent, file: "neutral_generated", from_mod: "App.Unknown" },
+    ],
+    ["extensionful spoof", { ...productionCoreEvent, file: "neutral_generated.ex" }],
+    ["allowed-file spoof", { ...productionCoreEvent, file: "test/core_test.exs" }],
+  ])("rejects an additive event with an %s", (_label, event) => {
+    expect(
+      validateTestTraceOwnership(
+        compatibleProduction,
+        {
+          modules: [reemittedModule],
+          functions: [reemittedFunction],
+          events: [{ ...event, to_mod: "App.TestTarget", partition: "test" }],
+          testPartition: "complete",
+        },
+        inventory,
+      ),
+    ).toMatchObject({ testPartition: "incomplete", testPartitionReason: "ownership" });
   });
 
   it("rejects a direct test-module ownership collision", () => {

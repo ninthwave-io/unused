@@ -34,7 +34,13 @@ function exportSym(g: IRGraph, path: string, name: string, line = 1): void {
     site: { file: path, span: SPAN },
   });
 }
-function staticRef(g: IRGraph, fromFile: string, toPath: string, name: string): void {
+function staticRef(
+  g: IRGraph,
+  fromFile: string,
+  toPath: string,
+  name: string,
+  partitions?: readonly ["test"],
+): void {
   g.addEdge({
     kind: "references",
     referenceKind: "static",
@@ -42,6 +48,7 @@ function staticRef(g: IRGraph, fromFile: string, toPath: string, name: string): 
     to: symbolId(toPath, name),
     name,
     site: { file: fromFile, span: SPAN },
+    ...(partitions === undefined ? {} : { partitions }),
   });
 }
 function entrypoint(
@@ -114,6 +121,32 @@ describe("whyAlive — test-only (tier-2)", () => {
     expect(r.testOnly).toBe(true);
     expect(r.entrypointKind).toBe("test");
     expect(r.paths[0]?.hops[0]?.entrypoint?.kind).toBe("test");
+  });
+
+  it("explains a test-scoped production-carrier edge as test-environment-only", () => {
+    const g = new IRGraph();
+    file(g, "lib/application.ex");
+    entrypoint(g, "production", "lib/application.ex", "application-callback");
+    file(g, "test/neutral_test.exs");
+    entrypoint(g, "test", "test/neutral_test.exs", "test-file");
+    file(g, "lib/callback.ex");
+    exportSym(g, "lib/callback.ex", "Callback.perform/0", 4);
+    staticRef(g, "lib/application.ex", "lib/callback.ex", "Callback.perform/0", ["test"]);
+
+    const r = ask(g, "Callback.perform/0");
+    expect(r).toMatchObject({ outcome: "alive", entrypointKind: "test", testOnly: true });
+    if (r.outcome !== "alive") return;
+    expect(r.paths[0]).toMatchObject({
+      entrypointKind: "production",
+      entrypointReason: "application-callback",
+      hops: [
+        {
+          file: "lib/application.ex",
+          entrypoint: { kind: "production", reason: "application-callback" },
+        },
+        { file: "lib/callback.ex", symbol: "Callback.perform/0" },
+      ],
+    });
   });
 });
 

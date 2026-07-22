@@ -128,7 +128,7 @@ const SECTIONS: readonly SectionDef[] = [
     noun: { singular: "dependency", plural: "dependencies" },
   },
   {
-    title: "TEST-ONLY (production-dead, kept alive by tests)",
+    title: "TEST-ONLY (reachable only in test environment)",
     match: (c) => c.verdict === "test-only",
     filterHint: undefined,
     noun: { singular: "test-only claim", plural: "test-only claims" },

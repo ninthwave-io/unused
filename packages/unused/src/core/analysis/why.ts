@@ -12,14 +12,15 @@
  * (a bare export name, a `file:name` qualifier, or a file path) and answers
  * whether it is alive and how, for alive AND dead subjects alike:
  *
- *  - **alive** — a shortest path entrypoint → … → subject, one per reaching
- *    partition (production first, then config, then test — labelled), capped at
+ *  - **alive** — a shortest path root → … → subject, one per authoritative
+ *    world (production first, then config, then effective test — labelled), capped at
  *    three (cli-ux §4, "shortest path(s)"). Every path is rebuilt from the
  *    partition's stored predecessor map — no re-analysis (PRD §8). The primary
  *    `entrypointKind` is the highest-priority partition that reaches it.
- *  - **test-only** — reachable ONLY from test roots: still `alive`, but
- *    `testOnly: true` and `entrypointKind: "test"`, so a caller can apply the
- *    tier-2 interpretation (production-dead, kept alive by a test — cli-ux §4).
+ *  - **test-only** — reachable only in the effective test world: still `alive`,
+ *    but `testOnly: true` and `entrypointKind: "test"`. Its path preserves the
+ *    actual root kind/reason, including production/config roots whose outgoing
+ *    edge exists only in the test environment.
  *  - **dead** — reachable from nothing: the verdict, confidence, and evidence of
  *    its claim (when one exists), plus the hazard classes found near the subject
  *    (what the analyzer weighed before calling it dead — cli-ux §4).
@@ -29,7 +30,7 @@
  *
  * Partition priority (production ▸ config ▸ test) mirrors the claim engine's
  * liveness rule (`claims.ts`): production ∪ config reachable is alive and never
- * flagged; test-reachable-only is `test-only`; reachable-from-nothing is dead.
+ * flagged; effective-test-world-only is `test-only`; unreachable is dead.
  */
 
 import type { Claim, Confidence, DeletionPlanSubject, Evidence, Verdict } from "../claims/types.js";
@@ -95,7 +96,7 @@ export type WhyAliveResult =
       readonly subject: WhySubjectRef;
       /** The primary (highest-priority) partition that reaches the subject. */
       readonly entrypointKind: EntrypointKind;
-      /** `true` ⇒ reachable ONLY from tests (production-dead; tier-2). */
+      /** `true` ⇒ reachable only in the effective test world (production/config-dead). */
       readonly testOnly: boolean;
       /** Shortest path per reaching partition, production ▸ config ▸ test, max 3. */
       readonly paths: readonly WhyPath[];
@@ -165,13 +166,20 @@ export function whyAlive(input: WhyAliveInput): WhyAliveResult {
   const reaches: Partial<Record<keyof PartitionedReachability, boolean>> = {};
   for (const p of PARTITION_ORDER) reaches[p] = reachableIn(reachability[p], nodeId, isFile);
 
-  const alivePartitions = PARTITION_ORDER.filter((p) => reaches[p]);
-  if (alivePartitions.length === 0) {
+  const everyAlivePartition = PARTITION_ORDER.filter((p) => reaches[p]);
+  if (everyAlivePartition.length === 0) {
     return deadResult(query, subject, graph, claims);
   }
 
-  const primary = alivePartitions[0] as keyof PartitionedReachability;
   const productionOrConfig = reaches.production === true || reaches.config === true;
+  // The test walk is an effective-world superset seeded with production/config
+  // baselines. When an authoritative non-test partition already owns liveness,
+  // omit the projected duplicate test path; only test-exclusive subjects cite
+  // the test-environment provenance.
+  const alivePartitions = productionOrConfig
+    ? everyAlivePartition.filter((partition) => partition !== "test")
+    : everyAlivePartition;
+  const primary = alivePartitions[0] as keyof PartitionedReachability;
 
   const paths: WhyPath[] = [];
   for (const p of alivePartitions) {

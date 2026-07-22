@@ -223,6 +223,94 @@ end
     expect(existsSync(join(root, "_build"))).toBe(false);
   });
 
+  it("retains bounded test-environment edges from compatible production modules", {
+    timeout: 60_000,
+  }, () => {
+    const root = project("unused-ex-test-conditional-edges-");
+    roots.push(root);
+    write(root, "mix.exs", basicMix("neutral_conditional_edges"));
+    write(
+      root,
+      "lib/neutral_conditional_edges.ex",
+      `defmodule NeutralConditionalEdges.Target do
+  def direct, do: :direct
+  def generated, do: :generated
+end
+
+defmodule NeutralConditionalEdges.Extension do
+  defmacro __before_compile__(_env) do
+    if Mix.env() == :test do
+      Code.string_to_quoted!(
+        "@neutral_generated NeutralConditionalEdges.Target.generated()",
+        file: "neutral_generated"
+      )
+    else
+      quote do: :ok
+    end
+  end
+end
+
+defmodule NeutralConditionalEdges.ConditionalExpansion do
+  defmacro install do
+    if Mix.env() == :test do
+      quote do
+        @neutral_direct NeutralConditionalEdges.Target.direct()
+      end
+    else
+      quote do: :ok
+    end
+  end
+end
+
+defmodule NeutralConditionalEdges.DirectOwner do
+  require NeutralConditionalEdges.ConditionalExpansion
+  NeutralConditionalEdges.ConditionalExpansion.install()
+  def stable, do: :stable
+end
+
+defmodule NeutralConditionalEdges.GeneratedOwner do
+  @before_compile NeutralConditionalEdges.Extension
+  def stable, do: :stable
+end
+`,
+    );
+    write(
+      root,
+      "test/conditional_edges_test.exs",
+      `defmodule NeutralConditionalEdgesTest do
+  use ExUnit.Case
+  test "the neutral project compiles", do: assert(true)
+end
+`,
+    );
+
+    const trace = runTracer(root);
+    expect(trace.testPartition).toBe("complete");
+    expect(trace.testPartitionReason).toBeUndefined();
+    expect(trace.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          partition: "test",
+          file: "lib/neutral_conditional_edges.ex",
+          from_mod: "NeutralConditionalEdges.DirectOwner",
+          to_mod: "NeutralConditionalEdges.Target",
+          name: "direct",
+          arity: 0,
+        }),
+        expect.objectContaining({
+          partition: "test",
+          file: "lib/neutral_conditional_edges.ex",
+          from_mod: "NeutralConditionalEdges.GeneratedOwner",
+          to_mod: "NeutralConditionalEdges.Target",
+          name: "generated",
+          arity: 0,
+        }),
+      ]),
+    );
+    expect(trace.events.some((event) => event.file === "neutral_generated")).toBe(false);
+    expect(existsSync(join(root, "_build"))).toBe(false);
+  });
+
   it("keeps a project with no test files complete without creating build artifacts", {
     timeout: 60_000,
   }, () => {

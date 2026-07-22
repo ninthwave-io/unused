@@ -79,7 +79,7 @@ export function computeDeletionPlan(input: ComputeDeletionPlanInput): DeletionPl
         edge.referenceKind !== "re-export" &&
         selectedNodeIds.has(edge.to) &&
         !selectedNodeIds.has(edge.from) &&
-        isReachableNode(graph, reachability, edge.from),
+        isReachableSourceForEdge(graph, reachability, edge),
     );
   if (liveInboundReference !== undefined) {
     const reference =
@@ -104,7 +104,7 @@ export function computeDeletionPlan(input: ComputeDeletionPlanInput): DeletionPl
   input.performance?.increment("graphWalks", 3);
   const after = computePartitionedReachability(counterfactual);
   const newlyDead = newlyDeadSubjects(graph, reachability, after, removedNodeIds);
-  const distance = causalDistances(graph, selectedNodeIds, removedNodeIds);
+  const distance = causalDistances(graph, selectedNodeIds, removedNodeIds, reachability);
   const stages = stageSubjects(graph, newlyDead, distance);
 
   return finish({
@@ -116,21 +116,22 @@ export function computeDeletionPlan(input: ComputeDeletionPlanInput): DeletionPl
   });
 }
 
-function isReachableNode(
+function isReachableSourceForEdge(
   graph: IRGraph,
   reachability: PartitionedReachability,
-  nodeId: string,
+  edge: IREdge,
 ): boolean {
-  const node = graph.getNode(nodeId);
+  const node = graph.getNode(edge.from);
   if (node === undefined) return false;
-  const reaches = [reachability.production, reachability.config, reachability.test];
-  return reaches.some((reach) =>
-    node.kind === "file"
+  const partitions = edge.partitions ?? (["production", "config", "test"] as const);
+  return partitions.some((partition) => {
+    const reach = reachability[partition];
+    return node.kind === "file"
       ? reach.reachableFiles.has(node.id)
       : node.kind === "symbol"
         ? reach.reachableSymbols.has(node.id)
-        : false,
-  );
+        : false;
+  });
 }
 
 function resolveSelectedNodeIds(graph: IRGraph, subject: DeletionPlanSubject): Set<string> {
@@ -502,10 +503,11 @@ function causalDistances(
   graph: IRGraph,
   seeds: ReadonlySet<string>,
   removedNodeIds: ReadonlySet<string>,
+  reachability: PartitionedReachability,
 ): ReadonlyMap<string, number> {
   const distance = new Map<string, number>();
   const queue: string[] = [];
-  const reverseReExports = reverseRemovedReExports(graph, removedNodeIds);
+  const reverseReExports = reverseRemovedReExports(graph, removedNodeIds, reachability);
   for (const seed of [...seeds].sort(compare)) {
     distance.set(seed, 0);
     queue.push(seed);
@@ -527,7 +529,9 @@ function causalDistances(
     }
     const targets = graph
       .outEdges(from)
-      .filter((edge) => edge.kind === "references")
+      .filter(
+        (edge) => edge.kind === "references" && isActiveCausalReference(graph, reachability, edge),
+      )
       .map((edge) => edge.to)
       .sort(compare);
     for (const target of targets) {
@@ -546,12 +550,14 @@ function causalDistances(
 function reverseRemovedReExports(
   graph: IRGraph,
   removedNodeIds: ReadonlySet<string>,
+  reachability: PartitionedReachability,
 ): ReadonlyMap<string, readonly string[]> {
   const reverse = new Map<string, string[]>();
   for (const edge of graph.edges()) {
     if (
       edge.kind !== "references" ||
       edge.referenceKind !== "re-export" ||
+      !isActiveCausalReference(graph, reachability, edge) ||
       !removedNodeIds.has(edge.from) ||
       !removedNodeIds.has(edge.to)
     ) {
@@ -565,6 +571,14 @@ function reverseRemovedReExports(
   }
   for (const forwarders of reverse.values()) forwarders.sort(compare);
   return reverse;
+}
+
+function isActiveCausalReference(
+  graph: IRGraph,
+  reachability: PartitionedReachability,
+  edge: IREdge,
+): boolean {
+  return edge.partitions === undefined || isReachableSourceForEdge(graph, reachability, edge);
 }
 
 function relaxDistance(

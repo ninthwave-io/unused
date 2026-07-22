@@ -307,6 +307,63 @@ describe("emitElixirIR — unreachable behaviour carrier", () => {
   });
 });
 
+describe("emitElixirIR — test-environment edge from a production carrier", () => {
+  const trace: TraceResult = {
+    appMod: "App.Application",
+    deps: [],
+    compileOk: true,
+    testPartition: "complete",
+    modules: [
+      mod("App.Application", "lib/app/application.ex"),
+      mod("App.TestTarget", "lib/app/test_target.ex"),
+      mod("App.ConditionalTest", "test/conditional_test.exs", { partition: "test" }),
+    ],
+    functions: [
+      fn("start", 2, "lib/app/application.ex", "App.Application"),
+      fn("callback", 0, "lib/app/test_target.ex", "App.TestTarget"),
+    ],
+    events: [
+      callEvent("App.Application", "start/2", "App.TestTarget", "callback", 0, {
+        file: "lib/app/application.ex",
+        partition: "test",
+      }),
+    ],
+  };
+  const graph = emitElixirIR({ traceResult: trace, configReferencedModules: new Set() });
+  const reachability = computePartitionedReachability(graph);
+  const callbackId = symbolId("lib/app/test_target.ex", "App.TestTarget.callback/0");
+
+  it("emits a test-scoped edge without promoting its target into production", () => {
+    expect(
+      graph.edges().find((edge) => edge.kind === "references" && edge.to === callbackId)
+        ?.partitions,
+    ).toEqual(["test"]);
+    expect(reachability.production.reachableSymbols.has(callbackId)).toBe(false);
+    expect(reachability.config.reachableSymbols.has(callbackId)).toBe(false);
+    expect(reachability.test.reachableSymbols.has(callbackId)).toBe(true);
+  });
+
+  it("reports truthful test-environment why evidence", () => {
+    const why = whyAlive({
+      graph,
+      reachability,
+      claims: claimsFor(trace),
+      query: "App.TestTarget.callback/0",
+    });
+    expect(why).toMatchObject({
+      outcome: "alive",
+      entrypointKind: "test",
+      testOnly: true,
+      paths: [
+        {
+          entrypointKind: "production",
+          entrypointReason: "application-callback",
+        },
+      ],
+    });
+  });
+});
+
 // --- scenario 2: dynamic dispatch caps the unit to medium ------------------
 
 const DYNAMIC: TraceResult = {

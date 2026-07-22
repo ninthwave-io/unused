@@ -19,6 +19,12 @@ import {
   moduleSemanticKey,
 } from "./trace-protocol.js";
 
+// Raw compiler-source provenance is needed only for production events whose
+// source had to be normalized to their reflected owner. Keep it internal and
+// weakly keyed by the validated trace: it is neither serialized nor retained
+// after the analysis, and ordinary owner-sourced events allocate no entries.
+const normalizedProductionEventSources = new WeakMap<TraceResult, ReadonlySet<string>>();
+
 export function incompleteTestTrace(reason: TestPartitionIncompleteReason): TestTraceResult {
   return {
     events: [],
@@ -54,6 +60,7 @@ export function validateProductionTraceOwnership(
     }
   }
 
+  const normalizedSources = new Set<string>();
   const events = production.events.map((event): TraceEvent => {
     if (safeRepoRelative(event.file)) {
       const sourceOwned = sourceRoots.some((root) => pathWithin(event.file, root));
@@ -72,10 +79,14 @@ export function validateProductionTraceOwnership(
         "cannot analyze Elixir project: the production tracer emitted an external unowned event source.",
       );
     }
+    normalizedSources.add(normalizedSourceKey(event));
     return { ...event, file: owner };
   });
 
-  return { ...production, events };
+  const validated = { ...production, events };
+  if (normalizedSources.size > 0)
+    normalizedProductionEventSources.set(validated, normalizedSources);
+  return validated;
 }
 
 function safeRepoRelative(path: string): boolean {
@@ -96,8 +107,10 @@ export function validateTestTraceOwnership(
     production.functions.map((fn) => [functionIdentityKey(fn), functionSemanticKey(fn)]),
   );
   const productionEvents = new Set(production.events.map(eventCompatibilityKey));
+  const productionNormalizedSources = normalizedProductionEventSources.get(production);
   const acceptedModules: ModuleRecord[] = [];
   const acceptedModuleOwners = new Map<string, string>();
+  const compatibleProductionModules = new Set<string>();
 
   for (const module of test.modules) {
     const productionModule = productionModules.get(module.mod);
@@ -105,6 +118,7 @@ export function validateTestTraceOwnership(
       if (moduleSemanticKey(productionModule) !== moduleSemanticKey(module)) {
         return incompleteTestTrace("ownership");
       }
+      compatibleProductionModules.add(module.mod);
       continue;
     }
     if (!testFileAllowed(module.file, inventory)) return incompleteTestTrace("ownership");
@@ -134,18 +148,34 @@ export function validateTestTraceOwnership(
 
   const acceptedEvents: TraceEvent[] = [];
   for (const event of test.events) {
-    if (event.from_mod !== null && productionModules.has(event.from_mod)) {
-      if (!productionEvents.has(eventCompatibilityKey(event))) {
-        return incompleteTestTrace("ownership");
-      }
-      continue;
-    }
-    if (productionFiles.has(event.file)) return incompleteTestTrace("ownership");
-    if (!testFileAllowed(event.file, inventory)) return incompleteTestTrace("ownership");
-    if (event.from_mod !== null && combinedOwners.get(event.from_mod) === undefined) {
+    // Ownership is authoritative even for a semantic duplicate. Compatibility
+    // deliberately excludes source location, so discarding first would let an
+    // absolute, spoofed, or otherwise invalid source bypass this boundary.
+    const owned = normalizeTestEventSource(event, combinedOwners, inventory);
+    if (owned === null) {
+      // Compiler/library macros can attribute a semantic duplicate to their own
+      // absolute source. Accept no new fact: discard only when the already-
+      // validated production phase normalized the exact same semantic event
+      // from the exact same raw source. A mismatch or spoof still fails closed.
+      const exactNormalizedProductionDuplicate =
+        event.from_mod !== null &&
+        productionModules.has(event.from_mod) &&
+        productionEvents.has(eventCompatibilityKey(event)) &&
+        productionNormalizedSources?.has(normalizedSourceKey(event)) === true;
+      if (exactNormalizedProductionDuplicate) continue;
       return incompleteTestTrace("ownership");
     }
-    acceptedEvents.push(event);
+    if (event.from_mod !== null && productionModules.has(event.from_mod)) {
+      // An exact re-emission is already represented by the production edge.
+      // A novel event is legitimate when MIX_ENV=test conditionally expands
+      // code in an otherwise semantically identical production-owned module;
+      // retain it as a test-scoped edge after source ownership validation.
+      if (productionEvents.has(eventCompatibilityKey(owned))) continue;
+      if (!compatibleProductionModules.has(event.from_mod)) {
+        return incompleteTestTrace("ownership");
+      }
+    }
+    acceptedEvents.push(owned);
   }
   return {
     events: acceptedEvents,
@@ -153,6 +183,33 @@ export function validateTestTraceOwnership(
     functions: acceptedFunctions,
     testPartition: "complete",
   };
+}
+
+function normalizeTestEventSource(
+  event: TraceEvent,
+  combinedOwners: ReadonlyMap<string, string>,
+  inventory: TestInventory,
+): TraceEvent | null {
+  const owner = event.from_mod === null ? undefined : combinedOwners.get(event.from_mod);
+  if (event.from_mod === null) return testFileAllowed(event.file, inventory) ? event : null;
+  if (owner === undefined) return null;
+  if (event.file === owner) return event;
+  // Elixir occasionally attributes compiler-generated test expansions to a
+  // single extensionless pseudo-source (for example `nofile`). It is safe to
+  // normalize only when the event names one uniquely reflected project module;
+  // ownerless labels, paths, extensions, and non-canonical strings still fail.
+  if (owner !== undefined && syntheticSourceLabel(event.file)) {
+    return { ...event, file: owner };
+  }
+  return null;
+}
+
+function normalizedSourceKey(event: TraceEvent): string {
+  return `${eventCompatibilityKey(event)}\0${event.file}`;
+}
+
+function syntheticSourceLabel(file: string): boolean {
+  return safeRepoRelative(file) && !file.includes("/") && !file.includes(".");
 }
 
 function testFileAllowed(file: string, inventory: TestInventory): boolean {
@@ -173,43 +230,58 @@ export function mergeTraceResults(production: TraceResult, test: TestTraceResult
         : { testPartitionReason: test.testPartitionReason }),
     });
   }
-  return stableTraceResult({
+  return {
     ...production,
-    events: [...production.events, ...test.events],
-    modules: [...production.modules, ...test.modules],
-    functions: [...production.functions, ...test.functions],
+    // Merge the large event streams directly into their stable-key maps. Avoid
+    // materialising three concatenated arrays before deduplication; a complete
+    // test trace can be hundreds of megabytes in a large application.
+    events: stableUniqueGroups([production.events, test.events], eventStableKey),
+    modules: stableUniqueGroups([production.modules, test.modules], moduleStableKey),
+    functions: stableUniqueGroups([production.functions, test.functions], functionStableKey),
     testPartition: "complete",
-  });
+  };
 }
 
 export function stableTraceResult(result: TraceResult): TraceResult {
   return {
     ...result,
-    events: stableUnique(result.events, (event) =>
-      [
-        event.partition,
-        event.file,
-        event.line,
-        event.kind,
-        event.from_mod ?? "",
-        event.from_fun ?? "",
-        event.to_mod,
-        event.name ?? "",
-        event.arity ?? -1,
-        event.dyn ? 1 : 0,
-      ].join("\0"),
-    ),
-    modules: stableUnique(result.modules, (module) =>
-      [module.partition, moduleSemanticKey(module)].join("\0"),
-    ),
-    functions: stableUnique(result.functions, (fn) =>
-      [fn.partition, fn.file, fn.line, fn.mod, fn.name, fn.arity].join("\0"),
-    ),
+    events: stableUniqueGroups([result.events], eventStableKey),
+    modules: stableUniqueGroups([result.modules], moduleStableKey),
+    functions: stableUniqueGroups([result.functions], functionStableKey),
   };
 }
 
-function stableUnique<T>(values: readonly T[], key: (value: T) => string): readonly T[] {
+function eventStableKey(event: TraceEvent): string {
+  return [
+    event.partition,
+    event.file,
+    event.line,
+    event.kind,
+    event.from_mod ?? "",
+    event.from_fun ?? "",
+    event.to_mod,
+    event.name ?? "",
+    event.arity ?? -1,
+    event.dyn ? 1 : 0,
+  ].join("\0");
+}
+
+function moduleStableKey(module: ModuleRecord): string {
+  return [module.partition, moduleSemanticKey(module)].join("\0");
+}
+
+function functionStableKey(fn: FunctionRecord): string {
+  return [fn.partition, fn.file, fn.line, fn.mod, fn.name, fn.arity].join("\0");
+}
+
+function stableUniqueGroups<T>(
+  groups: readonly (readonly T[])[],
+  key: (value: T) => string,
+): readonly T[] {
   const byKey = new Map<string, T>();
-  for (const value of values) byKey.set(key(value), value);
-  return [...byKey].sort(([a], [b]) => bytewiseCompare(a, b)).map(([, value]) => value);
+  for (const values of groups) {
+    for (const value of values) byKey.set(key(value), value);
+  }
+  const keys = [...byKey.keys()].sort(bytewiseCompare);
+  return keys.map((stableKey) => byKey.get(stableKey) as T);
 }

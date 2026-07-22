@@ -204,6 +204,7 @@ export function emitElixirIR(input: EmitElixirInput): IRGraph {
       to: toId,
       site: siteAt(ev.file, ev.line),
       name: target.exportedName,
+      ...(ev.partition === "test" ? { partitions: ["test"] as const } : {}),
     });
   }
 

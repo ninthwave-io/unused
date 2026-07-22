@@ -42,6 +42,7 @@ describe("rebaseGraph", () => {
       to: dependencyId("neutral"),
       site: SITE,
       name: "neutral",
+      partitions: ["test"],
     });
     graph.addHazard({
       file: fileId("lib/callback.ex"),
@@ -74,6 +75,7 @@ describe("rebaseGraph", () => {
       from: symbolId("apps/backend/lib/callback.ex", "App.callback/1"),
       to: dependencyId("neutral"),
       site: { file: "apps/backend/lib/callback.ex" },
+      partitions: ["test"],
     });
     expect(rebased.hazards()[0]).toMatchObject({
       file: fileId("apps/backend/lib/callback.ex"),

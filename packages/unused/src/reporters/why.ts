@@ -134,13 +134,13 @@ export function renderWhy(input: WhyReportInput, ascii: boolean): string {
       const head = subjectLabel(input.subject);
       const lines: string[] = [];
       if (input.testOnly) {
-        lines.push(`${head} ${dash} test-only (production-dead, kept alive by tests)`, "");
-        lines.push("  reachable only from a test entrypoint:");
+        lines.push(`${head} ${dash} test-only (reachable only in the test environment)`, "");
+        lines.push("  reachable only in the test environment from:");
         for (const p of input.paths) lines.push(`    ${renderWhyPath(p, ascii)}`);
         lines.push(
           "",
-          "  tier-2: no production or config entrypoint reaches this. It is alive only",
-          `  because a test imports it ${dash} deleting it (and its zombie test) removes dead weight.`,
+          "  tier-2: the production and config worlds do not reach this. Its path above",
+          "  preserves the real root; use `unused why --delete` before removal.",
         );
       } else {
         lines.push(`${head} ${dash} alive`, "");

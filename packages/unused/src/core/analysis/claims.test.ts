@@ -94,7 +94,14 @@ function addSymbol(g: IRGraph, rel: string, name: string, opts: SymbolOpts = {})
   }
 }
 
-function ref(g: IRGraph, fromRel: string, toId: string, kind: ReferenceKind, name?: string): void {
+function ref(
+  g: IRGraph,
+  fromRel: string,
+  toId: string,
+  kind: ReferenceKind,
+  name?: string,
+  partitions?: readonly ["test"],
+): void {
   g.addEdge({
     kind: "references",
     referenceKind: kind,
@@ -102,6 +109,7 @@ function ref(g: IRGraph, fromRel: string, toId: string, kind: ReferenceKind, nam
     to: toId,
     site: site(fromRel),
     ...(name !== undefined ? { name } : {}),
+    ...(partitions !== undefined ? { partitions } : {}),
   });
 }
 
@@ -778,7 +786,7 @@ describe("tier-2 partition: test-only verdicts (T5.1/T5.2)", () => {
         confidence: "high",
       },
     ]);
-    // Evidence is tier-2 and names the test entrypoint keeping it alive.
+    // Evidence is tier-2 and names the effective test-world root keeping it alive.
     expect(claims[0]?.evidence[0]?.type).toBe("test-only");
     expect(claims[0]?.evidence[0]?.detail).toContain("test/feature.test.ts");
   });
@@ -901,6 +909,40 @@ describe("tier-2 partition: zombie tests (T5.2 point 3)", () => {
     addEntry(g, "src/index.ts");
     addTestEntry(g, "test/empty.test.ts");
     expect(run(g).some((c) => c.subject.kind === "test")).toBe(false);
+  });
+
+  it("does not let an unrelated test-environment edge mask a zombie test", () => {
+    const g = new IRGraph();
+    addEntry(g, "lib/application.ex");
+    addSymbol(g, "lib/application.ex", "Application.start/2");
+    addSymbol(g, "lib/conditional.ex", "Conditional.test_callback/0");
+    ref(
+      g,
+      "lib/application.ex",
+      symbolId("lib/conditional.ex", "Conditional.test_callback/0"),
+      "static",
+      "Conditional.test_callback/0",
+      ["test"],
+    );
+    addSymbol(g, "test/helper.ex", "TestHelper.only/0");
+    addTestEntry(g, "test/zombie_test.exs");
+    ref(
+      g,
+      "test/zombie_test.exs",
+      symbolId("test/helper.ex", "TestHelper.only/0"),
+      "static",
+      "TestHelper.only/0",
+    );
+
+    const claims = run(g);
+    expect(claims.find((claim) => claim.subject.name === "test/zombie_test.exs")).toMatchObject({
+      verdict: "test-only",
+      subject: { kind: "test" },
+    });
+    expect(claims.find((claim) => claim.subject.name === "lib/conditional.ex")).toMatchObject({
+      verdict: "test-only",
+      subject: { kind: "file" },
+    });
   });
 });
 

@@ -121,7 +121,7 @@ const orderMapper = claim({
     {
       type: "test-only",
       detail:
-        "`OrderMapper` is reachable only from test entrypoint `orders.spec.ts`; no production or config entrypoint references it.",
+        "`OrderMapper` is reachable only in the test environment from root `orders.spec.ts`; the production and config worlds do not reach it.",
       source: "reference-graph",
     },
   ],
@@ -347,7 +347,7 @@ describe("renderTtyReport — test-only section + zombie CI-seconds line (T5.3)"
       zombieTests: { count: 1, estCiSecondsPerRun: 14, estimated: true, avgSecondsPerTestFile: 14 },
     });
     const out = renderTtyReport({ run, ...CTX }, BASE_OPTIONS);
-    expect(out).toContain("TEST-ONLY (production-dead, kept alive by tests)");
+    expect(out).toContain("TEST-ONLY (reachable only in test environment)");
     expect(out).toContain("OrderMapper");
     expect(out).toContain("1 zombie test — ~14s CI per run (estimated).");
   });

@@ -81,9 +81,13 @@ do not make an otherwise complete partition partial.
 The test child compiles the effective test environment, but retains facts only
 from the non-production `elixirc_paths` delta (conventionally `test/support`)
 and deterministically sorted ExUnit source files. Compatible re-emission from
-production-inventory files is ignored, so production facts remain solely those
-observed in the original environment. Novel/conflicting module identity or
-file ownership is incomplete rather than merged speculatively.
+production-inventory files is ignored when the event is an exact production
+duplicate, so production facts remain solely those observed in the original
+environment. A semantically compatible production module may also emit an
+additive edge only under `MIX_ENV=test`; that edge is retained as test-scoped
+after strict source ownership validation. Novel/conflicting module or function
+identity, or unprovable file ownership, is incomplete rather than merged
+speculatively.
 
 Each child writes a phase-delimited structured trace. Test facts are merged only
 after an exit-zero child produces exactly one complete terminal record; partial
@@ -112,3 +116,35 @@ line zero; a missing or malformed module identity, compile source, attributes,
 exports, behaviour shape, or BEAM container remains a production refusal or a
 bounded incomplete test partition. Test files use `compile_to_path` so their
 BEAM metadata is available inside the same temporary, non-consumer build.
+
+## Implementation amendment — test-scoped production edges (2026-07-22)
+
+Compiler expansion can legitimately make a production-owned module emit an
+additional reference only in the test environment. The merge accepts such an
+edge only when the test compile re-emitted that module with exactly compatible
+reflected semantics. An exact production event is still discarded. A novel
+event must name its reflected owner and either carry the owner's exact validated
+reflected source or a single safe extensionless compiler pseudo-source; the latter is
+normalized to the unique reflected owner. Ownerless events are accepted only
+from the explicit test inventory. Unknown owners, arbitrary allowed-file
+substitution, paths, extension-bearing labels, and every ownership conflict
+fail the complete test partition closed.
+
+One content-free compiler-origin exception applies to exact production
+duplicates. A library macro can attribute the same event in both phases to its
+own absolute compiler source. Production validation records provenance only for
+events whose raw source it actually normalized to the reflected owner. The test
+event is discarded only when both its semantic compatibility key and raw source
+exactly match that bounded production provenance. The provenance is internal,
+weakly held, and never serialized; mismatched or spoofed paths still fail
+closed. Ordinary owner-sourced events allocate no provenance record.
+
+The shared IR marks the accepted edge as test-scoped. Production and config
+reachability traverse shared edges only. The effective test world starts from
+the same immutable production, config, and test roots with their original ids,
+kinds, and reasons, then traverses shared plus test-scoped edges. Test-only
+classification subtracts the production and config results from that effective
+world; evidence therefore says the subject exists only in the test environment
+while preserving the real root provenance. Per-test zombie analysis and
+deletion-consequence checks use the same edge-activity rules. Ordinary shared
+edges and incomplete-partition safety behavior are unchanged.

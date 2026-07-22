@@ -89,6 +89,12 @@ export interface ComputeReachabilityOptions {
    * Absent ⇒ seed all production/config/test roots (the pre-M5 behaviour).
    */
   readonly seedFilter?: (entry: EntrypointNode) => boolean;
+  /**
+   * Effective edge world for this walk. `shared` excludes references that exist
+   * only in a language's test compilation; `test` includes shared + test edges.
+   * Omitted preserves the historical union-walk behaviour (`test`).
+   */
+  readonly edgeWorld?: "shared" | "test";
   /** Optional run-local work counter/timer collector. */
   readonly performance?: PerformanceTracker;
   /** Stop after first reaching a matching node (used by bounded existence queries). */
@@ -118,6 +124,10 @@ export function computeReachability(
   const predecessor = new Map<string, Predecessor>();
   const queue: string[] = [];
   let stoppedAt: string | undefined;
+  const seedFilter = options?.seedFilter;
+  const edgeWorld = options?.edgeWorld ?? "test";
+  const edgeActive = (edge: IREdge): boolean =>
+    edge.partitions === undefined || (edgeWorld === "test" && edge.partitions.includes("test"));
 
   const setPredIfAbsent = (id: string, pred: Predecessor): void => {
     if (!predecessor.has(id)) predecessor.set(id, pred);
@@ -181,7 +191,8 @@ export function computeReachability(
       const direct = graph.getNode(symbolId(fr, name));
       if (direct?.kind === "symbol") results.add(direct.id);
       for (const edge of graph.outEdges(fileId(fr))) {
-        if (edge.kind !== "references" || edge.referenceKind !== "re-export") continue;
+        if (edge.kind !== "references" || edge.referenceKind !== "re-export" || !edgeActive(edge))
+          continue;
         if (edge.name !== "*") continue;
         const next = graph.getNode(edge.to);
         if (next?.kind === "file") collect(next.path);
@@ -200,6 +211,7 @@ export function computeReachability(
   };
 
   const handleRef = (edge: IREdge, sourceIsSurface: boolean): void => {
+    if (!edgeActive(edge)) return;
     const target = graph.getNode(edge.to);
     if (target === undefined || target.kind === "dependency" || target.kind === "endpoint") return;
     const fileRel = targetFileRel(edge);
@@ -271,6 +283,7 @@ export function computeReachability(
     //    sibling export, directly or via private module-scope bindings).
     for (const edge of graph.outEdges(id)) {
       if (edge.kind !== "references") continue;
+      if (!edgeActive(edge)) continue;
       const target = graph.getNode(edge.to);
       const pred: Predecessor = { via: "edge", edge };
       if (
@@ -304,7 +317,6 @@ export function computeReachability(
   // `options.seedFilter` — the union of all three (no filter) is the historical
   // walk `why_alive` uses; the single-partition walks are how M5 tells
   // production-alive apart from test-only apart from dead.
-  const seedFilter = options?.seedFilter;
   for (const entry of graph.entrypoints()) {
     if (
       entry.entryKind !== "production" &&
@@ -368,7 +380,11 @@ export interface PartitionedReachability {
   readonly production: Reachability;
   /** Reachability seeded from config roots only (alive, never flagged). */
   readonly config: Reachability;
-  /** Reachability seeded from test roots only (drives `test-only` + zombie tests). */
+  /**
+   * Effective test-world reachability: production/config/test roots over shared
+   * plus test-scoped edges. Classification subtracts the two authoritative
+   * non-test walks, leaving only test-environment-exclusive subjects.
+   */
   readonly test: Reachability;
 }
 
@@ -381,14 +397,21 @@ export function computePartitionedReachability(
   const result = {
     production: computeReachability(graph, {
       seedFilter: (e) => e.entryKind === "production",
+      edgeWorld: "shared",
       ...(performance === undefined ? {} : { performance }),
     }),
     config: computeReachability(graph, {
       seedFilter: (e) => e.entryKind === "config",
+      edgeWorld: "shared",
       ...(performance === undefined ? {} : { performance }),
     }),
     test: computeReachability(graph, {
-      seedFilter: (e) => e.entryKind === "test",
+      // The effective test world includes the production/config baseline plus
+      // test roots, then enables test-scoped edges. Classification still checks
+      // the independent production/config walks first, so baseline subjects do
+      // not become `test-only` merely because this superset reaches them.
+      seedFilter: () => true,
+      edgeWorld: "test",
       ...(performance === undefined ? {} : { performance }),
     }),
   };
