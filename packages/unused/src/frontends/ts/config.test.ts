@@ -392,6 +392,22 @@ describe("computeConfigHash", () => {
     expect(computeConfigHash(EMPTY_CONFIG)).toBe("291ed68f9f14");
   });
 
+  it("preserves a historical non-empty config hash when symbol-root arrays are empty", () => {
+    const config = validateConfig(
+      {
+        entry: ["src/index.ts"],
+        project: ["src/**"],
+        ignoreDependencies: ["neutral-dep"],
+        workspaces: { "packages/api": { entry: ["src/server.ts"] } },
+        gate: { threshold: "high" },
+        presets: ["vite"],
+        ciSecondsPerTestFile: 3,
+      },
+      "c.jsonc",
+    );
+    expect(computeConfigHash(config)).toBe("32ef8211a886");
+  });
+
   it("includes ordered full entrySymbols rules, including rationale", () => {
     const base = {
       ...EMPTY_CONFIG,
