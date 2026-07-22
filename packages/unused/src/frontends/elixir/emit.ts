@@ -55,7 +55,11 @@ import {
   symbolId,
 } from "../../core/ir/index.js";
 import type { FunctionRecord, ModuleRecord, TraceEvent, TraceResult } from "./events.js";
-import type { ElixirDynamicDispatch, ElixirRuntimeReference } from "./runtime-references.js";
+import {
+  dynamicEventKey,
+  type ElixirDynamicDispatch,
+  type ElixirRuntimeReference,
+} from "./runtime-references.js";
 
 /** A resolved symbol identity (its owning file + its exported name). */
 interface SymRef {
@@ -439,11 +443,10 @@ function emitDynamicDispatchHazards(
   fnByKey: ReadonlyMap<string, FunctionRecord>,
   extracted: readonly ElixirDynamicDispatch[],
 ): void {
-  const extractedBySite = new Map<string, ElixirDynamicDispatch[]>();
+  const extractedByEvent = new Map<string, ElixirDynamicDispatch[]>();
   for (const dispatch of extracted) {
-    const key = `${dispatch.file}\0${dispatch.line}`;
-    const bucket = extractedBySite.get(key);
-    if (bucket === undefined) extractedBySite.set(key, [dispatch]);
+    const bucket = extractedByEvent.get(dispatch.eventKey);
+    if (bucket === undefined) extractedByEvent.set(dispatch.eventKey, [dispatch]);
     else bucket.push(dispatch);
   }
   const byCarrier = new Map<
@@ -460,13 +463,14 @@ function emitDynamicDispatchHazards(
     if (ev.from_mod === null) continue;
     const mod = moduleByName.get(ev.from_mod);
     if (mod === undefined) continue; // the dispatch happened in a non-project module
-    const dispatches = extractedBySite.get(`${ev.file}\0${ev.line}`) ?? [
+    const dispatches = extractedByEvent.get(dynamicEventKey(ev)) ?? [
       {
         fromMod: ev.from_mod,
         ...(ev.from_fun === undefined ? {} : { fromFun: ev.from_fun }),
         file: ev.file,
         line: ev.line,
         kind: "opaque" as const,
+        eventKey: dynamicEventKey(ev),
         targets: [],
       },
     ];

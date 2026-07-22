@@ -16,7 +16,11 @@ import type { Claim } from "../../core/claims/types.js";
 import { fileId, symbolId } from "../../core/ir/index.js";
 import { emitElixirIR } from "./emit.js";
 import type { FunctionRecord, ModuleRecord, TraceEvent, TraceResult } from "./events.js";
-import type { ElixirDynamicDispatch, ElixirRuntimeReference } from "./runtime-references.js";
+import {
+  dynamicEventKey,
+  type ElixirDynamicDispatch,
+  type ElixirRuntimeReference,
+} from "./runtime-references.js";
 
 // --- builders --------------------------------------------------------------
 
@@ -451,6 +455,7 @@ describe("emitElixirIR — dynamic dispatch", () => {
           file: "lib/app/router.ex",
           line: 5,
           kind: "bounded",
+          eventKey: dynamicEventKey(DYNAMIC.events.find((event) => event.dyn) as TraceEvent),
           targets: target === undefined ? [] : [target],
         },
       ],

@@ -197,3 +197,31 @@ owning-unit cap only when the target is wholly opaque). Extraction is O(total
 script bytes + resolved literal references × log(lines))
 and reads each visible script once. Neutral measurements and reproduction are
 recorded in `docs/bench/2026-07-22-elixir-script-inventory.md`.
+
+## Implementation amendment — source roles for dynamic events (2026-07-22)
+
+The compiler marks invocation primitives but does not describe how their values
+are consumed. The frontend therefore indexes each compiler-owned source once
+with a preserve-length lexical mask and delimiter/line tables, then joins source
+facts to compiler events by file, line, carrier module/function, primitive, and
+arity. Comments, strings, charlists, heredocs, and sigils retain offsets and
+newlines but contribute no facts. A join is exact only at matching cardinality;
+same-line or carrier ambiguity stays opaque. Dynamic-event projection into IR
+uses the same full event identity rather than a file-and-line-only join.
+
+A conventional guarded `__using__/1` that selects a helper through
+`apply(__MODULE__, selector, [])` is exact only when every compiler-observed
+`__using__/1` invocation is accounted for by one literal
+`use Module, :helper` fact and each helper resolves to one reflected public
+function. A missing, computed, duplicated, or ambiguous invocation retains the
+dynamic-dispatch hazard. Exact helper edges preserve `why` provenance and leave
+unselected siblings independently claimable and deletable.
+
+Function-scoped `String.to_atom/1` and `String.to_existing_atom/1` remain
+dynamic proxies by default because an immediate atom receiver can emit no outer
+compiler event. The only non-hazard role is a complete direct key argument to a
+bounded standard-library `Map` operation, confirmed by the matching compiler
+event on the same carrier. Immediate receivers, assignments and later use,
+pipelines, unknown consumers, or mixed same-line roles remain opaque. The
+classification cost is O(total compiler-owned source bytes + trace events +
+reflected functions + emitted candidates); no event rescans an entire source.

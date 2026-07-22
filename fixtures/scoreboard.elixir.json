@@ -1,19 +1,19 @@
 {
   "analyzer": "elixir-reference-graph",
   "corpus": {
-    "cases": 15,
-    "subjects": 49
+    "cases": 17,
+    "subjects": 53
   },
   "precision": 1,
-  "recall": 0.9523809523809523,
+  "recall": 0.9565217391304348,
   "falsePositives": 0,
   "confidenceViolations": 0,
   "misses": 1,
   "unlabelledClaims": 0,
   "byConfidenceTier": {
     "high": {
-      "claims": 15,
-      "truePositives": 15,
+      "claims": 17,
+      "truePositives": 17,
       "falsePositives": 0,
       "confidenceViolations": 0
     },
@@ -31,6 +31,28 @@
     }
   },
   "cases": [
+    {
+      "case": "atom-dynamic-receiver",
+      "subjects": 1,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "atom-map-key-safe",
+      "subjects": 3,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
     {
       "case": "basic-dead-function",
       "subjects": 2,

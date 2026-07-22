@@ -1,0 +1,12 @@
+case: atom-dynamic-receiver
+description: >-
+  Immediate receiver dispatch and assigned or same-line ambiguous atom flows
+  remain opaque. A direct Map-key producer sharing a line with a receiver is not
+  guessed safe because compiler events have no column provenance.
+subjects:
+  - kind: file
+    name: lib/neutral_atom_flow/target.ex
+    file: lib/neutral_atom_flow/target.ex
+    expected: dead
+    minConfidence: medium
+    because: Reachable opaque atom receiver flows cap the otherwise dead target module.

@@ -28,10 +28,11 @@ subjects:
     name: NeutralUse.Web.genuinely_unused/0
     file: lib/neutral_use/web.ex
     expected: dead
-    minConfidence: medium
+    minConfidence: high
     because: >-
       No use site selects genuinely_unused, so the literal helper edges do not
-      hide this true positive; the local dynamic-dispatch hazard caps confidence.
+      hide this true positive; every compiler-observed __using__/1 invocation is
+      matched to one literal selector, so the dispatcher adds no opaque hazard.
   - kind: file
     name: lib/neutral_use/unrelated.ex
     file: lib/neutral_use/unrelated.ex
