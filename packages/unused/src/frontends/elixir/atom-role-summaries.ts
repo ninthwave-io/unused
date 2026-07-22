@@ -161,6 +161,7 @@ export const ELIXIR_ATOM_ROLE_SUMMARIES: readonly ElixirAtomRoleSummary[] = [
   summary("Atom", "to_string", 1, { 0: consume }),
   summary("Enum", "map", 2, { 0: consume }, { callbackResults: { 1: propagate } }),
   summary("Enum", "flat_map", 2, { 0: consume }, { callbackResults: { 1: propagate } }),
+  summary("Enum", "reduce", 3, {}, { callbackResults: { 2: propagate } }),
   summary("Enum", "member?", 2, { 0: consume, 1: consume }),
   summary("Enum", "into", 2, { 0: propagate, 1: propagate }),
   summary("Enum", "into", 3, { 0: consume, 1: propagate }, { callbackResults: { 2: propagate } }),

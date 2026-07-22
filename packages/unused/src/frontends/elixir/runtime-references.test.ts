@@ -669,6 +669,203 @@ describe("extractElixirRuntimeReferences", () => {
     }
   });
 
+  it("indexes callback commas without inflating explicit or piped logical arity", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-indexed-callback-arities-"));
+    const file = "callback_arities.ex";
+    const lines = [
+      "defmodule NeutralIndexed.CallbackArities do",
+      "  def explicit(entries, raw) do",
+      "    Enum.reduce(entries, %{}, fn entry, acc ->",
+      "      pair = fn left, right -> {left, right} end",
+      "      _ = pair.(entry, acc)",
+      "      Map.put(acc, entry, String.to_atom(raw))",
+      "    end)",
+      "    |> Map.has_key?(:known) # explicit result",
+      "  end",
+      "  def piped(entries, raw) do",
+      "    entries",
+      "    |> Enum.reduce(%{}, fn",
+      "      {key, value}, acc -> Map.put(acc, key, String.to_atom(raw))",
+      "      _other, acc -> Map.put(acc, :fallback, :known)",
+      "    end)",
+      "    |> Map.has_key?(:known) # piped result",
+      "  end",
+      "  def keyword_fn(map, raw), do: Map.get(map, fn: String.to_atom(raw))",
+      "  def nested_result(entries, raw), do: Enum.reduce(entries, %{}, fn _entry, _acc -> fn _value -> String.to_atom(raw) end end) |> Map.has_key?(:known)",
+      "  def collection_input(entries, raw), do: Enum.reduce([String.to_atom(raw) | entries], [], fn selector, acc -> [{NeutralIndexed.Target, selector, []} | acc] end)",
+      "  def accumulator_input(entries, raw), do: Enum.reduce(entries, String.to_atom(raw), fn _entry, selector -> _runtime_data = {NeutralIndexed.Target, selector, []}; selector end)",
+      "  def wrong(entries, raw), do: Enum.reduce(entries, %{}, fn entry, acc -> Map.put(acc, entry, String.to_atom(raw)) end)",
+      "  def ambiguous(entries, raw), do: {Enum.reduce(entries, %{}, fn entry, acc -> Map.put(acc, entry, String.to_atom(raw)) end), Enum.reduce(entries, %{}, fn entry, acc -> Map.put(acc, entry, :known) end)}",
+      "  def producer_ambiguous(map, left, right), do: {Map.has_key?(map, String.to_atom(left)), Map.has_key?(map, String.to_atom(right))}",
+      "end",
+    ];
+    const lineOf = (needle: string): number => lines.findIndex((line) => line.includes(needle)) + 1;
+    const event = (
+      fromFun: string,
+      needle: string,
+      toMod: string,
+      name: string,
+      arity: number,
+      dyn = false,
+    ): TraceEvent => ({
+      k: "event",
+      kind: "remote",
+      file,
+      line: lineOf(needle),
+      from_mod: "NeutralIndexed.CallbackArities",
+      from_fun: fromFun,
+      to_mod: toMod,
+      name,
+      arity,
+      dyn,
+      partition: "prod",
+    });
+    const producer = (fromFun: string, needle: string): TraceEvent =>
+      event(fromFun, needle, "String", "to_atom", 1, true);
+    const events: TraceEvent[] = [
+      producer("explicit/2", "Map.put(acc, entry, String"),
+      event("explicit/2", "Enum.reduce(entries", "Enum", "reduce", 3),
+      event("explicit/2", "Map.put(acc, entry, String", "Map", "put", 3),
+      event("explicit/2", "# explicit result", "Map", "has_key?", 2),
+      producer("piped/2", "{key, value}, acc"),
+      event("piped/2", "|> Enum.reduce", "Enum", "reduce", 3),
+      event("piped/2", "{key, value}, acc", "Map", "put", 3),
+      event("piped/2", "# piped result", "Map", "has_key?", 2),
+      producer("keyword_fn/2", "def keyword_fn"),
+      event("keyword_fn/2", "def keyword_fn", "Map", "get", 2),
+      producer("nested_result/2", "def nested_result"),
+      event("nested_result/2", "def nested_result", "Enum", "reduce", 3),
+      event("nested_result/2", "def nested_result", "Map", "has_key?", 2),
+      producer("collection_input/2", "def collection_input"),
+      event("collection_input/2", "def collection_input", "Enum", "reduce", 3),
+      producer("accumulator_input/2", "def accumulator_input"),
+      event("accumulator_input/2", "def accumulator_input", "Enum", "reduce", 3),
+      producer("wrong/2", "def wrong"),
+      event("wrong/2", "def wrong", "Enum", "reduce", 4),
+      event("wrong/2", "def wrong", "Map", "put", 3),
+      producer("ambiguous/2", "def ambiguous"),
+      event("ambiguous/2", "def ambiguous", "Enum", "reduce", 3),
+      event("ambiguous/2", "def ambiguous", "Enum", "reduce", 3),
+      event("ambiguous/2", "def ambiguous", "Map", "put", 3),
+      producer("producer_ambiguous/3", "def producer_ambiguous"),
+      producer("producer_ambiguous/3", "def producer_ambiguous"),
+      event("producer_ambiguous/3", "def producer_ambiguous", "Map", "has_key?", 2),
+      event("producer_ambiguous/3", "def producer_ambiguous", "Map", "has_key?", 2),
+    ];
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod("NeutralIndexed.CallbackArities", file)],
+      functions: [],
+      events,
+    };
+
+    try {
+      writeFileSync(join(root, file), `${lines.join("\n")}\n`);
+      const extraction = extractElixirRuntimeConventions(root, trace);
+      const outcomes = extraction.dynamicDispatches.map((fact) => ({
+        fromFun: fact.fromFun,
+        flow: fact.factKind === "computed-atom" ? fact.flow : "invocation",
+      }));
+      expect(outcomes).toEqual([
+        { fromFun: "explicit/2", flow: "data" },
+        { fromFun: "piped/2", flow: "data" },
+        { fromFun: "keyword_fn/2", flow: "data" },
+        { fromFun: "nested_result/2", flow: "escape" },
+        { fromFun: "collection_input/2", flow: "escape" },
+        { fromFun: "accumulator_input/2", flow: "escape" },
+        { fromFun: "wrong/2", flow: "escape" },
+        { fromFun: "ambiguous/2", flow: "escape" },
+        { fromFun: "producer_ambiguous/3", flow: "escape" },
+        { fromFun: "producer_ambiguous/3", flow: "escape" },
+      ]);
+      expect(extraction.atomFlowStats).toMatchObject({
+        producers: 10,
+        joinedProducerOutcomes: 8,
+        unjoinedOpaqueFallbacks: 2,
+        legacyIndexedDisagreements: 3,
+        dataSinks: 3,
+        escapes: 5,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps mixed legacy and indexed producer outcomes isolated on one carrier", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-mixed-atom-role-contexts-"));
+    const file = "mixed_atom_role_contexts.ex";
+    const lines = [
+      "defmodule NeutralIndexed.MixedContexts do",
+      "  def rebuild(entries, left, right) do",
+      "    entries",
+      "    |> Enum.map(fn {_key, value} ->",
+      "      {",
+      "        String.to_atom(left),",
+      "        String.to_atom(right)",
+      "      }",
+      "    end)",
+      "    |> Enum.into(%{})",
+      "  end",
+      "end",
+    ];
+    const roleEvent = (
+      line: number,
+      toMod: string,
+      name: string,
+      arity: number,
+      dyn = false,
+    ): TraceEvent => ({
+      k: "event",
+      kind: "remote",
+      file,
+      line,
+      from_mod: "NeutralIndexed.MixedContexts",
+      from_fun: "rebuild/3",
+      to_mod: toMod,
+      name,
+      arity,
+      dyn,
+      partition: "prod",
+    });
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod("NeutralIndexed.MixedContexts", file)],
+      functions: [],
+      events: [
+        roleEvent(6, "String", "to_atom", 1, true),
+        roleEvent(7, "String", "to_atom", 1, true),
+        roleEvent(4, "Enum", "map", 2),
+        roleEvent(10, "Enum", "into", 2),
+      ],
+    };
+
+    try {
+      writeFileSync(join(root, file), `${lines.join("\n")}\n`);
+      const extraction = extractElixirRuntimeConventions(root, trace);
+      expect(
+        extraction.dynamicDispatches.map((fact) =>
+          fact.factKind === "computed-atom" ? fact.flow : "invocation",
+        ),
+      ).toEqual(["data", "escape"]);
+      expect(extraction.atomFlowStats).toMatchObject({
+        producers: 2,
+        joinedProducerOutcomes: 2,
+        unjoinedOpaqueFallbacks: 0,
+        legacyIndexedDisagreements: 1,
+        dataSinks: 1,
+        escapes: 1,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("recovers list arity only for unambiguous proper lists and enforces source cardinality", () => {
     const root = mkdtempSync(join(tmpdir(), "unused-apply-arity-"));
     const file = "apply_shapes.ex";
@@ -1940,6 +2137,215 @@ describe("extractElixirRuntimeReferences", () => {
       });
       expect(representative.atomFlowStats.roleEdges).toBeGreaterThanOrEqual(1_000);
       expect(representative.atomFlowStats.queueVisits).toBeGreaterThanOrEqual(1_000);
+      const small = median(smallRuns.map((run) => run.elapsed));
+      const large = median(largeRuns.map((run) => run.elapsed));
+      expect(large).toBeLessThan(small * 8 + 30);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  it("joins callback-heavy compiler events near-linearly with deterministic outcomes", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-atom-role-callback-scaling-"));
+    const file = "many_atom_callbacks.ex";
+    const measure = (count: number) => {
+      const lines = ["defmodule NeutralScale.AtomCallbacks do"];
+      const events: TraceEvent[] = [];
+      for (let index = 0; index < count; index += 1) {
+        const piped = index % 2 === 1;
+        const headerLine = lines.length + 1;
+        lines.push(`  def classify_${index}(entries, raw) do`);
+        const reduceLine = lines.length + 1;
+        lines.push(
+          piped
+            ? "    entries |> Enum.reduce(%{}, fn {key, value}, acc ->"
+            : "    Enum.reduce(entries, %{}, fn {key, value}, acc ->",
+        );
+        const putLine = lines.length + 1;
+        lines.push("      nested = fn left, right -> {left, right} end");
+        lines.push("      _ = nested.(key, value)");
+        lines.push("      Map.put(acc, key, String.to_atom(raw))");
+        const producerLine = lines.length;
+        lines.push("    end) |> Map.has_key?(:known)", "  end");
+        const base = {
+          k: "event" as const,
+          kind: "remote" as const,
+          file,
+          from_mod: "NeutralScale.AtomCallbacks",
+          from_fun: `classify_${index}/2`,
+          partition: "prod" as const,
+        };
+        events.push(
+          {
+            ...base,
+            line: producerLine,
+            to_mod: "String",
+            name: "to_atom",
+            arity: 1,
+            dyn: true,
+          },
+          {
+            ...base,
+            line: reduceLine,
+            to_mod: "Enum",
+            name: "reduce",
+            arity: 3,
+            dyn: false,
+          },
+          {
+            ...base,
+            line: producerLine,
+            to_mod: "Map",
+            name: "put",
+            arity: 3,
+            dyn: false,
+          },
+          {
+            ...base,
+            line: producerLine + 1,
+            to_mod: "Map",
+            name: "has_key?",
+            arity: 2,
+            dyn: false,
+          },
+        );
+        expect(headerLine).toBeLessThan(reduceLine);
+        expect(putLine).toBeLessThan(producerLine);
+      }
+      lines.push("end", "");
+      writeFileSync(join(root, file), lines.join("\n"));
+      const trace: TraceResult = {
+        appMod: null,
+        deps: [],
+        compileOk: true,
+        testPartition: "complete",
+        modules: [mod("NeutralScale.AtomCallbacks", file)],
+        functions: [],
+        events,
+      };
+      const started = performance.now();
+      const extraction = extractElixirRuntimeConventions(root, trace);
+      return { elapsed: performance.now() - started, extraction };
+    };
+    const median = (values: readonly number[]): number =>
+      [...values].sort((left, right) => left - right)[Math.floor(values.length / 2)] ?? 0;
+
+    try {
+      measure(25);
+      const smallRuns = [measure(250), measure(250), measure(250)];
+      const largeRuns = [measure(1_000), measure(1_000), measure(1_000)];
+      const representative = largeRuns[0]?.extraction;
+      if (representative === undefined) throw new Error("missing callback scaling result");
+      expect(representative.dynamicDispatches).toHaveLength(1_000);
+      expect(representative.atomFlowStats).toMatchObject({
+        producers: 1_000,
+        joinedProducerOutcomes: 1_000,
+        unjoinedOpaqueFallbacks: 0,
+        legacyIndexedDisagreements: 1_000,
+        dataSinks: 1_000,
+        escapes: 0,
+        summaryMatches: 3_000,
+      });
+      const small = median(smallRuns.map((run) => run.elapsed));
+      const large = median(largeRuns.map((run) => run.elapsed));
+      expect(large).toBeLessThan(small * 8 + 30);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  it("indexes dense multi-clause callback results without repeated arrow scans", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-atom-role-dense-callback-scaling-"));
+    const file = "dense_atom_callback.ex";
+    const measure = (count: number) => {
+      const lines = [
+        "defmodule NeutralScale.DenseAtomCallback do",
+        "  def classify(entries, raw) do",
+        "    Enum.reduce(entries, %{}, fn",
+      ];
+      const clauseLines: number[] = [];
+      for (let index = 0; index < count; index += 1) {
+        clauseLines.push(lines.length + 1);
+        lines.push(`      {:tag_${index}, value}, acc -> Map.put(acc, value, String.to_atom(raw))`);
+      }
+      lines.push("    end) |> Map.has_key?(:known)", "  end", "end", "");
+      writeFileSync(join(root, file), lines.join("\n"));
+      const base = {
+        k: "event" as const,
+        kind: "remote" as const,
+        file,
+        from_mod: "NeutralScale.DenseAtomCallback",
+        from_fun: "classify/2",
+        partition: "prod" as const,
+      };
+      const events: TraceEvent[] = [
+        ...clauseLines.flatMap((line) => [
+          {
+            ...base,
+            line,
+            to_mod: "String",
+            name: "to_atom",
+            arity: 1,
+            dyn: true,
+          },
+          {
+            ...base,
+            line,
+            to_mod: "Map",
+            name: "put",
+            arity: 3,
+            dyn: false,
+          },
+        ]),
+        {
+          ...base,
+          line: 3,
+          to_mod: "Enum",
+          name: "reduce",
+          arity: 3,
+          dyn: false,
+        },
+        {
+          ...base,
+          line: count + 4,
+          to_mod: "Map",
+          name: "has_key?",
+          arity: 2,
+          dyn: false,
+        },
+      ];
+      const trace: TraceResult = {
+        appMod: null,
+        deps: [],
+        compileOk: true,
+        testPartition: "complete",
+        modules: [mod("NeutralScale.DenseAtomCallback", file)],
+        functions: [],
+        events,
+      };
+      const started = performance.now();
+      const extraction = extractElixirRuntimeConventions(root, trace);
+      return { elapsed: performance.now() - started, extraction };
+    };
+    const median = (values: readonly number[]): number =>
+      [...values].sort((left, right) => left - right)[Math.floor(values.length / 2)] ?? 0;
+
+    try {
+      measure(25);
+      const smallRuns = [measure(250), measure(250), measure(250)];
+      const largeRuns = [measure(1_000), measure(1_000), measure(1_000)];
+      const representative = largeRuns[0]?.extraction;
+      if (representative === undefined) throw new Error("missing dense callback scaling result");
+      expect(representative.dynamicDispatches).toHaveLength(1_000);
+      expect(representative.atomFlowStats).toMatchObject({
+        producers: 1_000,
+        joinedProducerOutcomes: 1_000,
+        unjoinedOpaqueFallbacks: 0,
+        legacyIndexedDisagreements: 1_000,
+        dataSinks: 1_000,
+        escapes: 0,
+        summaryMatches: 2_001,
+      });
       const small = median(smallRuns.map((run) => run.elapsed));
       const large = median(largeRuns.map((run) => run.elapsed));
       expect(large).toBeLessThan(small * 8 + 30);

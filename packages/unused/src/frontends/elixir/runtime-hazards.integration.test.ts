@@ -508,6 +508,18 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
       .filter((hazard) => hazard.hazardClass === "elixir-computed-atom-escape");
     expect(escapeHazards).toEqual([]);
 
+    for (const name of ["reduce_explicit", "reduce_piped"]) {
+      expect(
+        whyAlive({
+          graph: analysis.graph,
+          reachability: analysis.reachability,
+          claims: analysis.result.claims,
+          query: `NeutralAtomRoles.Flows.${name}/2`,
+          hazardEvaluations: [analysis.hazardEvaluation],
+        }),
+      ).toMatchObject({ outcome: "alive" });
+    }
+
     const invoked = whyAlive({
       graph: analysis.graph,
       reachability: analysis.reachability,

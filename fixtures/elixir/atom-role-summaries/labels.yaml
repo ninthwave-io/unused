@@ -9,6 +9,16 @@ subjects:
     expected: alive
     because: The application calls the function and its computed atom is only a Map predicate key.
   - kind: export
+    name: NeutralAtomRoles.Flows.reduce_explicit/2
+    file: lib/neutral_atom_roles/flows.ex
+    expected: alive
+    because: The application calls the function and its computed atom remains data through an explicit Enum.reduce callback with a multi-argument pattern.
+  - kind: export
+    name: NeutralAtomRoles.Flows.reduce_piped/2
+    file: lib/neutral_atom_roles/flows.ex
+    expected: alive
+    because: The application calls the function and its computed atom remains data through a piped multi-clause Enum.reduce callback.
+  - kind: export
     name: NeutralAtomRoles.Flows.genuinely_unused/0
     file: lib/neutral_atom_roles/flows.ex
     expected: dead

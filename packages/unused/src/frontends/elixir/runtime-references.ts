@@ -80,6 +80,12 @@ export interface ElixirAtomFlowStats {
   readonly dataSinks: number;
   readonly invocationSinks: number;
   readonly escapes: number;
+  /** Compiler atom-producer events joined to one exact source outcome. */
+  readonly joinedProducerOutcomes: number;
+  /** Compiler atom-producer events that retained the opaque fallback. */
+  readonly unjoinedOpaqueFallbacks: number;
+  /** Outcomes where the legacy data predicate and indexed data result differ. */
+  readonly legacyIndexedDisagreements: number;
 }
 
 type MutableAtomFlowStats = { -readonly [K in keyof ElixirAtomFlowStats]: number };
@@ -190,6 +196,9 @@ export function extractElixirRuntimeConventions(
     dataSinks: 0,
     invocationSinks: 0,
     escapes: 0,
+    joinedProducerOutcomes: 0,
+    unjoinedOpaqueFallbacks: 0,
+    legacyIndexedDisagreements: 0,
   };
   const functionsByModuleName = indexFunctions(traceResult.functions);
   const atomRoleSummaryLookup = createElixirAtomRoleSummaryLookup(
@@ -791,6 +800,7 @@ const ATOM_FLOW_DATA = 1 << 0;
 const ATOM_FLOW_INVOCATION = 1 << 1;
 const ATOM_FLOW_ESCAPE = 1 << 2;
 const ATOM_FLOW_DELEGATED_INVOCATION = 1 << 3;
+const ATOM_FLOW_LEGACY_DATA = 1 << 4;
 
 interface AtomFlowNode {
   readonly key: string;
@@ -1095,7 +1105,7 @@ function expandAtomValueNode(graph: AtomFlowGraph, node: AtomFlowNode): void {
     addAtomFlowEdge(graph, node, ensureAtomAssignmentNode(graph, assignment, node.context));
     return;
   }
-  node.terminal |= node.context.legacyTerminal ? ATOM_FLOW_DATA : ATOM_FLOW_ESCAPE;
+  node.terminal |= node.context.legacyTerminal ? ATOM_FLOW_LEGACY_DATA : ATOM_FLOW_ESCAPE;
 }
 
 function expandAtomCallRole(
@@ -1126,10 +1136,7 @@ function expandAtomCallRole(
   }
   const callbackRole = summary.callbackResults?.[argument];
   if (callbackRole !== undefined) {
-    if (
-      !callbackContainsValue(graph.source, call, argument, node.start, node.end) &&
-      !node.context.legacyTerminal
-    ) {
+    if (!callbackContainsValue(graph.source, call, argument, node.start, node.end)) {
       const range = explicitArgumentRange(graph.source, call, argument);
       node.terminal |=
         range?.start === node.start && range.end === node.end
@@ -1199,6 +1206,14 @@ function atomFlowResult(graph: AtomFlowGraph, rootKey: string): AtomFlowResult {
   }
   if ((outcome & ATOM_FLOW_DATA) !== 0) return { disposition: "data", requiredCalls: [] };
   return { disposition: "escape", requiredCalls: [] };
+}
+
+function hasLegacyDataFallback(graph: AtomFlowGraph, rootKey: string): boolean {
+  const outcome = graph.nodes.get(rootKey)?.outcome ?? 0;
+  return (
+    (outcome & ATOM_FLOW_LEGACY_DATA) !== 0 &&
+    (outcome & (ATOM_FLOW_INVOCATION | ATOM_FLOW_ESCAPE | ATOM_FLOW_DELEGATED_INVOCATION)) === 0
+  );
 }
 
 function containerExpressionStart(code: string, open: number): number {
@@ -1332,24 +1347,18 @@ function callbackContainsValue(
   const block = containingBlockRange(source.blockRanges, valueStart);
   if (
     block === null ||
+    block.open !== range.start ||
     source.code.slice(block.open, block.open + 2) !== "fn" ||
-    block.open < range.start ||
     block.close + 3 > range.end
   ) {
     return false;
   }
   const arrows = source.arrowsByBlockOpen.get(block.open) ?? [];
-  let arrow: number | undefined;
-  let arrowIndex = -1;
+  const nextArrowIndex = lowerBoundNumber(arrows, valueStart);
+  const arrow = arrows[nextArrowIndex - 1];
   let clauseEnd = block.close;
-  for (let index = 0; index < arrows.length; index += 1) {
-    const candidate = arrows[index];
-    if (candidate === undefined || candidate >= valueStart) break;
-    arrow = candidate;
-    arrowIndex = index;
-  }
   if (arrow === undefined) return false;
-  const nextArrow = arrows[arrowIndex + 1];
+  const nextArrow = arrows[nextArrowIndex];
   if (nextArrow !== undefined) {
     const nextLine = lineAt(source.lineStarts, nextArrow);
     const nextLineStart = source.lineStarts[nextLine - 1] ?? 0;
@@ -1493,7 +1502,9 @@ function classifyAtomProducerEvents(
     readonly rootKey: string;
     readonly event: TraceEvent;
     readonly directInvocation: boolean;
+    readonly legacyTerminal: boolean;
   }> = [];
+  const joinedEvents = new Set<TraceEvent>();
   for (const [key, facts] of sourceFacts) {
     const matchingEvents = eventFacts.get(key) ?? [];
     // The tracer has line but not column provenance. Never guess which role a
@@ -1539,20 +1550,35 @@ function classifyAtomProducerEvents(
         rootKey,
         event,
         directInvocation: fact.directInvocation,
+        legacyTerminal: context.legacyTerminal,
       });
+      joinedEvents.add(event);
+    }
+  }
+  for (const eventsAtSite of eventFacts.values()) {
+    for (const event of eventsAtSite) {
+      if (!joinedEvents.has(event)) stats.unjoinedOpaqueFallbacks += 1;
     }
   }
   for (const graph of graphs.values()) solveAtomFlowGraph(graph);
   for (const root of roots) {
     const indexedFlow = atomFlowResult(root.graph, root.rootKey);
+    stats.joinedProducerOutcomes += 1;
+    if ((indexedFlow.disposition === "data") !== root.legacyTerminal) {
+      stats.legacyIndexedDisagreements += 1;
+    }
+    const flow =
+      indexedFlow.disposition === "escape" && hasLegacyDataFallback(root.graph, root.rootKey)
+        ? { ...indexedFlow, disposition: "data" as const }
+        : indexedFlow;
     const { event } = root;
-    if (indexedFlow.disposition === "invocation" || root.directInvocation) {
+    if (flow.disposition === "invocation" || root.directInvocation) {
       stats.invocationSinks += 1;
-      if (indexedFlow.delegatedInvocation === true) delegatedInvocation.add(event);
+      if (flow.delegatedInvocation === true) delegatedInvocation.add(event);
       else invocation.add(event);
       continue;
     }
-    if (indexedFlow.disposition === "data") {
+    if (flow.disposition === "data") {
       stats.dataSinks += 1;
       safe.add(event);
       continue;
@@ -2678,6 +2704,14 @@ function indexSource(content: string): SourceIndex {
   for (let index = 0; index < content.length; index += 1) {
     if (content.charCodeAt(index) === 10) lineStarts.push(index + 1);
   }
+  const blockIndex = indexBlockStructure(code);
+  const fnOpenAt = new Set<number>();
+  const fnCloseAt = new Map<number, number>();
+  for (const range of blockIndex.ranges) {
+    if (code.slice(range.open, range.open + 2) !== "fn" || range.close <= range.open) continue;
+    fnOpenAt.add(range.open);
+    fnCloseAt.set(range.close, (fnCloseAt.get(range.close) ?? 0) + 1);
+  }
   const closeByOpen = new Map<number, number>();
   const parentByOpen = new Map<number, number>();
   const commasByOpen = new Map<number, number[]>();
@@ -2700,18 +2734,22 @@ function indexSource(content: string): SourceIndex {
     const producerStart = match.index ?? 0;
     atomProducerStarts.push(producerStart);
   }
-  const stack: Array<{ open: number; close: string; commas: number[] }> = [];
+  const stack: Array<{ open: number; close: string; commas: number[]; fnDepth: number }> = [];
+  let fnDepth = 0;
   for (let index = 0; index < code.length; index += 1) {
+    fnDepth -= fnCloseAt.get(index) ?? 0;
+    if (fnOpenAt.has(index)) fnDepth += 1;
     const char = code[index] as string;
     const close = char === "(" ? ")" : char === "[" ? "]" : char === "{" ? "}" : null;
     if (close !== null) {
       const parent = stack.at(-1);
       if (parent !== undefined) parentByOpen.set(index, parent.open);
-      stack.push({ open: index, close, commas: [] });
+      stack.push({ open: index, close, commas: [], fnDepth });
       continue;
     }
     if (char === ",") {
-      stack.at(-1)?.commas.push(index);
+      const frame = stack.at(-1);
+      if (frame !== undefined && frame.fnDepth === fnDepth) frame.commas.push(index);
       continue;
     }
     if (/[a-z_]/u.test(char) && !/[A-Za-z0-9_]/u.test(code[index - 1] ?? "")) {
@@ -2737,7 +2775,6 @@ function indexSource(content: string): SourceIndex {
     closeByOpen.set(frame.open, index);
     commasByOpen.set(frame.open, frame.commas);
   }
-  const blockIndex = indexBlockStructure(code);
   const rescuesByBlockOpen = new Map<number, number[]>();
   for (const rescue of identifiersByName.get("rescue") ?? []) {
     const block = containingBlockRange(blockIndex.ranges, rescue.start);

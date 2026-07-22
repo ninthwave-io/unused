@@ -281,14 +281,50 @@ and requires separate evidence.
 
 The implementation exposes deterministic internal counters for sources,
 source bytes, producers, role edges, queue visits, matched summaries, data and
-invocation sinks, and escapes. One event-populated 250-to-1,000-function
-fixture holds independent semantic density constant. A second adversarial
+invocation sinks, escapes, joined producer outcomes, unjoined opaque
+fallbacks, and legacy/indexed classification disagreements. The position-stable
+delimiter pass treats a literal `fn ... end` as nested relative to its enclosing
+call, so callback pattern and body commas do not inflate compiler-joined call
+arity. This includes multi-argument and multi-clause callbacks, nested `fn`
+blocks, and piped receiver arity; the keyword key `fn:` remains ordinary syntax
+and does not open a block. `Enum.reduce/3` is included in the reviewed core
+registry with exact callback-result propagation. Its enumerable and
+accumulator arguments remain omitted fail-closed roles because both flow into
+arbitrary callback inputs, which this phase does not summarize.
+
+One event-populated 250-to-1,000-function fixture holds independent semantic
+density constant. A callback-heavy 250-to-1,000-function fixture alternates
+explicit and piped `Enum.reduce/3`, with compiler events and nested callback
+commas at every site. A dense 250-to-1,000-clause single-function fixture
+guards the indexed binary search for the containing and next callback arrows,
+preventing producer-by-clause rescans. A second adversarial
 fixture puts P producers in one assigned container with U later consumers and
 asserts unique-edge and queue-visit bounds proportional to P + U, preventing
 the former P × U traversal from returning. Independent real Mix fixtures prove
 data-only deletion support, returned-value escape refusal, and bounded apply
 refusal without cross-contaminating their units. No public report or JSON
 schema changes in this slice.
+
+Retaining every site and a site-specific reason on one coalesced
+same-carrier/world escape is deferred. The current dynamic fact and hazard
+evidence shapes carry one site and one generic reason; broadening those shapes
+would exceed this arity-index correction and needs a separately reviewed
+diagnostic-evidence design. The existing unit scope, world activation, cap, and
+fail-closed behavior are unchanged.
+
+### Required Phase 1B1.2 registry audit
+
+Before the registry is described as fully callback-validated, audit every
+summary with `callbackResults`. A computed value in any argument that the API
+can pass into its callback must remain an omitted fail-closed role until exact
+callback-input binder flow exists. The audit must at least cover the callback
+forms of `Map` and `Keyword` update/merge operations, `Map.new/2`,
+`Keyword.new/2`, `MapSet.new/2`, `Enum.map/2`, `Enum.flat_map/2`, and
+`Enum.into/3`. Acceptance requires neutral compiler-event positives for exact
+callback results, negatives for every callback-fed input position (including
+runtime-selector-shaped results), registry validation, corpus labels, bounded
+scaling evidence, and independent review. Phase 1B1.2 must not introduce local
+or interprocedural function summaries implicitly.
 
 ## Acceptance
 
