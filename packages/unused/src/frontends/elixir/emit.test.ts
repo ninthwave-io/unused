@@ -240,7 +240,8 @@ describe("emitElixirIR — incomplete test partition", () => {
     if (why.outcome !== "alive") throw new Error("expected safety-root liveness");
     expect(computeDeletionPlan({ graph, reachability, subject: why.subject })).toMatchObject({
       supported: false,
-      unsupportedReason: "selected subject has a live analysis-completeness reference at mix.exs:1",
+      unsupportedReason:
+        "non-re-export inbound reference remains at mix.exs:1; coordinated caller edits or deletion cohort are not modeled",
       stages: [],
     });
     expect(
@@ -251,7 +252,8 @@ describe("emitElixirIR — incomplete test partition", () => {
       }),
     ).toMatchObject({
       supported: false,
-      unsupportedReason: "selected subject has a live analysis-completeness reference at mix.exs:1",
+      unsupportedReason:
+        "non-re-export inbound reference remains at mix.exs:1; coordinated caller edits or deletion cohort are not modeled",
       stages: [],
     });
   });

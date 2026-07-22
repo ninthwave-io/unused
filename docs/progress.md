@@ -2,6 +2,30 @@
 
 Updated: 2026-07-22. **Pre-v0.1.0 scaling, runtime reachability, and first-class polyglot delivery are technically accepted; the founder release action remains.** No semver release tag has been created.
 
+Active public follow-up — dead inbound deletion prerequisites: the accepted
+language-agnostic correction is implemented without changing claims. Core now
+rejects every external ordinary inbound edge at one deterministic stored site;
+`why --delete`, bounded reports, and `--fix` share that preflight through a
+reusable O(E) per-graph inbound/re-export index. Re-export-only edits stay
+supported, TypeScript's reflected same-file local-use case stays valid, and
+Elixir/Rust runtime references remain conservative blockers. Already-dead
+callers are not misleadingly reported as “newly dead”; atomic cohorts remain a
+future schema-minor decision. Neutral graph/TS and real-Mix Elixir coverage is
+green at 8 files / 208 focused tests, and the full pinned suite passes 83 files
+/ 1,187 tests with no skips. The expanded Elixir corpus is 14 cases / 36
+subjects at precision 1.0 and recall 0.9285714285714286 with no skips; the TS,
+Rust, and polyglot scoreboards are unchanged and green. A 260-to-4,010-file
+synthetic direct-blocker probe is near-linear: at 4,010 files / 12,020 edges,
+median O(E) index construction is 0.072 ms and 10 indexed blocker plans take
+0.453 ms; it is not evidence for the separate forwarded-surface fixed point. Schema
+1.4, claim confidence, canonical JSON, and assumption set 1.12 are unchanged.
+Typecheck, build, lint baseline, boundaries (923 modules / 2,013 dependencies),
+assumption sync, installed-tarball Node-22.16/schema-1.4 smoke, diff checks, and
+privacy scans pass. Independent review caught and corrected sort-based
+complexity and forwarded-star side-effect handling; final re-review reports no
+remaining findings. Exact acceptance and resume evidence are recorded in the
+deletion-plan follow-up under P9 in `docs/delivery/polyglot-first-class.md`.
+
 Active public follow-up — test-scoped Elixir production edges: the test trace
 now distinguishes exact production duplicates from additive references emitted
 only under `MIX_ENV=test`. Additive edges require compatible reflected module

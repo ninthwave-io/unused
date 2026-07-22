@@ -250,7 +250,7 @@ describe("Elixir analysis policy", () => {
       ).toMatchObject({
         supported: false,
         unsupportedReason:
-          "selected subject has a live analysis-completeness reference at mix.exs:1",
+          "non-re-export inbound reference remains at mix.exs:1; coordinated caller edits or deletion cohort are not modeled",
       });
     },
     30_000,

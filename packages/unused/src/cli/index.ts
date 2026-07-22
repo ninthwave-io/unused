@@ -69,9 +69,9 @@ import { join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   computeDeletionPlan,
+  createDeletionPlanningContext,
   type PerformancePhaseEvent,
   PerformanceTracker,
-  surfaceNameHasUniqueOrigin,
   whyAlive,
 } from "../core/analysis/index.js";
 import {
@@ -82,7 +82,6 @@ import {
   ID_VERSION,
   type SubjectKind,
 } from "../core/claims/index.js";
-import { fileId, type IRGraph, symbolId } from "../core/ir/index.js";
 import {
   type AnalyzeAutoWithGraph,
   analyzeProjectAuto,
@@ -1068,6 +1067,7 @@ async function runReportCommand(argv: readonly string[]): Promise<number> {
   } = result;
 
   const deletionPlans: Record<string, DeletionPlan> = {};
+  const deletionContext = createDeletionPlanningContext(analysis.graph);
   const plannedClaimIds = reportDeletionPlanClaimIds(claimRun);
   for (const claim of result.claims) {
     if (!plannedClaimIds.has(claim.id)) continue;
@@ -1088,6 +1088,7 @@ async function runReportCommand(argv: readonly string[]): Promise<number> {
     deletionPlans[claim.id] = computeDeletionPlan({
       graph: analysis.graph,
       reachability: analysis.reachability,
+      context: deletionContext,
       subject:
         claim.subject.kind === "export"
           ? {
@@ -1181,141 +1182,6 @@ async function runBadgeCommand(argv: readonly string[]): Promise<number> {
 // ---------------------------------------------------------------------------
 // Default report
 // ---------------------------------------------------------------------------
-
-/**
- * Only re-export sites have a proven automatic rewrite in v0.1.0. Any
- * ordinary inbound reference from another file blocks mutation rather than
- * leaving a now-invalid import behind.
- */
-function nonReExportInboundReason(graph: IRGraph, claim: Claim): string | undefined {
-  if (claim.subject.kind !== "export" && claim.subject.kind !== "file") return undefined;
-  const targetIds = new Set<string>();
-  const selectedTargetIds = new Set<string>();
-  const forwardedSurfaceNames = new Map<string, Set<string>>();
-  if (claim.subject.kind === "export") {
-    const selected = symbolId(claim.subject.loc.file, claim.subject.name);
-    targetIds.add(selected);
-    selectedTargetIds.add(selected);
-    const selectedFile = fileId(claim.subject.loc.file);
-    if (!surfaceNameHasUniqueOrigin(graph, selectedFile, claim.subject.name, targetIds)) {
-      addForwardedSurfaceName(forwardedSurfaceNames, selectedFile, claim.subject.name);
-    }
-  } else {
-    const selectedFile = fileId(claim.subject.loc.file);
-    targetIds.add(selectedFile);
-    selectedTargetIds.add(selectedFile);
-    for (const node of graph.nodes()) {
-      if (node.kind === "symbol" && node.file === claim.subject.loc.file) {
-        targetIds.add(node.id);
-        selectedTargetIds.add(node.id);
-      }
-    }
-  }
-
-  // A named or star re-export introduces a forwarding node. Removing the
-  // selected origin also removes that forwarding surface, so an ordinary
-  // consumer of any node in the reverse re-export closure must block the
-  // whole mutation just as a direct consumer would. This includes consumers
-  // in unreachable, excluded, and suppressed files: --fix must not leave
-  // invalid imports behind merely because those consumers have no live root.
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const edge of graph.edges()) {
-      if (edge.kind !== "references" || edge.referenceKind !== "re-export") continue;
-      const source = graph.getNode(edge.from);
-      const surfaceNames = forwardedSurfaceNames.get(edge.to);
-      const forwardedNames =
-        surfaceNames === undefined
-          ? []
-          : edge.name === "*"
-            ? source?.kind === "file"
-              ? [...surfaceNames].filter((name) => name !== "default")
-              : [...surfaceNames]
-            : edge.name !== undefined && surfaceNames.has(edge.name)
-              ? [edge.name]
-              : [];
-      const exactTarget = graph.getNode(edge.to);
-      const exactMatch =
-        targetIds.has(edge.to) &&
-        !(
-          exactTarget?.kind === "symbol" &&
-          surfaceNameHasUniqueOrigin(
-            graph,
-            fileId(exactTarget.file),
-            exactTarget.exportedName,
-            targetIds,
-          )
-        );
-      if (!exactMatch && forwardedNames.length === 0) continue;
-
-      if (source?.kind === "symbol" && !targetIds.has(edge.from)) {
-        targetIds.add(edge.from);
-        changed = true;
-      }
-      if (source?.kind === "symbol") {
-        const sourceFile = fileId(source.file);
-        if (!surfaceNameHasUniqueOrigin(graph, sourceFile, source.exportedName, targetIds)) {
-          changed =
-            addForwardedSurfaceName(forwardedSurfaceNames, sourceFile, source.exportedName) ||
-            changed;
-        }
-      } else if (source?.kind === "file") {
-        if (exactMatch && !targetIds.has(source.id)) {
-          targetIds.add(source.id);
-          changed = true;
-        }
-        for (const name of forwardedNames) {
-          if (!surfaceNameHasUniqueOrigin(graph, source.id, name, targetIds)) {
-            changed = addForwardedSurfaceName(forwardedSurfaceNames, source.id, name) || changed;
-          }
-        }
-      }
-    }
-  }
-  const inbound = graph.edges().find((edge) => {
-    if (edge.kind !== "references" || edge.referenceKind === "re-export") return false;
-    if (targetIds.has(edge.to)) {
-      const target = graph.getNode(edge.to);
-      if (
-        target?.kind === "symbol" &&
-        surfaceNameHasUniqueOrigin(graph, fileId(target.file), target.exportedName, targetIds)
-      ) {
-        return false;
-      }
-      return !(selectedTargetIds.has(edge.to) && edge.site.file === graphNodeFile(graph, edge.to));
-    }
-    const names = forwardedSurfaceNames.get(edge.to);
-    if (names === undefined || edge.referenceKind === "side-effect") return false;
-    return edge.name === undefined || edge.name === "*" || names.has(edge.name);
-  });
-  return inbound === undefined
-    ? undefined
-    : `non-re-export inbound reference remains at ${inbound.site.file}:${inbound.site.span.startLine}`;
-}
-
-function addForwardedSurfaceName(
-  namesByFile: Map<string, Set<string>>,
-  fileNodeId: string,
-  name: string,
-): boolean {
-  const names = namesByFile.get(fileNodeId);
-  if (names === undefined) {
-    namesByFile.set(fileNodeId, new Set([name]));
-    return true;
-  }
-  const previousSize = names.size;
-  names.add(name);
-  return names.size !== previousSize;
-}
-
-function graphNodeFile(graph: IRGraph, nodeId: string): string | undefined {
-  const node = graph.getNode(nodeId);
-  if (node?.kind === "file") return node.path;
-  if (node?.kind === "symbol") return node.file;
-  if (node?.kind === "entrypoint") return node.file;
-  return undefined;
-}
 
 function claimFixType(claim: Claim): FixType | undefined {
   if (claim.subject.kind === "export") return "exports";
@@ -1446,6 +1312,7 @@ export async function run(argv: readonly string[]): Promise<number> {
       );
       if (!graphOutcome.ok) return graphOutcome.exitCode;
       result = graphOutcome.analysis.result;
+      const deletionContext = createDeletionPlanningContext(graphOutcome.analysis.graph);
       const initialEligible = eligibleFixClaims(result.claims, fixTypes);
       const initialEligibleIds = new Set(initialEligible.map((claim) => claim.id));
       const requiredReExports: RequiredReExportFix[] = [];
@@ -1461,19 +1328,10 @@ export async function run(argv: readonly string[]): Promise<number> {
         }
         const type: "exports" | "files" = claim.subject.kind === "export" ? "exports" : "files";
         if (!fixTypes.has(type)) continue;
-        const inboundReason = nonReExportInboundReason(graphOutcome.analysis.graph, claim);
-        if (inboundReason !== undefined) {
-          blockedClaims.push({
-            claimId: claim.id,
-            type,
-            file: claim.subject.loc.file,
-            reason: inboundReason,
-          });
-          continue;
-        }
         const plan = computeDeletionPlan({
           graph: graphOutcome.analysis.graph,
           reachability: graphOutcome.analysis.reachability,
+          context: deletionContext,
           subject:
             claim.subject.kind === "export"
               ? {

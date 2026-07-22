@@ -51,6 +51,7 @@ const SUPPRESSION_FIXTURE = join(FIXTURES_ROOT, "suppression-comment"); // 2 hig
 const ELIXIR_FIXTURE = join(REPO_ROOT, "fixtures/elixir/basic-dead-function");
 const ELIXIR_MFA_FIXTURE = join(REPO_ROOT, "fixtures/elixir/runtime-mfa-callback");
 const ELIXIR_USE_FIXTURE = join(REPO_ROOT, "fixtures/elixir/dynamic-use-helpers");
+const ELIXIR_DEAD_INBOUND_FIXTURE = join(REPO_ROOT, "fixtures/elixir/dead-inbound-cohort");
 const ELIXIR_INCOMPLETE_TEST_FIXTURE = join(REPO_ROOT, "fixtures/elixir/incomplete-test-partition");
 
 function readSchema(): object {
@@ -357,7 +358,8 @@ describe.skipIf(!MIX_AVAILABLE)("unused CLI — incomplete Elixir test partition
     expect(JSON.parse(result.stdout)).toMatchObject({
       schemaVersion: "1.4.0",
       supported: false,
-      unsupportedReason: "selected subject has a live analysis-completeness reference at mix.exs:1",
+      unsupportedReason:
+        "non-re-export inbound reference remains at mix.exs:1; coordinated caller edits or deletion cohort are not modeled",
       reExportEdits: [],
       stages: [],
     });
@@ -2029,6 +2031,47 @@ describe("unused CLI — why (T8.2, cli-ux §4)", () => {
     expect(plan.reExportEdits).toHaveLength(1);
   });
 
+  it("refuses a single dead file whose already-dead caller would retain an import", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "unused-cli-why-dead-inbound-"));
+    try {
+      await mkdir(join(dir, "src"));
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({ name: "neutral-dead-inbound", private: true, main: "src/index.ts" }),
+      );
+      await writeFile(join(dir, "src/index.ts"), 'console.log("entry");\n');
+      await writeFile(join(dir, "src/target.ts"), "export const target = 1;\n");
+      await writeFile(
+        join(dir, "src/caller.ts"),
+        'import { target } from "./target.js";\nexport const caller = target;\n',
+      );
+
+      const canonical = runCli(["--json", "--cwd", dir]);
+      expect(canonical.status).toBe(0);
+      const claimFiles = (
+        JSON.parse(canonical.stdout) as {
+          claims: Array<{ subject: { loc: { file: string } } }>;
+        }
+      ).claims.map((claim) => claim.subject.loc.file);
+      expect(claimFiles).toEqual(expect.arrayContaining(["src/caller.ts", "src/target.ts"]));
+
+      const deletion = runCli(["why", "--delete", "--json", "src/target.ts", "--cwd", dir]);
+      expect(deletion.status).toBe(0);
+      expect(deletion.stderr).toBe("");
+      expect(JSON.parse(deletion.stdout)).toMatchObject({
+        schemaVersion: "1.4.0",
+        selected: { kind: "file", file: "src/target.ts" },
+        supported: false,
+        unsupportedReason:
+          "non-re-export inbound reference remains at src/caller.ts:1; coordinated caller edits or deletion cohort are not modeled",
+        reExportEdits: [],
+        stages: [],
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects an ambiguous deletion JSON query without contaminating stdout", async () => {
     const dir = await mkdtemp(join(tmpdir(), "unused-cli-why-ambiguous-"));
     try {
@@ -2077,6 +2120,67 @@ describe("unused CLI — why (T8.2, cli-ux §4)", () => {
   );
 
   it.skipIf(!MIX_AVAILABLE)(
+    "refuses dead Elixir targets with dead compiler-visible callers while the full cohort compiles",
+    async () => {
+      for (const [target, line] of [
+        ["lib/neutral_dead_inbound/first_target.ex", 2],
+        ["lib/neutral_dead_inbound/second_target.ex", 3],
+      ] as const) {
+        const deletion = runCli([
+          "why",
+          "--delete",
+          "--json",
+          target,
+          "--cwd",
+          ELIXIR_DEAD_INBOUND_FIXTURE,
+        ]);
+        expect(deletion.status).toBe(0);
+        expect(deletion.stderr).toBe("");
+        expect(JSON.parse(deletion.stdout)).toMatchObject({
+          schemaVersion: "1.4.0",
+          selected: { kind: "file", file: target },
+          supported: false,
+          unsupportedReason: `non-re-export inbound reference remains at lib/neutral_dead_inbound/dead_caller.ex:${line}; coordinated caller edits or deletion cohort are not modeled`,
+          reExportEdits: [],
+          stages: [],
+        });
+      }
+
+      for (const target of ["FirstTarget", "SecondTarget"] as const) {
+        await withTempFixtureCopy(ELIXIR_DEAD_INBOUND_FIXTURE, async (dir) => {
+          await rm(
+            join(
+              dir,
+              "lib/neutral_dead_inbound",
+              `${target === "FirstTarget" ? "first" : "second"}_target.ex`,
+            ),
+          );
+          const compile = spawnSync("mix", ["compile", "--warnings-as-errors"], {
+            cwd: dir,
+            encoding: "utf8",
+            env: process.env,
+          });
+          expect(compile.status).not.toBe(0);
+          expect(compile.stderr + compile.stdout).toContain(`NeutralDeadInbound.${target}`);
+        });
+      }
+
+      await withTempFixtureCopy(ELIXIR_DEAD_INBOUND_FIXTURE, async (dir) => {
+        for (const file of ["dead_caller.ex", "first_target.ex", "second_target.ex"]) {
+          await rm(join(dir, "lib/neutral_dead_inbound", file));
+        }
+        const compile = spawnSync("mix", ["compile", "--warnings-as-errors"], {
+          cwd: dir,
+          encoding: "utf8",
+          env: process.env,
+        });
+        expect(compile.status, compile.stderr + compile.stdout).toBe(0);
+      });
+    },
+    60_000,
+  );
+
+  it.skipIf(!MIX_AVAILABLE)(
     "explains an MFA callback edge and refuses to model it as safely removable",
     () => {
       const subject = "NeutralMfa.Callback.callback_name/1";
@@ -2091,7 +2195,7 @@ describe("unused CLI — why (T8.2, cli-ux §4)", () => {
       expect(JSON.parse(deletion.stdout)).toMatchObject({
         supported: false,
         unsupportedReason:
-          "selected subject has a live runtime reference at lib/neutral_mfa/runtime_config.ex:4",
+          "non-re-export inbound reference remains at lib/neutral_mfa/runtime_config.ex:4; coordinated caller edits or deletion cohort are not modeled",
       });
     },
     30_000,
@@ -2112,7 +2216,7 @@ describe("unused CLI — why (T8.2, cli-ux §4)", () => {
       expect(JSON.parse(deletion.stdout)).toMatchObject({
         supported: false,
         unsupportedReason:
-          "selected subject has a live runtime reference at lib/neutral_use/router.ex:2",
+          "non-re-export inbound reference remains at lib/neutral_use/router.ex:2; coordinated caller edits or deletion cohort are not modeled",
       });
     },
     30_000,

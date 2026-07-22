@@ -723,6 +723,103 @@ Verification checkpoint (2026-07-22):
   1.4.0 JSON. Its archive contains the CLI, claim-run schema, README, LICENSE,
   and package metadata. The public-diff privacy scan is clean.
 
+#### Dead-inbound deletion-plan follow-up
+
+Status: complete and independently approved
+
+Resume objective: make every language-agnostic single-subject deletion plan
+account for ordinary inbound references from unreachable callers, without
+weakening the underlying claims or inventing unsafe cross-language rewrites.
+
+Accepted v0.1 design and acceptance:
+
+- preflight the selected subject plus its unavailable named/star re-export
+  surface, and reject any external non-re-export inbound edge regardless of the
+  source's production/config/test reachability;
+- report the deterministic first stored source site and keep the unsupported
+  schema-1.4 shape (`reExportEdits: []`, `stages: []`); re-export-only plans
+  remain supported with their exact proven edits;
+- centralize the preflight in core so `why --delete`, bounded report planning,
+  and `--fix` cannot disagree. Build one inbound index per captured graph and
+  reuse it across report/fix plans; the new lookup must not add a whole-graph
+  scan per claim;
+- do not put unreachable callers into `stages`: they were dead before the
+  counterfactual and are not newly dead. A future atomic deletion-cohort field
+  could remove callers and targets together without edits, but requires a
+  schema minor bump and separate approval;
+- independently generated neutral graph, TypeScript CLI, real-Mix Elixir, test-
+  scoped, runtime, re-export, deterministic-order, and Rust/Rustler regressions
+  must cover the shared rule. Claims, confidence, corpus labels, and ordinary
+  canonical JSON remain unchanged; and
+- benchmark indexed planning over increasing neutral graphs, run all public
+  quality/corpus/package/privacy gates, and obtain independent review before a
+  focused commit.
+
+Implementation checkpoint (2026-07-22):
+
+- core now builds deterministic ordinary-inbound and reverse-re-export indexes
+  in O(E). `why --delete`, bounded report summaries, and `--fix` all call the
+  same preflight; report and fix runs reuse one index for their captured graph;
+- direct targets are checked before re-export closure work. Named, star, alias,
+  and namespace-forwarded surfaces are then checked through the indexed reverse
+  closure. Ordinary consumers block the plan; a surface containing only proven
+  re-export edits remains supported;
+- TypeScript selected-export plans retain their existing same-file local-use
+  exception because the rewrite removes the export surface rather than the
+  local binding. Elixir, Rust, and cross-language symbols have no such reflected
+  local-name marker, so their same-file runtime references remain blockers;
+- neutral graph and CLI coverage proves direct dead callers, test-scoped edges,
+  stable source-site ordering, same-file TypeScript local use, exact re-export
+  edits, and forwarded consumers. Existing neutral runtime Elixir and Rustler
+  cases exercise the shared rule. A real-Mix fixture keeps its three valid dead
+  file claims while proving that either target alone fails compilation and the
+  reviewed caller-plus-target cohort compiles;
+- schema, claim confidence, canonical JSON, and assumption-set 1.12 are
+  unchanged. The unsupported schema-1.4 variant has empty edits/stages. Adding
+  atomic cohorts remains a separately approved future schema-minor change; and
+- a 30-repeat synthetic direct-blocker probe with 10 planned targets measured
+  these medians on Node 22.16.0:
+
+| Files | Symbols | Edges | O(E) index | 10 blocker plans |
+| ---: | ---: | ---: | ---: | ---: |
+| 260 | 260 | 770 | 0.023 ms | 0.067 ms |
+| 510 | 510 | 1,520 | 0.009 ms | 0.094 ms |
+| 1,010 | 1,010 | 3,020 | 0.020 ms | 0.126 ms |
+| 2,010 | 2,010 | 6,020 | 0.036 ms | 0.224 ms |
+| 4,010 | 4,010 | 12,020 | 0.072 ms | 0.453 ms |
+
+Index construction is O(E), and the measured direct-blocker curve is
+near-linear. A structural regression also proves that repeated direct-blocker
+plans using the context do not call `graph.edges()`. This table does not
+characterize forwarded-surface closure: named/star/namespace forwarding still
+uses bounded reverse-index walks plus the pre-existing re-export/reachability
+counterfactual, and is exercised for correctness rather than presented here as
+a general deletion-planning complexity result.
+
+Verification checkpoint (2026-07-22):
+
+- the focused public suite passes 8 files / 208 tests, and the full pinned
+  Elixir-equipped suite passes 83 files / 1,187 tests with no skips;
+- typecheck, build, assumption-set 1.12 sync, lint (the established 2 warnings /
+  48 infos), dependency boundaries (923 modules / 2,013 dependencies), and the
+  dedicated Elixir corpus gate (1 file / 4 tests) pass;
+- all scoreboards have zero false positives: TypeScript 52 cases / 237 subjects
+  (precision 1.0, recall 0.826530612244898), Elixir 14 cases / 36 subjects
+  (precision 1.0, recall 0.9285714285714286, no toolchain skips), Rust 4 cases
+  (precision 1.0, recall 0.8333333333333334), and polyglot 1 case
+  (precision/recall 1.0). Only the intended Elixir artifact changes;
+- a packed tarball installs under Node 22.16.0 and emits diagnostic-free
+  schema-1.4 JSON from a neutral TypeScript entrypoint. Its archive contains the
+  CLI, claim-run schema, README, LICENSE, and package metadata; and
+- diff checks and scans of the complete public tree/diff for private project
+  identifiers, host paths, private keys, and common credential forms are clean;
+  and
+- independent review found and drove two corrections before approval: bucket
+  and blocker sorting were replaced by linear deterministic selection, and a
+  forwarded star barrel no longer treats a harmless side-effect consumer as a
+  blocker. Exact-name and unknown consumers remain conservative, with focused
+  regressions for both sides. Final re-review reports no remaining findings.
+
 #### Load-free BEAM reflection follow-up
 
 Status: complete and independently approved in `76dc36b`

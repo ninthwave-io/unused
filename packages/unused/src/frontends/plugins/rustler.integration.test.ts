@@ -91,7 +91,7 @@ describe.skipIf(!isPolyglotToolchainAvailable())("literal Rustler bridge integra
     ).toMatchObject({
       supported: false,
       unsupportedReason:
-        "selected subject has a live runtime reference at beam/lib/neutral_bridge/native.ex:7",
+        "non-re-export inbound reference remains at beam/lib/neutral_bridge/native.ex:7; coordinated caller edits or deletion cohort are not modeled",
       stages: [],
     });
 
@@ -111,7 +111,7 @@ describe.skipIf(!isPolyglotToolchainAvailable())("literal Rustler bridge integra
     ).toMatchObject({
       supported: false,
       unsupportedReason:
-        "selected subject has a live static reference at beam/lib/neutral_bridge/application.ex:7",
+        "non-re-export inbound reference remains at beam/lib/neutral_bridge/application.ex:7; coordinated caller edits or deletion cohort are not modeled",
       stages: [],
     });
   });

@@ -1,0 +1,30 @@
+case: dead-inbound-cohort
+description: >-
+  Two unreachable target modules are referenced while compiling another
+  unreachable module. Each remains a valid dead-file claim, but deleting either
+  target alone would leave a compiler-visible reference behind.
+subjects:
+  - kind: file
+    name: lib/neutral_dead_inbound/dead_caller.ex
+    file: lib/neutral_dead_inbound/dead_caller.ex
+    expected: dead
+    minConfidence: high
+    because: >-
+      The caller is unreachable from the application entrypoint and is a clean
+      high-confidence dead-file claim.
+  - kind: file
+    name: lib/neutral_dead_inbound/first_target.ex
+    file: lib/neutral_dead_inbound/first_target.ex
+    expected: dead
+    minConfidence: high
+    because: >-
+      References from an unreachable caller do not make this target live, but
+      they must still block a single-file deletion plan.
+  - kind: file
+    name: lib/neutral_dead_inbound/second_target.ex
+    file: lib/neutral_dead_inbound/second_target.ex
+    expected: dead
+    minConfidence: high
+    because: >-
+      References from an unreachable caller do not make this target live, but
+      they must still block a single-file deletion plan.

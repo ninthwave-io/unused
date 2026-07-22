@@ -35,8 +35,32 @@ export interface ComputeDeletionPlanInput {
   readonly reachability: PartitionedReachability;
   /** Already-resolved subject; resolution remains the caller's concern. */
   readonly subject: DeletionPlanSubject;
+  /** Reusable graph index for bounded multi-plan report/fix runs. */
+  readonly context?: DeletionPlanningContext;
   /** Optional run-local phase/counter collector. */
   readonly performance?: PerformanceTracker;
+}
+
+/** Read-only indexes shared by every deletion plan over one captured graph. */
+export interface DeletionPlanningContext {
+  readonly graph: IRGraph;
+  readonly ordinaryInboundByTarget: ReadonlyMap<string, readonly IREdge[]>;
+  readonly reverseReExportsByTarget: ReadonlyMap<string, readonly IREdge[]>;
+}
+
+/** Build the O(E) inbound index once for a captured graph. */
+export function createDeletionPlanningContext(graph: IRGraph): DeletionPlanningContext {
+  const ordinaryInboundByTarget = new Map<string, IREdge[]>();
+  const reverseReExportsByTarget = new Map<string, IREdge[]>();
+  for (const edge of graph.edges()) {
+    if (edge.kind !== "references") continue;
+    const index =
+      edge.referenceKind === "re-export" ? reverseReExportsByTarget : ordinaryInboundByTarget;
+    const inbound = index.get(edge.to);
+    if (inbound === undefined) index.set(edge.to, [edge]);
+    else inbound.push(edge);
+  }
+  return { graph, ordinaryInboundByTarget, reverseReExportsByTarget };
 }
 
 /** Compute a deterministic, language-agnostic counterfactual deletion plan. */
@@ -71,35 +95,34 @@ export function computeDeletionPlan(input: ComputeDeletionPlanInput): DeletionPl
     });
   }
 
-  const liveInboundReference = graph
-    .edges()
-    .find(
-      (edge) =>
-        edge.kind === "references" &&
-        edge.referenceKind !== "re-export" &&
-        selectedNodeIds.has(edge.to) &&
-        !selectedNodeIds.has(edge.from) &&
-        isReachableSourceForEdge(graph, reachability, edge),
-    );
-  if (liveInboundReference !== undefined) {
-    const reference =
-      liveInboundReference.referenceKind === "runtime-resolved"
-        ? "runtime"
-        : liveInboundReference.referenceKind === "safety-root"
-          ? "analysis-completeness"
-          : (liveInboundReference.referenceKind ?? "unclassified");
-    return finish({
-      schemaVersion: SCHEMA_VERSION,
-      selected: subject,
-      supported: false,
-      unsupportedReason: `selected subject has a live ${reference} reference at ${liveInboundReference.site.file}:${liveInboundReference.site.span.startLine}`,
-      reExportEdits: [],
-      stages: [],
-    });
+  const context =
+    input.context?.graph === graph ? input.context : createDeletionPlanningContext(graph);
+  const directBlockingInbound = findBlockingInboundReference(
+    graph,
+    context,
+    selectedNodeIds,
+    selectedNodeIds,
+    selectedNodeIds,
+    new Map(),
+  );
+  if (directBlockingInbound !== undefined) {
+    return finish(blockedInboundPlan(subject, directBlockingInbound));
   }
-
+  const blockingSurface = collectBlockingSurfaceClosure(graph, context, selectedNodeIds);
   const removedNodeIds = new Set(selectedNodeIds);
   const reExportEdits = collectReExportClosure(graph, removedNodeIds);
+  const blockingInbound = findBlockingInboundReference(
+    graph,
+    context,
+    selectedNodeIds,
+    removedNodeIds,
+    blockingSurface.targetNodeIds,
+    blockingSurface.unavailableSurfaceNames,
+  );
+  if (blockingInbound !== undefined) {
+    return finish(blockedInboundPlan(subject, blockingInbound));
+  }
+
   const counterfactual = cloneWithout(graph, removedNodeIds);
   input.performance?.increment("graphWalks", 3);
   const after = computePartitionedReachability(counterfactual);
@@ -114,6 +137,186 @@ export function computeDeletionPlan(input: ComputeDeletionPlanInput): DeletionPl
     reExportEdits,
     stages,
   });
+}
+
+function blockedInboundPlan(subject: DeletionPlanConsequenceSubject, edge: IREdge): DeletionPlan {
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    selected: subject,
+    supported: false,
+    unsupportedReason: `non-re-export inbound reference remains at ${edge.site.file}:${edge.site.span.startLine}; coordinated caller edits or deletion cohort are not modeled`,
+    reExportEdits: [],
+    stages: [],
+  };
+}
+
+function findBlockingInboundReference(
+  graph: IRGraph,
+  context: DeletionPlanningContext,
+  selectedNodeIds: ReadonlySet<string>,
+  removedNodeIds: ReadonlySet<string>,
+  blockingTargetNodeIds: ReadonlySet<string>,
+  unavailableSurfaceNames: ReadonlyMap<string, ReadonlySet<string>>,
+): IREdge | undefined {
+  let firstCandidate: IREdge | undefined;
+  const consider = (edge: IREdge): void => {
+    if (firstCandidate === undefined || compareInboundEdges(edge, firstCandidate) < 0) {
+      firstCandidate = edge;
+    }
+  };
+  const fallbackByTarget = new Map<string, boolean>();
+  const hasFallback = (targetId: string): boolean => {
+    const cached = fallbackByTarget.get(targetId);
+    if (cached !== undefined) return cached;
+    const target = graph.getNode(targetId);
+    const fallback =
+      target?.kind === "symbol" &&
+      surfaceNameHasUniqueOrigin(
+        graph,
+        fileId(target.file),
+        target.exportedName,
+        blockingTargetNodeIds,
+      );
+    fallbackByTarget.set(targetId, fallback);
+    return fallback;
+  };
+
+  for (const targetId of [...blockingTargetNodeIds].sort(compare)) {
+    for (const edge of context.ordinaryInboundByTarget.get(targetId) ?? []) {
+      if (removedNodeIds.has(edge.from) || hasFallback(targetId)) continue;
+      const target = graph.getNode(targetId);
+      if (
+        edge.referenceKind === "side-effect" &&
+        target?.kind === "file" &&
+        !selectedNodeIds.has(targetId)
+      ) {
+        continue;
+      }
+      if (
+        target?.kind === "symbol" &&
+        target.localNameKind !== undefined &&
+        selectedNodeIds.has(targetId) &&
+        edge.site.file === graphNodeFile(graph, targetId)
+      ) {
+        continue;
+      }
+      consider(edge);
+    }
+  }
+
+  for (const [targetId, names] of [...unavailableSurfaceNames].sort(([a], [b]) => compare(a, b))) {
+    for (const edge of context.ordinaryInboundByTarget.get(targetId) ?? []) {
+      if (removedNodeIds.has(edge.from) || edge.referenceKind === "side-effect") continue;
+      if (edge.name === undefined || edge.name === "*" || names.has(edge.name)) {
+        consider(edge);
+      }
+    }
+  }
+
+  return firstCandidate;
+}
+
+interface BlockingSurfaceClosure {
+  readonly targetNodeIds: ReadonlySet<string>;
+  readonly unavailableSurfaceNames: ReadonlyMap<string, ReadonlySet<string>>;
+}
+
+function collectBlockingSurfaceClosure(
+  graph: IRGraph,
+  context: DeletionPlanningContext,
+  selectedNodeIds: ReadonlySet<string>,
+): BlockingSurfaceClosure {
+  const targetNodeIds = new Set(selectedNodeIds);
+  const unavailableSurfaceNames = new Map<string, Set<string>>();
+  const nodeQueue = [...selectedNodeIds].sort(compare);
+  const nameQueue: Array<readonly [string, string]> = [];
+  const addTarget = (id: string): void => {
+    if (targetNodeIds.has(id)) return;
+    targetNodeIds.add(id);
+    nodeQueue.push(id);
+  };
+  const addUnavailableName = (fileNodeId: string, name: string): void => {
+    if (!addSurfaceName(unavailableSurfaceNames, fileNodeId, name)) return;
+    nameQueue.push([fileNodeId, name]);
+  };
+  const exposeUnavailableSymbol = (id: string): void => {
+    const source = graph.getNode(id);
+    if (source?.kind !== "symbol") return;
+    if (
+      !surfaceNameHasUniqueOrigin(graph, fileId(source.file), source.exportedName, targetNodeIds)
+    ) {
+      addUnavailableName(fileId(source.file), source.exportedName);
+    }
+  };
+
+  for (const id of selectedNodeIds) exposeUnavailableSymbol(id);
+  while (nodeQueue.length > 0 || nameQueue.length > 0) {
+    nodeQueue.sort(compare);
+    const targetId = nodeQueue.shift();
+    if (targetId !== undefined) {
+      const target = graph.getNode(targetId);
+      const targetHasFallback =
+        target?.kind === "symbol" &&
+        surfaceNameHasUniqueOrigin(graph, fileId(target.file), target.exportedName, targetNodeIds);
+      if (!targetHasFallback) {
+        for (const edge of context.reverseReExportsByTarget.get(targetId) ?? []) {
+          const source = graph.getNode(edge.from);
+          if (source?.kind === "symbol" && !source.local) {
+            addTarget(source.id);
+            exposeUnavailableSymbol(source.id);
+          } else if (source?.kind === "file" && !unavailableSurfaceNames.has(targetId)) {
+            // Without a known exported name, retain a conservative marker for
+            // namespace/unknown consumers of this forwarding file. Its own
+            // side-effect consumers remain valid when only the re-export
+            // statement is removed and are filtered by the inbound preflight.
+            addTarget(source.id);
+          }
+        }
+      }
+    }
+
+    nameQueue.sort(
+      ([aFile, aName], [bFile, bName]) => compare(aFile, bFile) || compare(aName, bName),
+    );
+    const unavailable = nameQueue.shift();
+    if (unavailable === undefined) continue;
+    const [fileNodeId, name] = unavailable;
+    for (const edge of context.reverseReExportsByTarget.get(fileNodeId) ?? []) {
+      const source = graph.getNode(edge.from);
+      if (edge.name === "*") {
+        if (source?.kind === "file") {
+          if (name !== "default") addUnavailableName(source.id, name);
+        } else if (source?.kind === "symbol" && !source.local) {
+          addTarget(source.id);
+          exposeUnavailableSymbol(source.id);
+        }
+      } else if (source?.kind === "symbol" && !source.local && edge.name === name) {
+        addTarget(source.id);
+        exposeUnavailableSymbol(source.id);
+      }
+    }
+  }
+
+  return { targetNodeIds, unavailableSurfaceNames };
+}
+
+function compareInboundEdges(a: IREdge, b: IREdge): number {
+  return (
+    compare(a.site.file, b.site.file) ||
+    a.site.span.startLine - b.site.span.startLine ||
+    a.site.span.start - b.site.span.start ||
+    compare(a.referenceKind ?? "", b.referenceKind ?? "") ||
+    compare(a.from, b.from) ||
+    compare(a.to, b.to)
+  );
+}
+
+function graphNodeFile(graph: IRGraph, nodeId: string): string | undefined {
+  const node = graph.getNode(nodeId);
+  if (node?.kind === "file") return node.path;
+  if (node?.kind === "symbol") return node.file;
+  if (node?.kind === "entrypoint") return node.file;
+  return undefined;
 }
 
 function isReachableSourceForEdge(

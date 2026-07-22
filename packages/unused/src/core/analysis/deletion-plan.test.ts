@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { entrypointId, fileId, IRGraph, type Site, symbolId } from "../ir/index.js";
-import { computeDeletionPlan } from "./deletion-plan.js";
+import { computeDeletionPlan, createDeletionPlanningContext } from "./deletion-plan.js";
 import { computePartitionedReachability } from "./reachability.js";
 
 const span = (line = 1): Site["span"] => ({
@@ -125,7 +125,8 @@ describe("computeDeletionPlan", () => {
       schemaVersion: "1.4.0",
       selected: { kind: "export", file: "lib/callback.ex", name: "Callback.handle/0" },
       supported: false,
-      unsupportedReason: "selected subject has a live runtime reference at lib/config.ex:7",
+      unsupportedReason:
+        "non-re-export inbound reference remains at lib/config.ex:7; coordinated caller edits or deletion cohort are not modeled",
       reExportEdits: [],
       stages: [],
     });
@@ -153,7 +154,8 @@ describe("computeDeletionPlan", () => {
 
     expect(plan).toMatchObject({
       supported: false,
-      unsupportedReason: "selected subject has a live static reference at lib/application.ex:5",
+      unsupportedReason:
+        "non-re-export inbound reference remains at lib/application.ex:5; coordinated caller edits or deletion cohort are not modeled",
       reExportEdits: [],
       stages: [],
     });
@@ -197,7 +199,222 @@ describe("computeDeletionPlan", () => {
       }),
     ).toMatchObject({
       supported: false,
-      unsupportedReason: "selected subject has a live static reference at lib/application.ex:9",
+      unsupportedReason:
+        "non-re-export inbound reference remains at lib/application.ex:9; coordinated caller edits or deletion cohort are not modeled",
+      stages: [],
+    });
+  });
+
+  it("refuses a file with an ordinary inbound reference from an already-dead file", () => {
+    const graph = new IRGraph();
+    addEntry(graph, "lib/application.ex");
+    addSymbol(graph, "lib/dead_caller.ex", "DeadCaller.value/0");
+    addSymbol(graph, "lib/dead_target.ex", "DeadTarget.value/0");
+    reference(
+      graph,
+      symbolId("lib/dead_caller.ex", "DeadCaller.value/0"),
+      symbolId("lib/dead_target.ex", "DeadTarget.value/0"),
+      7,
+    );
+    const reachability = computePartitionedReachability(graph);
+    expect(
+      reachability.test.reachableSymbols.has(symbolId("lib/dead_caller.ex", "DeadCaller.value/0")),
+    ).toBe(false);
+
+    expect(
+      computeDeletionPlan({
+        graph,
+        reachability,
+        subject: { kind: "file", file: "lib/dead_target.ex" },
+      }),
+    ).toMatchObject({
+      supported: false,
+      unsupportedReason:
+        "non-re-export inbound reference remains at lib/dead_caller.ex:7; coordinated caller edits or deletion cohort are not modeled",
+      reExportEdits: [],
+      stages: [],
+    });
+  });
+
+  it("refuses a test-scoped inbound reference even when its source is unreachable", () => {
+    const graph = new IRGraph();
+    addSymbol(graph, "lib/dead_caller.ex", "DeadCaller.value/0");
+    addSymbol(graph, "lib/dead_target.ex", "DeadTarget.value/0");
+    reference(
+      graph,
+      symbolId("lib/dead_caller.ex", "DeadCaller.value/0"),
+      symbolId("lib/dead_target.ex", "DeadTarget.value/0"),
+      11,
+      "static",
+      "DeadTarget.value/0",
+      ["test"],
+    );
+
+    expect(
+      computeDeletionPlan({
+        graph,
+        reachability: computePartitionedReachability(graph),
+        subject: { kind: "file", file: "lib/dead_target.ex" },
+      }),
+    ).toMatchObject({
+      supported: false,
+      unsupportedReason:
+        "non-re-export inbound reference remains at lib/dead_caller.ex:11; coordinated caller edits or deletion cohort are not modeled",
+    });
+  });
+
+  it("chooses the first blocking source site deterministically rather than by insertion order", () => {
+    const graph = new IRGraph();
+    addSymbol(graph, "lib/z_caller.ex", "ZCaller.value/0");
+    addSymbol(graph, "lib/a_caller.ex", "ACaller.value/0");
+    addSymbol(graph, "lib/dead_target.ex", "DeadTarget.value/0");
+    reference(
+      graph,
+      symbolId("lib/z_caller.ex", "ZCaller.value/0"),
+      symbolId("lib/dead_target.ex", "DeadTarget.value/0"),
+      2,
+    );
+    reference(
+      graph,
+      symbolId("lib/a_caller.ex", "ACaller.value/0"),
+      symbolId("lib/dead_target.ex", "DeadTarget.value/0"),
+      9,
+    );
+
+    expect(
+      computeDeletionPlan({
+        graph,
+        reachability: computePartitionedReachability(graph),
+        subject: { kind: "file", file: "lib/dead_target.ex" },
+      }),
+    ).toMatchObject({
+      unsupportedReason:
+        "non-re-export inbound reference remains at lib/a_caller.ex:9; coordinated caller edits or deletion cohort are not modeled",
+    });
+  });
+
+  it("reuses one inbound index without rescanning the graph for direct blockers", () => {
+    const graph = new IRGraph();
+    for (let index = 0; index < 20; index += 1) {
+      addSymbol(graph, `src/caller_${index}.ts`, `caller_${index}`);
+      addSymbol(graph, `src/target_${index}.ts`, `target_${index}`);
+      reference(
+        graph,
+        symbolId(`src/caller_${index}.ts`, `caller_${index}`),
+        symbolId(`src/target_${index}.ts`, `target_${index}`),
+      );
+    }
+    const context = createDeletionPlanningContext(graph);
+    const reachability = computePartitionedReachability(graph);
+    const edges = vi.spyOn(graph, "edges");
+
+    for (let index = 0; index < 20; index += 1) {
+      expect(
+        computeDeletionPlan({
+          graph,
+          reachability,
+          context,
+          subject: { kind: "file", file: `src/target_${index}.ts` },
+        }).supported,
+      ).toBe(false);
+    }
+    expect(edges).not.toHaveBeenCalled();
+  });
+
+  it("allows same-file local use when deleting only a public export", () => {
+    const graph = new IRGraph();
+    addSymbol(graph, "src/module.ts", "dead", { localNameKind: "Name" });
+    addSymbol(graph, "src/module.ts", "localUser");
+    reference(graph, symbolId("src/module.ts", "localUser"), symbolId("src/module.ts", "dead"), 4);
+
+    expect(
+      computeDeletionPlan({
+        graph,
+        reachability: computePartitionedReachability(graph),
+        subject: { kind: "export", file: "src/module.ts", name: "dead" },
+      }),
+    ).toMatchObject({ supported: true, reExportEdits: [], stages: [] });
+  });
+
+  it("keeps a re-export-only plan supported with exact required edits", () => {
+    const graph = new IRGraph();
+    addSymbol(graph, "src/origin.ts", "thing", { line: 2 });
+    addSymbol(graph, "src/mid.ts", "thing", { local: false, line: 5 });
+    reference(
+      graph,
+      symbolId("src/mid.ts", "thing"),
+      symbolId("src/origin.ts", "thing"),
+      5,
+      "re-export",
+    );
+
+    expect(
+      computeDeletionPlan({
+        graph,
+        reachability: computePartitionedReachability(graph),
+        subject: { kind: "export", file: "src/origin.ts", name: "thing", line: 2 },
+      }),
+    ).toMatchObject({
+      supported: true,
+      reExportEdits: [
+        {
+          kind: "remove-re-export",
+          file: "src/mid.ts",
+          line: 5,
+          exportedName: "thing",
+          targetFile: "src/origin.ts",
+          targetName: "thing",
+        },
+      ],
+    });
+  });
+
+  it("keeps a star re-export plan supported when the barrel has a side-effect consumer", () => {
+    const graph = new IRGraph();
+    addEntry(graph, "src/consumer.ts");
+    addSymbol(graph, "src/target.ts", "thing", { line: 2 });
+    addFile(graph, "src/barrel.ts");
+    reference(graph, fileId("src/barrel.ts"), fileId("src/target.ts"), 4, "re-export", "*");
+    reference(graph, fileId("src/consumer.ts"), fileId("src/barrel.ts"), 1, "side-effect");
+
+    expect(
+      computeDeletionPlan({
+        graph,
+        reachability: computePartitionedReachability(graph),
+        subject: { kind: "file", file: "src/target.ts" },
+      }),
+    ).toMatchObject({
+      supported: true,
+      reExportEdits: [
+        {
+          kind: "remove-re-export",
+          file: "src/barrel.ts",
+          line: 4,
+          targetFile: "src/target.ts",
+        },
+      ],
+    });
+  });
+
+  it("conservatively blocks an unknown consumer of a star-only forwarding surface", () => {
+    const graph = new IRGraph();
+    addFile(graph, "src/target.ts");
+    addFile(graph, "src/barrel.ts");
+    addFile(graph, "src/consumer.ts");
+    reference(graph, fileId("src/barrel.ts"), fileId("src/target.ts"), 4, "re-export", "*");
+    reference(graph, fileId("src/consumer.ts"), fileId("src/barrel.ts"), 8, "static");
+
+    expect(
+      computeDeletionPlan({
+        graph,
+        reachability: computePartitionedReachability(graph),
+        subject: { kind: "file", file: "src/target.ts" },
+      }),
+    ).toMatchObject({
+      supported: false,
+      unsupportedReason:
+        "non-re-export inbound reference remains at src/consumer.ts:8; coordinated caller edits or deletion cohort are not modeled",
+      reExportEdits: [],
       stages: [],
     });
   });
@@ -356,7 +573,7 @@ describe("computeDeletionPlan", () => {
     ]);
   });
 
-  it("returns every required edit in a named re-export chain from stored provenance", () => {
+  it("refuses an ordinary consumer through a named re-export chain", () => {
     const graph = new IRGraph();
     addEntry(graph, "src/index.ts");
     addSymbol(graph, "src/origin.ts", "thing", { line: 2 });
@@ -386,40 +603,13 @@ describe("computeDeletionPlan", () => {
       subject: { kind: "export", file: "src/origin.ts", name: "thing", line: 2 },
     });
 
-    expect(plan.reExportEdits).toEqual([
-      {
-        kind: "remove-re-export",
-        file: "src/api.ts",
-        line: 7,
-        exportedName: "thing",
-        targetFile: "src/mid.ts",
-        targetName: "thing",
-        site: site("src/api.ts", 7),
-      },
-      {
-        kind: "remove-re-export",
-        file: "src/mid.ts",
-        line: 5,
-        exportedName: "thing",
-        targetFile: "src/origin.ts",
-        targetName: "thing",
-        site: site("src/mid.ts", 5),
-      },
-    ]);
-    expect(plan.stages).toEqual([
-      {
-        stage: 1,
-        newlyDead: [
-          { kind: "file", file: "src/api.ts" },
-          { kind: "file", file: "src/mid.ts" },
-          { kind: "file", file: "src/origin.ts" },
-        ],
-      },
-      {
-        stage: 2,
-        newlyDead: [{ kind: "file", file: "src/api-support.ts" }],
-      },
-    ]);
+    expect(plan).toMatchObject({
+      supported: false,
+      unsupportedReason:
+        "non-re-export inbound reference remains at src/index.ts:1; coordinated caller edits or deletion cohort are not modeled",
+      reExportEdits: [],
+      stages: [],
+    });
   });
 
   it("removes a downstream aliased named re-export across a multihop star chain", () => {
@@ -629,7 +819,7 @@ describe("computeDeletionPlan", () => {
     expect(plan.stages).toEqual([]);
   });
 
-  it("keeps a default assignment distinct from an alias of its expression binding", () => {
+  it("blocks a consumer when a default assignment stays distinct from a named alias", () => {
     const graph = new IRGraph();
     addEntry(graph, "src/index.ts");
     addSymbol(graph, "src/selected.ts", "shared", { line: 2 });
@@ -687,17 +877,13 @@ describe("computeDeletionPlan", () => {
       subject: { kind: "export", file: "src/selected.ts", name: "shared", line: 2 },
     });
 
-    expect(plan.reExportEdits).toEqual([
-      {
-        kind: "remove-re-export",
-        file: "src/api.ts",
-        line: 8,
-        exportedName: "forwarded",
-        targetFile: "src/selected.ts",
-        targetName: "shared",
-        site: site("src/api.ts", 8),
-      },
-    ]);
+    expect(plan).toMatchObject({
+      supported: false,
+      unsupportedReason:
+        "non-re-export inbound reference remains at src/index.ts:1; coordinated caller edits or deletion cohort are not modeled",
+      reExportEdits: [],
+      stages: [],
+    });
   });
 
   it("collapses namespace wrappers of one target module into one fallback origin", () => {
@@ -732,7 +918,7 @@ describe("computeDeletionPlan", () => {
     expect(plan.stages).toEqual([]);
   });
 
-  it("removes a downstream re-export when same-file star fallback is ambiguous", () => {
+  it("blocks a forwarded consumer when the same-file star fallback is ambiguous", () => {
     const graph = new IRGraph();
     addEntry(graph, "src/index.ts");
     addSymbol(graph, "src/selected.ts", "shared", { line: 2 });
@@ -766,27 +952,13 @@ describe("computeDeletionPlan", () => {
       subject: { kind: "export", file: "src/selected.ts", name: "shared", line: 2 },
     });
 
-    expect(plan.reExportEdits).toEqual([
-      {
-        kind: "remove-re-export",
-        file: "src/api.ts",
-        line: 8,
-        exportedName: "forwarded",
-        targetFile: "src/selected.ts",
-        targetName: "shared",
-        site: site("src/api.ts", 8),
-      },
-    ]);
-    expect(plan.stages).toEqual([
-      {
-        stage: 1,
-        newlyDead: [
-          { kind: "file", file: "src/api.ts" },
-          { kind: "file", file: "src/selected.ts" },
-        ],
-      },
-      { stage: 2, newlyDead: [{ kind: "file", file: "src/api-support.ts" }] },
-    ]);
+    expect(plan).toMatchObject({
+      supported: false,
+      unsupportedReason:
+        "non-re-export inbound reference remains at src/index.ts:1; coordinated caller edits or deletion cohort are not modeled",
+      reExportEdits: [],
+      stages: [],
+    });
   });
 
   it("removing a file removes its exports and reports its newly orphaned target", () => {

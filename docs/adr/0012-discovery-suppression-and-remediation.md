@@ -47,6 +47,8 @@ The original PRD described v1 as detection-only. Before v0.1.0, the founder expl
 
 - Consequences are counterfactual plans, not new claim verdicts. They do not affect baselines, gates, badges, or confidence.
 - `unused why --delete <subject>` returns the selected subject, required re-export edits, and the claims that would become newly dead after the selected removal. The terminal groups consequences in deterministic stages; machine output uses the same structured plan.
+- A single-subject plan is unsupported when any ordinary inbound reference from another file would remain, even when that caller is itself unreachable. Only re-export sites have a proven coordinated rewrite in v0.1; ordinary TypeScript, Elixir, Rust, and cross-language references cannot be advertised as safe to leave dangling. The planner and `--fix` share this preflight and report one deterministic stored source site.
+- Deleting a separately reviewed atomic cohort of dead callers and targets may require no source edits, but cohort deletion is not represented by the schema-1.4 single-subject contract. Already-dead callers are prerequisites, not “newly dead” consequences, so they are never placed misleadingly into consequence stages. A future cohort shape requires a schema minor bump and separate founder approval.
 - Reports may surface consequence summaries for their highest-value findings, but the claim remains the unit of truth. Plans are computed from the captured graph and claim run, never by reparsing for presentation.
 - The canonical machine contract gains additive optional suppression provenance and deletion-plan shapes, requiring a schema minor bump under ADR 0006.
 

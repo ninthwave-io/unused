@@ -18,8 +18,10 @@ export { type DependencyClaimInput, type EmitClaimsInput, emitClaims } from "./c
 export {
   type ComputeDeletionPlanInput,
   computeDeletionPlan,
+  createDeletionPlanningContext,
   type DeletionPlan,
   type DeletionPlanConsequenceSubject,
+  type DeletionPlanningContext,
   type DeletionPlanStage,
   type DeletionPlanSubject,
   type ReExportEdit,
