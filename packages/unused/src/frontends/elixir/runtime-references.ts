@@ -61,7 +61,9 @@ const SIMPLE_APPLY_RE = new RegExp(
   String.raw`\b(?:(?:Kernel|:erlang)\.)?apply\s*\(\s*(${MODULE}|__MODULE__|[a-z_][A-Za-z0-9_]*)\s*,\s*(:${FUNCTION}|[a-z_][A-Za-z0-9_]*)\s*,\s*(\[\s*(?:[A-Za-z0-9_:.!?-]+\s*(?:,\s*[A-Za-z0-9_:.!?-]+\s*)*)?\])\s*\)`,
   "gu",
 );
+const ANY_APPLY_RE = /(?:\bKernel\s*\.\s*|:erlang\s*\.\s*|\b)apply\s*\(/gu;
 const ATOM_PRODUCER_RE = /\bString\.(to_atom|to_existing_atom)\s*\(/gu;
+const PHOENIX_CONTROLLER = "Phoenix.Controller";
 const MAP_CALL_RE =
   /\bMap\.(fetch!|fetch|get|get_lazy|has_key\?|delete|put|put_new|put_new_lazy|replace|replace!|update|update!)\s*\(/gu;
 
@@ -95,6 +97,7 @@ export function extractElixirRuntimeConventions(
   );
   const ownerIndex = indexOwners(traceResult);
   const parsedBySite = indexParsedApplies(sources);
+  const sourceApplySites = indexSourceApplySites(sources);
   const usingSelectorsByCarrier = indexUsingSelectorsByCarrier(traceResult.events, sources);
   const dispatchModules = indexUseDispatcherModules(
     traceResult.events,
@@ -107,6 +110,7 @@ export function extractElixirRuntimeConventions(
 
   const references: ElixirRuntimeReference[] = [];
   const seen = new Set<string>();
+  const provenUseEvents: TraceEvent[] = [];
   for (const [file, source] of sources) {
     const searchable = source.code;
     for (const match of searchable.matchAll(MFA_RE)) {
@@ -168,6 +172,7 @@ export function extractElixirRuntimeConventions(
         line,
         convention: "use-helper",
       });
+      provenUseEvents.push(useEvent);
     }
   }
 
@@ -175,10 +180,12 @@ export function extractElixirRuntimeConventions(
     traceResult,
     sources,
     parsedBySite,
+    sourceApplySites,
     usingSelectorsByCarrier,
     functionsByModuleName,
     references,
     seen,
+    provenUseEvents,
   );
   return { references, dynamicDispatches };
 }
@@ -203,6 +210,16 @@ function indexParsedApplies(
     }
   }
   return parsedBySite;
+}
+
+function indexSourceApplySites(sources: ReadonlyMap<string, SourceIndex>): ReadonlySet<string> {
+  const sites = new Set<string>();
+  for (const [file, source] of sources) {
+    for (const match of source.code.matchAll(ANY_APPLY_RE)) {
+      sites.add(dispatchSiteKey(file, lineAt(source.lineStarts, match.index ?? 0)));
+    }
+  }
+  return sites;
 }
 
 function indexUseDispatcherModules(
@@ -298,10 +315,12 @@ function extractDynamicDispatches(
   traceResult: TraceResult,
   sources: ReadonlyMap<string, SourceIndex>,
   parsedBySite: ReadonlyMap<string, ParsedApply[]>,
+  sourceApplySites: ReadonlySet<string>,
   usingSelectorsByCarrier: ReadonlyMap<string, number>,
   functionsByModuleName: ReadonlyMap<string, FunctionRecord[]>,
   references: ElixirRuntimeReference[],
   seenReferences: Set<string>,
+  provenUseEvents: readonly TraceEvent[],
 ): ElixirDynamicDispatch[] {
   const functionsByModule = new Map<string, FunctionRecord[]>();
   for (const fn of traceResult.functions) {
@@ -320,6 +339,8 @@ function extractDynamicDispatches(
     functionsByModuleName,
     usingSelectorsByCarrier,
   );
+  const provenUseSites = new Set(provenUseEvents.map(generatedUseSiteKey));
+  const phoenixActionUseSites = indexPhoenixActionUseSites(traceResult);
 
   const dispatches: ElixirDynamicDispatch[] = [];
   for (const event of traceResult.events) {
@@ -355,6 +376,64 @@ function extractDynamicDispatches(
       event.name === "apply" &&
       event.arity === 3 &&
       (event.to_mod === "Kernel" || event.to_mod === ":erlang");
+    if (
+      isApply3 &&
+      (parsed === undefined || parsed.length === 0) &&
+      event.from_mod !== null &&
+      event.from_fun === "action/2" &&
+      !sourceApplySites.has(dispatchSiteKey(event.file, event.line)) &&
+      provenUseSites.has(generatedUseSiteKey(event)) &&
+      phoenixActionUseSites.get(generatedUseSiteKey(event)) === 1
+    ) {
+      const ownerFunctions = functionsByModule.get(event.from_mod) ?? [];
+      const carriers = ownerFunctions.filter(
+        (candidate) =>
+          candidate.partition === event.partition &&
+          candidate.name === "action" &&
+          candidate.arity === 2,
+      );
+      if (carriers.length !== 1 || carriers[0] === undefined) {
+        dispatches.push({
+          ...owner,
+          file: event.file,
+          line: event.line,
+          kind: "opaque",
+          eventKey,
+          targets: [],
+        });
+        continue;
+      }
+      const carrier = carriers[0];
+      // Phoenix.Controller generates action/2 as the reflective carrier. A
+      // module-level convention edge activates it whenever the proven owner
+      // module is live, without pretending the generated function was called
+      // directly in source.
+      addReference(references, seenReferences, {
+        fromMod: event.from_mod,
+        toMod: carrier.mod,
+        toName: carrier.name,
+        toArity: carrier.arity,
+        file: event.file,
+        line: event.line,
+        convention: "dynamic-apply",
+      });
+      const targets = ownerFunctions.filter(
+        (candidate) =>
+          candidate.partition === event.partition &&
+          candidate.arity === 2 &&
+          candidate.name !== "action" &&
+          !candidate.name.startsWith("__"),
+      );
+      dispatches.push({
+        ...owner,
+        file: event.file,
+        line: event.line,
+        kind: "bounded",
+        eventKey,
+        targets,
+      });
+      continue;
+    }
     if (!isApply3 || siteEvents.length !== 1 || parsed?.length !== 1 || parsed[0] === undefined) {
       dispatches.push({
         ...owner,
@@ -744,6 +823,29 @@ function listArity(value: string): number | null {
 
 function dispatchSiteKey(file: string, line: number): string {
   return `${file}\0${line}`;
+}
+
+function generatedUseSiteKey(event: TraceEvent): string {
+  return `${event.file}\0${event.line}\0${event.from_mod ?? ""}\0${event.partition}`;
+}
+
+function indexPhoenixActionUseSites(traceResult: TraceResult): ReadonlyMap<string, number> {
+  const counts = new Map<string, number>();
+  if (!traceResult.deps.includes("phoenix")) return counts;
+  if (traceResult.modules.some((record) => record.mod === PHOENIX_CONTROLLER)) return counts;
+  for (const event of traceResult.events) {
+    if (
+      event.name !== "__using__" ||
+      event.arity !== 1 ||
+      event.to_mod !== PHOENIX_CONTROLLER ||
+      event.from_mod === null
+    ) {
+      continue;
+    }
+    const key = generatedUseSiteKey(event);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
 }
 
 export function dynamicEventKey(event: TraceEvent): string {
