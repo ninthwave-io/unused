@@ -50,6 +50,17 @@ function addEntry(g: IRGraph, rel: string, reason = "main"): void {
   });
 }
 
+function addSymbolEntry(g: IRGraph, rel: string, name: string): void {
+  g.addNode({
+    kind: "entrypoint",
+    id: entrypointId("production", rel, symbolId(rel, name)),
+    entryKind: "production",
+    file: rel,
+    targetSymbol: symbolId(rel, name),
+    reason: "configured operation",
+  });
+}
+
 function addConfigEntry(g: IRGraph, rel: string): void {
   addFile(g, rel);
   g.addNode({
@@ -1582,4 +1593,27 @@ describe("private symbols in entrypoint files", () => {
       },
     ]);
   });
+});
+
+describe("exact symbol entrypoint claims", () => {
+  it.each(["default", "run"])(
+    "keeps only the configured %s export alive and claims its named sibling",
+    (target) => {
+      const g = new IRGraph();
+      addEntry(g, "src/index.ts");
+      addSymbol(g, "src/operations.ts", target);
+      addSymbol(g, "src/operations.ts", "unusedSibling");
+      addSymbolEntry(g, "src/operations.ts", target);
+
+      expect(shape(run(g))).toEqual([
+        {
+          kind: "export",
+          name: "unusedSibling",
+          file: "src/operations.ts",
+          verdict: "unused",
+          confidence: "high",
+        },
+      ]);
+    },
+  );
 });

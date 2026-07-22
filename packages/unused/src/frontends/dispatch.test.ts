@@ -114,6 +114,80 @@ describe.skipIf(!MIX_AVAILABLE)("mixed-language dispatch policy", () => {
       { status: "complete", boundaryId: "ts:services/web", language: "ts" },
     ]);
   }, 30_000);
+
+  it("resolves exact symbol roots once across nested language boundaries", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unused-nested-entry-symbols-"));
+    temporaryProjects.push(root);
+    const backend = join(root, "services", "backend");
+    const web = join(root, "services", "web");
+    await mkdir(join(root, "services"), { recursive: true });
+    await cp(elixirFixture, backend, { recursive: true });
+    await mkdir(join(web, "src"), { recursive: true });
+    await writeFile(
+      join(web, "package.json"),
+      JSON.stringify({ name: "neutral-web", type: "module", main: "src/index.ts" }),
+    );
+    await writeFile(join(web, "src", "index.ts"), "export const boot = true;\n");
+    await writeFile(
+      join(web, "src", "operations.ts"),
+      "export const selected = true;\nexport const unusedSibling = false;\n",
+    );
+    await writeFile(
+      join(root, "unused.config.jsonc"),
+      JSON.stringify({
+        workspaces: {
+          "services/web": {
+            entrySymbols: [
+              {
+                language: "ts",
+                file: "src/operations.ts",
+                name: "selected",
+                reason: "browser operation",
+              },
+            ],
+          },
+          "services/backend": {
+            entrySymbols: [
+              {
+                language: "ex",
+                file: "lib/tob/fixture_factory.ex",
+                name: "Tob.FixtureFactory.build/0",
+                reason: "runtime operation",
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    const analysis = await analyzeProjectAutoWithGraph(root, { now: new Date(0) });
+    const names = analysis.result.claims.map((claim) => claim.subject.name);
+    expect(names).not.toContain("selected");
+    expect(names).toContain("unusedSibling");
+    expect(names).not.toContain("Tob.FixtureFactory.build/0");
+    expect(
+      analysis.graph
+        .entrypoints()
+        .filter((entrypoint) => entrypoint.targetSymbol !== undefined)
+        .map((entrypoint) => ({
+          file: entrypoint.file,
+          reason: entrypoint.reason,
+          targetSymbol: entrypoint.targetSymbol,
+        })),
+    ).toEqual([
+      {
+        file: "services/backend/lib/tob/fixture_factory.ex",
+        reason: "runtime operation",
+        targetSymbol:
+          "symbol:services/backend/lib/tob/fixture_factory.ex#Tob.FixtureFactory.build/0",
+      },
+      {
+        file: "services/web/src/operations.ts",
+        reason: "browser operation",
+        targetSymbol: "symbol:services/web/src/operations.ts#selected",
+      },
+    ]);
+  }, 30_000);
 });
 
 describe("nested-boundary dispatch", () => {

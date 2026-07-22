@@ -33,6 +33,10 @@ import {
   SCHEMA_VERSION,
 } from "../../core/claims/index.js";
 import { entrypointId, fileId, IRGraph } from "../../core/ir/index.js";
+import {
+  applyConfigSymbolEntrypoints,
+  graphSymbolLanguages,
+} from "../config-symbol-entrypoints.js";
 import type { FrontendClaimInputs, GraphContribution, PluginDiagnostic } from "../plugins/types.js";
 import type { AnalyzeInternalOptions, AnalyzeOptions, AnalyzeResult } from "../ts/analyze.js";
 import {
@@ -220,6 +224,14 @@ export async function analyzeElixirProjectWithGraph(
   performance?.set("symbols", graph.nodes().filter((node) => node.kind === "symbol").length);
   performance?.set("edges", graph.edges().length);
   performance?.set("workspaces", 1);
+  if (internal.deferConfigSymbolEntrypoints !== true) {
+    applyConfigSymbolEntrypoints({
+      graph,
+      config,
+      units: configUnits,
+      symbolLanguages: graphSymbolLanguages(graph, "ex"),
+    });
+  }
   const reachability = computePartitionedReachability(graph, performance);
   const provenance: Provenance = {
     analyzer: ANALYZER_NAME,

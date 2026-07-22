@@ -253,9 +253,16 @@ describe("unused CLI — --json is schema-valid and stdout-clean", () => {
       .trim()
       .split("\n")
       .filter((line) => line.startsWith("unused performance "))
-      .map((line) => JSON.parse(line.slice("unused performance ".length)) as { event: string });
+      .map(
+        (line) =>
+          JSON.parse(line.slice("unused performance ".length)) as {
+            event: string;
+            counters?: { deletionPlanSimulations: number };
+          },
+      );
     expect(diagnostics.some((diagnostic) => diagnostic.event === "phase")).toBe(true);
     expect(diagnostics.at(-1)?.event).toBe("summary");
+    expect(diagnostics.at(-1)?.counters?.deletionPlanSimulations).toBe(0);
   });
 });
 
@@ -481,6 +488,29 @@ describe("unused CLI — config (T4.3)", () => {
     expect(result.status).toBe(3);
     expect(result.stderr).toMatch(/bogusField/);
     expect(result.stdout).toBe("");
+  });
+
+  it("keeps JSON stdout empty when an exact configured symbol is unmatched", async () => {
+    await withTempFixtureCopy(DEAD_FIXTURE, async (dir) => {
+      await writeFile(
+        join(dir, "unused.config.jsonc"),
+        JSON.stringify({
+          entrySymbols: [
+            {
+              language: "ts",
+              file: "src/math.ts",
+              name: "missingExport",
+              reason: "public API",
+            },
+          ],
+        }),
+      );
+      const result = runCli(["--json", "--cwd", dir]);
+      expect(result.status).toBe(3);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("matched no exported ts symbol");
+      expect(result.stderr).toContain("src/math.ts#missingExport");
+    });
   });
 
   it("exits 3 when --config points at a file that doesn't exist", () => {

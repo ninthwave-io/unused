@@ -16,6 +16,10 @@ import {
   SCHEMA_VERSION,
 } from "../../core/claims/index.js";
 import { entrypointId, fileId, IRGraph, symbolId } from "../../core/ir/index.js";
+import {
+  applyConfigSymbolEntrypoints,
+  graphSymbolLanguages,
+} from "../config-symbol-entrypoints.js";
 import type { FrontendClaimInputs } from "../plugins/types.js";
 import type { AnalyzeInternalOptions, AnalyzeOptions, AnalyzeResult } from "../ts/analyze.js";
 import {
@@ -200,6 +204,14 @@ async function analyzeRustProjectWithIsolatedCargo(
   performance?.set("symbols", graph.nodes().filter((node) => node.kind === "symbol").length);
   performance?.set("edges", graph.edges().length);
   performance?.set("workspaces", units.length);
+  if (internal.deferConfigSymbolEntrypoints !== true) {
+    applyConfigSymbolEntrypoints({
+      graph,
+      config,
+      units: configUnits,
+      symbolLanguages: graphSymbolLanguages(graph, "rs"),
+    });
+  }
   const reachability = computePartitionedReachability(graph, performance);
   const provenance: Provenance = {
     analyzer: ANALYZER_NAME,

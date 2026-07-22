@@ -63,6 +63,89 @@ describe("Elixir analysis policy", () => {
   });
 
   it.skipIf(!MIX_AVAILABLE)(
+    "roots the exact configured function with rationale and refuses its deletion",
+    async () => {
+      const root = await copyFixture();
+      await writeFile(
+        join(root, "unused.config.jsonc"),
+        JSON.stringify({
+          entrySymbols: [
+            {
+              language: "ex",
+              file: "lib/basic_dead/core.ex",
+              name: "BasicDead.Core.unused_helper/1",
+              reason: "public callback",
+            },
+          ],
+        }),
+      );
+
+      const analysis = await analyzeElixirProjectWithGraph(root, { now: new Date(0) });
+      expect(
+        analysis.result.claims.some(
+          (claim) => claim.subject.name === "BasicDead.Core.unused_helper/1",
+        ),
+      ).toBe(false);
+      expect(
+        whyAlive({
+          graph: analysis.graph,
+          reachability: analysis.reachability,
+          claims: analysis.result.claims,
+          query: "BasicDead.Core.unused_helper/1",
+        }),
+      ).toMatchObject({
+        outcome: "alive",
+        paths: [
+          {
+            entrypointReason: "public callback",
+            hops: [
+              {
+                file: "lib/basic_dead/core.ex",
+                symbol: "BasicDead.Core.unused_helper/1",
+              },
+            ],
+          },
+        ],
+      });
+      expect(
+        computeDeletionPlan({
+          graph: analysis.graph,
+          reachability: analysis.reachability,
+          subject: {
+            kind: "export",
+            file: "lib/basic_dead/core.ex",
+            name: "BasicDead.Core.unused_helper/1",
+          },
+        }),
+      ).toMatchObject({
+        supported: false,
+        unsupportedReason: expect.stringContaining("public callback"),
+      });
+    },
+    30_000,
+  );
+
+  it.skipIf(!MIX_AVAILABLE)("fails closed when an exact Elixir arity is wrong", async () => {
+    const root = await copyFixture();
+    await writeFile(
+      join(root, "unused.config.jsonc"),
+      JSON.stringify({
+        entrySymbols: [
+          {
+            language: "ex",
+            file: "lib/basic_dead/core.ex",
+            name: "BasicDead.Core.unused_helper/2",
+            reason: "public callback",
+          },
+        ],
+      }),
+    );
+    await expect(analyzeElixirProjectWithGraph(root, { now: new Date(0) })).rejects.toThrow(
+      ConfigError,
+    );
+  });
+
+  it.skipIf(!MIX_AVAILABLE)(
     "keeps standalone scripts dead while retaining their literal deletion prerequisites",
     async () => {
       const root = await copyFixtureFrom(scriptFixture);

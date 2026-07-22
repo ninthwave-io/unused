@@ -80,6 +80,10 @@ import {
   type IRGraph,
   type Site,
 } from "../../core/ir/index.js";
+import {
+  applyConfigSymbolEntrypoints,
+  graphSymbolLanguages,
+} from "../config-symbol-entrypoints.js";
 import type { FrontendClaimInputs, PluginDiagnostic } from "../plugins/types.js";
 import {
   applyConfigSuppressions,
@@ -168,6 +172,8 @@ export interface AnalyzeOptions {
 export interface AnalyzeInternalOptions {
   /** Defer config-match diagnostics so mixed dispatch can evaluate the language union once. */
   readonly emitConfigMatchWarnings?: boolean;
+  /** Repository dispatch resolves exact roots once after all fragments are composed. */
+  readonly deferConfigSymbolEntrypoints?: boolean;
   /** Convention families owned by repository plugins instead of this composition path. */
   readonly deferredConventions?: readonly DeferredConventionId[];
   /** Shared gitignore-bounded inventory supplied to the Elixir frontend. */
@@ -710,6 +716,14 @@ export async function analyzeProjectWithGraph(
   performance?.set("edges", graph.edges().length);
 
   // partitioned reachability → claims (T5.1: production/config/test partitions).
+  if (internal.deferConfigSymbolEntrypoints !== true) {
+    applyConfigSymbolEntrypoints({
+      graph,
+      config,
+      units: configUnits,
+      symbolLanguages: graphSymbolLanguages(graph, "ts"),
+    });
+  }
   const reachability = computePartitionedReachability(graph, performance);
   const provenance: Provenance = {
     analyzer: ANALYZER_NAME,

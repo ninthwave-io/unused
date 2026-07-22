@@ -16,6 +16,7 @@ import {
   SCHEMA_VERSION,
 } from "../core/claims/index.js";
 import { entrypointId, IRGraph, type IRNode } from "../core/ir/index.js";
+import { applyConfigSymbolEntrypoints } from "./config-symbol-entrypoints.js";
 import { analyzeElixirProjectWithGraph } from "./elixir/index.js";
 import { BUILT_IN_PLUGINS, claimAnnotationKey } from "./plugins/builtins.js";
 import { PluginRegistry } from "./plugins/registry.js";
@@ -221,6 +222,16 @@ export async function analyzeProjectAutoWithGraph(
       reason: hit.reason,
     });
   }
+  const symbolLanguages = new Map<string, "ts" | "ex" | "rs">();
+  for (const fragment of fragments) {
+    if (fragment.language !== "ts" && fragment.language !== "ex" && fragment.language !== "rs") {
+      continue;
+    }
+    for (const node of fragment.graph.nodes()) {
+      if (node.kind === "symbol") symbolLanguages.set(node.id, fragment.language);
+    }
+  }
+  applyConfigSymbolEntrypoints({ graph, config, units, symbolLanguages });
   warnOnEmptyConfigMatches(config, analyzedFiles, analyzedFiles, units);
 
   const reachability = computePartitionedReachability(graph, options.performance);

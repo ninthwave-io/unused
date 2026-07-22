@@ -135,6 +135,7 @@ export const typescriptLanguagePlugin: LanguageFrontendPlugin = {
   async analyze(context, boundary) {
     const analysis = await analyzeProjectWithGraph(boundary.rootDir, analyzeOptions(context), {
       emitConfigMatchWarnings: false,
+      deferConfigSymbolEntrypoints: true,
       deferredConventions: ["github-actions-run", "taskfile-command", "native-config-script"],
     });
     return fragment(this.id, this.language, boundary, analysis);
@@ -168,6 +169,7 @@ export const elixirLanguagePlugin: LanguageFrontendPlugin = {
       analyzeOptions(context),
       {
         emitConfigMatchWarnings: false,
+        deferConfigSymbolEntrypoints: true,
         deferredConventions: ["elixir-runtime", "elixir-scripts"],
         elixirSourceFiles: filesWithinBoundary(
           boundary.rootDir,
@@ -203,6 +205,7 @@ export const rustLanguagePlugin: LanguageFrontendPlugin = {
   async analyze(context, boundary) {
     const analysis = await analyzeRustProjectWithGraph(boundary.rootDir, analyzeOptions(context), {
       emitConfigMatchWarnings: false,
+      deferConfigSymbolEntrypoints: true,
       sourceFiles: context.manifests.rustSourceFiles,
     });
     return fragment(this.id, this.language, boundary, analysis);

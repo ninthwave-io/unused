@@ -280,7 +280,11 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
   // Every root file (production, config, or test) — never itself flagged as a
   // file or export; a test root can only surface as a zombie `test` claim.
   const entrypointFiles = new Set<string>();
-  for (const entry of graph.entrypoints()) entrypointFiles.add(fileId(entry.file));
+  const surfaceEntrypointFiles = new Set<string>();
+  for (const entry of graph.entrypoints()) {
+    entrypointFiles.add(fileId(entry.file));
+    if (entry.targetSymbol === undefined) surfaceEntrypointFiles.add(fileId(entry.file));
+  }
   const exportedSymbolIds = new Set(
     graph
       .edges()
@@ -348,7 +352,7 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
       // roots). Public/exported entrypoint symbols are already surface-live;
       // an unreachable private symbol remains claimable.
       if (fileClass.get(fileNodeId) !== "alive" && !entrypointFiles.has(fileNodeId)) continue;
-      if (entrypointFiles.has(fileNodeId) && exportedSymbolIds.has(node.id)) continue;
+      if (surfaceEntrypointFiles.has(fileNodeId) && exportedSymbolIds.has(node.id)) continue;
       if (aliveSymbol(node.id)) continue; // used from production or config
       // An export claim is capped by the stronger of the file-scoped and the
       // export-only (symbol-set) hazard covering its file.

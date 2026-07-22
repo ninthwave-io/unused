@@ -11,9 +11,12 @@
  * must yield **no** claim (computed import, config-referenced file, ambient
  * `.d.ts`, import-equals whole-surface, barrel dead-branch origin).
  */
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { computeDeletionPlan, whyAlive } from "../../core/analysis/index.js";
 import type { Claim, Confidence } from "../../core/claims/types.js";
 import { loadLabelCase } from "../../testing/corpus/labels.js";
 import { analyzeProject, analyzeProjectWithGraph } from "./analyze.js";
@@ -24,6 +27,13 @@ const testfx = (c: string): string =>
   fileURLToPath(new URL(`./__testfixtures__/${c}`, import.meta.url));
 const FIXED_CLOCK = new Date(0);
 const CONFIDENCE_RANK: Readonly<Record<Confidence, number>> = { low: 1, medium: 2, high: 3 };
+const temporaryProjects: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(
+    temporaryProjects.splice(0).map((root) => rm(root, { recursive: true, force: true })),
+  );
+});
 
 interface Shape {
   kind: string;
@@ -101,6 +111,74 @@ const EXPECTED: Record<string, Shape[]> = {
   "import-equals": [],
   "re-export-chain": [H("file", "src/lib/unusedThing.ts", "src/lib/unusedThing.ts")],
 };
+
+describe("exact TypeScript config roots", () => {
+  it.each([
+    ["default", "export default function run() { return helper; }"],
+    ["selected", "export function selected() { return helper; }"],
+  ])(
+    "roots the exact %s export and its dependency without hiding a sibling",
+    async (name, declaration) => {
+      const root = await mkdtemp(join(tmpdir(), "unused-ts-entry-symbol-"));
+      temporaryProjects.push(root);
+      await mkdir(join(root, "src"), { recursive: true });
+      await writeFile(
+        join(root, "package.json"),
+        JSON.stringify({ name: "neutral-entry-symbol", type: "module", main: "src/index.ts" }),
+      );
+      await writeFile(join(root, "src", "index.ts"), "export const boot = true;\n");
+      await writeFile(join(root, "src", "dependency.ts"), "export const helper = 1;\n");
+      await writeFile(
+        join(root, "src", "operations.ts"),
+        `import { helper } from "./dependency.js";\n${declaration}\nexport const unusedSibling = 2;\n`,
+      );
+      await writeFile(
+        join(root, "unused.config.jsonc"),
+        JSON.stringify({
+          entrySymbols: [
+            {
+              language: "ts",
+              file: "src/operations.ts",
+              name,
+              reason: "public operation",
+            },
+          ],
+        }),
+      );
+
+      const analysis = await analyzeProjectWithGraph(root, { now: FIXED_CLOCK });
+      expect(analysis.result.claims.map((claim) => claim.subject.name)).toContain("unusedSibling");
+      expect(analysis.result.claims.map((claim) => claim.subject.name)).not.toContain(name);
+      expect(analysis.result.claims.map((claim) => claim.subject.name)).not.toContain("helper");
+      expect(
+        whyAlive({
+          graph: analysis.graph,
+          reachability: analysis.reachability,
+          claims: analysis.result.claims,
+          query: `src/operations.ts:${name}`,
+        }),
+      ).toMatchObject({
+        outcome: "alive",
+        paths: [
+          {
+            entrypointReason: "public operation",
+            hops: [{ file: "src/operations.ts", symbol: name, line: 2 }],
+          },
+        ],
+      });
+      expect(
+        computeDeletionPlan({
+          graph: analysis.graph,
+          reachability: analysis.reachability,
+          subject: { kind: "export", file: "src/operations.ts", name },
+        }),
+      ).toMatchObject({
+        supported: false,
+        unsupportedReason: expect.stringContaining("public operation"),
+      });
+    },
+  );
+});
 
 describe("analyzeProject — exact claims over the corpus", () => {
   for (const [caseName, expected] of Object.entries(EXPECTED)) {
