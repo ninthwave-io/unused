@@ -1,3 +1,4 @@
 defmodule NeutralUse.Controller do
-  use NeutralUse.Web, :controller
+  alias NeutralUse.Web, as: Web
+  use Web, :controller
 end

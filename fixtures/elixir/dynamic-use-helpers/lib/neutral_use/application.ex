@@ -7,6 +7,7 @@ defmodule NeutralUse.Application do
     _ = NeutralUse.Controller.kind()
     _ = NeutralUse.Channel.kind()
     _ = NeutralUse.Html.kind()
+    _ = NeutralUse.DecoyConsumer.kind()
     {:ok, self()}
   end
 end

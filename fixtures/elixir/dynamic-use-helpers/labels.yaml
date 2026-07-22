@@ -41,3 +41,11 @@ subjects:
     because: >-
       apply(__MODULE__, which, []) can select only functions on NeutralUse.Web,
       so an unrelated module remains independently deletable at high confidence.
+  - kind: export
+    name: NeutralUse.Decoy.controller/0
+    file: lib/neutral_use/web.ex
+    expected: dead
+    minConfidence: high
+    because: >-
+      NeutralUse.Decoy shares a file with the real dispatcher but its __using__
+      macro does not select controller/0; dispatcher identity is carrier-specific.

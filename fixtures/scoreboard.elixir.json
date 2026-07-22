@@ -2,18 +2,18 @@
   "analyzer": "elixir-reference-graph",
   "corpus": {
     "cases": 17,
-    "subjects": 53
+    "subjects": 55
   },
   "precision": 1,
-  "recall": 0.9565217391304348,
+  "recall": 0.9583333333333334,
   "falsePositives": 0,
   "confidenceViolations": 0,
   "misses": 1,
   "unlabelledClaims": 0,
   "byConfidenceTier": {
     "high": {
-      "claims": 17,
-      "truePositives": 17,
+      "claims": 18,
+      "truePositives": 18,
       "falsePositives": 0,
       "confidenceViolations": 0
     },
@@ -44,7 +44,7 @@
     },
     {
       "case": "atom-map-key-safe",
-      "subjects": 3,
+      "subjects": 4,
       "deadLabels": 1,
       "precision": 1,
       "recall": 1,
@@ -99,8 +99,8 @@
     },
     {
       "case": "dynamic-use-helpers",
-      "subjects": 6,
-      "deadLabels": 2,
+      "subjects": 7,
+      "deadLabels": 3,
       "precision": 1,
       "recall": 1,
       "falsePositives": 0,

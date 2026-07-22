@@ -8,8 +8,17 @@ defmodule NeutralAtomKey.Lookup do
 
   def masked(values, key) do
     _example = "String.to_atom(key).run() # inert"
+    _charlist = 'String.to_existing_atom(key).run()'
+    _heredoc = """
+    String.to_atom(key).run()
+    """
+    _sigil = ~S"String.to_existing_atom(key).run()"
     # String.to_existing_atom(key).run()
     Map.get(values, String.to_existing_atom(key))
+  end
+
+  def predicate(values, key) do
+    Map.has_key?(values, String.to_existing_atom(key))
   end
 
   def genuinely_unused, do: :unused

@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { FunctionRecord, ModuleRecord, TraceEvent, TraceResult } from "./events.js";
 import {
+  dynamicEventKey,
   extractElixirRuntimeConventions,
   extractElixirRuntimeReferences,
 } from "./runtime-references.js";
@@ -80,7 +81,33 @@ describe("extractElixirRuntimeReferences", () => {
         fn("NeutralUse.Web", "router", 0, "lib/neutral_use/web.ex"),
         fn("NeutralUse.Web", "controller", 0, "lib/neutral_use/web.ex"),
       ],
-      events: [],
+      events: [
+        {
+          k: "event",
+          kind: "imported",
+          file: "lib/neutral_use/web.ex",
+          line: 5,
+          from_mod: "NeutralUse.Web",
+          from_fun: "__using__/1",
+          to_mod: "Kernel",
+          name: "apply",
+          arity: 3,
+          dyn: true,
+          partition: "prod",
+        },
+        {
+          k: "event",
+          kind: "remote",
+          file: "lib/neutral_use/router.ex",
+          line: 2,
+          from_mod: "NeutralUse.Router",
+          to_mod: "NeutralUse.Web",
+          name: "__using__",
+          arity: 1,
+          dyn: false,
+          partition: "prod",
+        },
+      ],
     };
 
     expect(extractElixirRuntimeReferences(fixture("dynamic-use-helpers"), trace)).toEqual([
@@ -161,6 +188,63 @@ describe("extractElixirRuntimeReferences", () => {
     expect(
       extractElixirRuntimeConventions(fixture("dynamic-dispatch"), trace).dynamicDispatches,
     ).toEqual([expect.objectContaining({ kind: "opaque", targets: [] })]);
+  });
+
+  it("keeps duplicate same-line use events conservative", () => {
+    const useEvent: TraceEvent = {
+      k: "event",
+      kind: "remote",
+      file: "lib/neutral_use/router.ex",
+      line: 2,
+      from_mod: "NeutralUse.Router",
+      to_mod: "NeutralUse.Web",
+      name: "__using__",
+      arity: 1,
+      dyn: false,
+      partition: "prod",
+    };
+    const trace: TraceResult = {
+      appMod: "NeutralUse.Application",
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [
+        mod("NeutralUse.Web", "lib/neutral_use/web.ex"),
+        mod("NeutralUse.Router", "lib/neutral_use/router.ex"),
+      ],
+      functions: [
+        fn("NeutralUse.Web", "router", 0, "lib/neutral_use/web.ex"),
+        fn("NeutralUse.Web", "unused", 0, "lib/neutral_use/web.ex"),
+      ],
+      events: [
+        {
+          k: "event",
+          kind: "imported",
+          file: "lib/neutral_use/web.ex",
+          line: 5,
+          from_mod: "NeutralUse.Web",
+          from_fun: "__using__/1",
+          to_mod: "Kernel",
+          name: "apply",
+          arity: 3,
+          dyn: true,
+          partition: "prod",
+        },
+        useEvent,
+        { ...useEvent },
+      ],
+    };
+
+    const extraction = extractElixirRuntimeConventions(fixture("dynamic-use-helpers"), trace);
+    expect(extraction.references).toEqual([]);
+    expect(extraction.dynamicDispatches).toEqual([expect.objectContaining({ kind: "bounded" })]);
+  });
+
+  it("includes the trace partition in dynamic event identity", () => {
+    const production = dynamicApplyEvent("dispatch/1", 4);
+    expect(dynamicEventKey(production)).not.toBe(
+      dynamicEventKey({ ...production, partition: "test" }),
+    );
   });
 });
 

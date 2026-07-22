@@ -55,7 +55,8 @@ const MFA_RE = new RegExp(
   "gu",
 );
 const USE_RE = new RegExp(String.raw`\buse\s+(${MODULE})\s*,\s*:(${FUNCTION})\b`, "gu");
-const APPLY_SELF_RE = /\bapply\s*\(\s*__MODULE__\s*,\s*[a-z_][A-Za-z0-9_]*\s*,\s*\[\s*\]\s*\)/u;
+const USING_SELECTOR_RE =
+  /\bdefmacro\s+__using__\s*\(\s*([a-z_][A-Za-z0-9_]*)\s*\)(?:\s+when\b[^\n]*)?\s+do\b/gu;
 const SIMPLE_APPLY_RE = new RegExp(
   String.raw`\b(?:(?:Kernel|:erlang)\.)?apply\s*\(\s*(${MODULE}|__MODULE__|[a-z_][A-Za-z0-9_]*)\s*,\s*(:${FUNCTION}|[a-z_][A-Za-z0-9_]*)\s*,\s*(\[\s*(?:[A-Za-z0-9_:.!?-]+\s*(?:,\s*[A-Za-z0-9_:.!?-]+\s*)*)?\])\s*\)`,
   "gu",
@@ -71,6 +72,7 @@ interface SourceIndex {
   readonly closeByOpen: ReadonlyMap<number, number>;
   readonly parentByOpen: ReadonlyMap<number, number>;
   readonly commasByOpen: ReadonlyMap<number, readonly number[]>;
+  readonly usingSelectorCounts: ReadonlyMap<string, number>;
 }
 
 /** Extract independently provable runtime references from traced project files. */
@@ -92,13 +94,10 @@ export function extractElixirRuntimeConventions(
     [...contents].map(([file, content]) => [file, indexSource(content)] as const),
   );
   const ownerIndex = indexOwners(traceResult);
-  const selfApplyFiles = new Set(
-    [...sources].filter(([, source]) => APPLY_SELF_RE.test(source.code)).map(([file]) => file),
-  );
-  const dispatchModules = new Set<string>();
-  for (const mod of traceResult.modules) {
-    if (selfApplyFiles.has(mod.file)) dispatchModules.add(mod.mod);
-  }
+  const parsedBySite = indexParsedApplies(sources);
+  const dispatchModules = indexUseDispatcherModules(traceResult.events, sources, parsedBySite);
+  const useEventsBySite = indexUseEventsBySite(traceResult.events);
+  const useFactCountsBySite = indexUseFactCountsBySite(sources);
 
   const references: ElixirRuntimeReference[] = [];
   const seen = new Set<string>();
@@ -126,18 +125,25 @@ export function extractElixirRuntimeConventions(
     }
 
     for (const match of searchable.matchAll(USE_RE)) {
-      const toMod = match[1];
       const toName = match[2];
-      if (toMod === undefined || toName === undefined || !dispatchModules.has(toMod)) continue;
-      const target = (functionsByModuleName.get(`${toMod}\0${toName}`) ?? []).find(
+      if (match[1] === undefined || toName === undefined) continue;
+      const line = lineAt(source.lineStarts, match.index ?? 0);
+      const siteEvents = useEventsBySite.get(dispatchSiteKey(file, line)) ?? [];
+      if (
+        siteEvents.length !== 1 ||
+        useFactCountsBySite.get(dispatchSiteKey(file, line)) !== 1 ||
+        siteEvents[0] === undefined
+      )
+        continue;
+      const useEvent = siteEvents[0];
+      const toMod = useEvent.to_mod;
+      if (!dispatchModules.has(toMod)) continue;
+      const targets = (functionsByModuleName.get(`${toMod}\0${toName}`) ?? []).filter(
         (candidate) => candidate.arity === 0,
       );
-      if (target === undefined) continue;
-      const line = lineAt(source.lineStarts, match.index ?? 0);
-      const owner = resolveOwner(ownerIndex, file, line, toMod);
-      if (owner === null) continue;
+      if (targets.length !== 1) continue;
       addReference(references, seen, {
-        ...owner,
+        ...ownerFromEvent(useEvent),
         toMod,
         toName,
         toArity: 0,
@@ -151,6 +157,7 @@ export function extractElixirRuntimeConventions(
   const dynamicDispatches = extractDynamicDispatches(
     traceResult,
     sources,
+    parsedBySite,
     functionsByModuleName,
     references,
     seen,
@@ -158,9 +165,80 @@ export function extractElixirRuntimeConventions(
   return { references, dynamicDispatches };
 }
 
+function indexParsedApplies(
+  sources: ReadonlyMap<string, SourceIndex>,
+): ReadonlyMap<string, ParsedApply[]> {
+  const parsedBySite = new Map<string, ParsedApply[]>();
+  for (const [file, source] of sources) {
+    for (const match of source.code.matchAll(SIMPLE_APPLY_RE)) {
+      const moduleExpr = match[1];
+      const functionExpr = match[2];
+      const argsExpr = match[3];
+      if (moduleExpr === undefined || functionExpr === undefined || argsExpr === undefined)
+        continue;
+      const line = lineAt(source.lineStarts, match.index ?? 0);
+      append(parsedBySite, dispatchSiteKey(file, line), {
+        moduleExpr,
+        functionExpr,
+        arity: listArity(argsExpr),
+      });
+    }
+  }
+  return parsedBySite;
+}
+
+function indexUseDispatcherModules(
+  events: readonly TraceEvent[],
+  sources: ReadonlyMap<string, SourceIndex>,
+  parsedBySite: ReadonlyMap<string, ParsedApply[]>,
+): ReadonlySet<string> {
+  const modules = new Set<string>();
+  for (const event of events) {
+    if (!event.dyn || !isApply3Event(event) || event.from_mod === null) continue;
+    if (event.from_fun !== "__using__/1") continue;
+    const calls = parsedBySite.get(dispatchSiteKey(event.file, event.line)) ?? [];
+    if (calls.length !== 1 || calls[0] === undefined) continue;
+    const call = calls[0];
+    const source = sources.get(event.file);
+    if (
+      call.moduleExpr !== "__MODULE__" ||
+      call.functionExpr.startsWith(":") ||
+      call.arity !== 0 ||
+      source?.usingSelectorCounts.get(call.functionExpr) !== 1
+    ) {
+      continue;
+    }
+    modules.add(event.from_mod);
+  }
+  return modules;
+}
+
+function indexUseEventsBySite(events: readonly TraceEvent[]): ReadonlyMap<string, TraceEvent[]> {
+  const result = new Map<string, TraceEvent[]>();
+  for (const event of events) {
+    if (event.name !== "__using__" || event.arity !== 1 || event.from_mod === null) continue;
+    append(result, dispatchSiteKey(event.file, event.line), event);
+  }
+  return result;
+}
+
+function indexUseFactCountsBySite(
+  sources: ReadonlyMap<string, SourceIndex>,
+): ReadonlyMap<string, number> {
+  const counts = new Map<string, number>();
+  for (const [file, source] of sources) {
+    for (const match of source.code.matchAll(USE_RE)) {
+      const key = dispatchSiteKey(file, lineAt(source.lineStarts, match.index ?? 0));
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+
 function extractDynamicDispatches(
   traceResult: TraceResult,
   sources: ReadonlyMap<string, SourceIndex>,
+  parsedBySite: ReadonlyMap<string, ParsedApply[]>,
   functionsByModuleName: ReadonlyMap<string, FunctionRecord[]>,
   references: ElixirRuntimeReference[],
   seenReferences: Set<string>,
@@ -172,24 +250,6 @@ function extractDynamicDispatches(
     else bucket.push(fn);
   }
   const aliasTargetsByCarrierSite = indexAliasTargets(traceResult.events, functionsByModule);
-
-  const parsedBySite = new Map<string, ParsedApply[]>();
-  for (const [file, source] of sources) {
-    const searchable = source.code;
-    for (const match of searchable.matchAll(SIMPLE_APPLY_RE)) {
-      const moduleExpr = match[1];
-      const functionExpr = match[2];
-      const argsExpr = match[3];
-      if (moduleExpr === undefined || functionExpr === undefined || argsExpr === undefined)
-        continue;
-      const line = lineAt(source.lineStarts, match.index ?? 0);
-      const parsed: ParsedApply = { moduleExpr, functionExpr, arity: listArity(argsExpr) };
-      const key = dispatchSiteKey(file, line);
-      const bucket = parsedBySite.get(key);
-      if (bucket === undefined) parsedBySite.set(key, [parsed]);
-      else bucket.push(parsed);
-    }
-  }
 
   const dynamicEventsBySite = indexDynamicEventsBySite(traceResult.events);
   const safeAtomEvents = safeAtomProducerEvents(traceResult.events, sources);
@@ -475,9 +535,6 @@ function exactUseDispatcherEvents(
     if (event.name === "__using__" && event.arity === 1)
       append(useEventsByModule, event.to_mod, event);
   }
-  const modulesByFile = new Map<string, ModuleRecord[]>();
-  for (const mod of traceResult.modules) append(modulesByFile, mod.file, mod);
-
   const exact = new Map<TraceEvent, readonly FunctionRecord[]>();
   for (const event of traceResult.events) {
     if (!isApply3Event(event) || event.from_mod === null || event.from_fun !== "__using__/1")
@@ -494,9 +551,7 @@ function exactUseDispatcherEvents(
       continue;
     }
     const source = sources.get(event.file);
-    if (source === undefined || !uniqueUsingSelector(source.code, call.functionExpr)) continue;
-    const modulesInFile = modulesByFile.get(event.file) ?? [];
-    if (modulesInFile.length !== 1 || modulesInFile[0]?.mod !== event.from_mod) continue;
+    if (source?.usingSelectorCounts.get(call.functionExpr) !== 1) continue;
 
     const useEvents = useEventsByModule.get(event.from_mod) ?? [];
     const useReferences = useReferencesByModule.get(event.from_mod) ?? [];
@@ -526,15 +581,6 @@ function exactUseDispatcherEvents(
     if (accounted) exact.set(event, targets);
   }
   return exact;
-}
-
-function uniqueUsingSelector(code: string, selector: string): boolean {
-  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-  const pattern = new RegExp(
-    String.raw`\bdefmacro\s+__using__\s*\(\s*${escaped}\s*\)(?:\s+when\b[^\n]*)?\s+do\b`,
-    "gu",
-  );
-  return [...code.matchAll(pattern)].length === 1;
 }
 
 function isApply3Event(event: TraceEvent): boolean {
@@ -630,6 +676,7 @@ export function dynamicEventKey(event: TraceEvent): string {
     event.to_mod,
     event.name ?? "",
     event.arity ?? "",
+    event.partition,
   ].join("\0");
 }
 
@@ -760,6 +807,12 @@ function indexSource(content: string): SourceIndex {
   const closeByOpen = new Map<number, number>();
   const parentByOpen = new Map<number, number>();
   const commasByOpen = new Map<number, number[]>();
+  const usingSelectorCounts = new Map<string, number>();
+  for (const match of code.matchAll(USING_SELECTOR_RE)) {
+    const selector = match[1];
+    if (selector !== undefined)
+      usingSelectorCounts.set(selector, (usingSelectorCounts.get(selector) ?? 0) + 1);
+  }
   const stack: Array<{ open: number; close: string; commas: number[] }> = [];
   for (let index = 0; index < code.length; index += 1) {
     const char = code[index] as string;
@@ -784,7 +837,15 @@ function indexSource(content: string): SourceIndex {
     closeByOpen.set(frame.open, index);
     commasByOpen.set(frame.open, frame.commas);
   }
-  return { content, code, lineStarts, closeByOpen, parentByOpen, commasByOpen };
+  return {
+    content,
+    code,
+    lineStarts,
+    closeByOpen,
+    parentByOpen,
+    commasByOpen,
+    usingSelectorCounts,
+  };
 }
 
 /** Preserve byte/line coordinates while hiding inert Elixir lexical bodies. */
@@ -803,7 +864,12 @@ function maskElixirLiterals(content: string): string {
       index -= 1;
       continue;
     }
-    if (char === "?" && index + 1 < content.length && !/\s/u.test(content[index + 1] as string)) {
+    if (
+      char === "?" &&
+      index + 1 < content.length &&
+      !/\s/u.test(content[index + 1] as string) &&
+      (index === 0 || !/[A-Za-z0-9_!?]/u.test(content[index - 1] as string))
+    ) {
       mask(index);
       index += 1;
       mask(index);

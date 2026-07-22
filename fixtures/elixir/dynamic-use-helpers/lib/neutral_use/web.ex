@@ -31,3 +31,13 @@ defmodule NeutralUse.Web do
 
   def genuinely_unused, do: :unused
 end
+
+defmodule NeutralUse.Decoy do
+  defmacro __using__(:controller) do
+    quote do
+      def kind, do: :decoy
+    end
+  end
+
+  def controller, do: :not_selected_by_the_macro
+end

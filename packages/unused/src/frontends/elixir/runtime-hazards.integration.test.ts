@@ -54,12 +54,21 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
         hazardEvaluations: [analysis.hazardEvaluation],
       }),
     ).toMatchObject({ supported: true });
+
+    const sameFileDecoy = whyAlive({
+      graph: analysis.graph,
+      reachability: analysis.reachability,
+      claims: analysis.result.claims,
+      query: "NeutralUse.Decoy.controller/0",
+      hazardEvaluations: [analysis.hazardEvaluation],
+    });
+    expect(sameFileDecoy).toMatchObject({ outcome: "dead", confidence: "high" });
   }, 60_000);
 
   it("treats direct Map-key atom production as data and masks inert text", async () => {
     const root = fixture("atom-map-key-safe");
     const trace = runTracer(root);
-    expect(trace.events.filter((event) => event.dyn)).toHaveLength(2);
+    expect(trace.events.filter((event) => event.dyn)).toHaveLength(3);
     const analysis = await analyzeElixirProjectWithGraph(root, { now: new Date(0) });
     expect(
       analysis.graph.hazards().filter((hazard) => hazard.hazardClass === "elixir-dynamic-dispatch"),

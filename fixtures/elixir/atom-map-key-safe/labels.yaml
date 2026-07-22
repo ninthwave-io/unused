@@ -15,6 +15,11 @@ subjects:
     expected: alive
     because: The real producer is a Map.get key; dispatch-like string/comment text is masked.
   - kind: export
+    name: NeutralAtomKey.Lookup.predicate/2
+    file: lib/neutral_atom_key/lookup.ex
+    expected: alive
+    because: Predicate punctuation remains code and the atom is solely a Map.has_key? key.
+  - kind: export
     name: NeutralAtomKey.Lookup.genuinely_unused/0
     file: lib/neutral_atom_key/lookup.ex
     expected: dead
