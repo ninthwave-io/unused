@@ -1,0 +1,28 @@
+case: dynamic-local-dispatch
+description: >-
+  A genuinely dynamic apply against __MODULE__ retains a module-local bounded
+  hazard even when the argument list is computed. Unrelated modules remain
+  independently claimable and deletable.
+subjects:
+  - kind: export
+    name: NeutralLocal.Dispatch.dispatch/2
+    file: lib/neutral_local/dispatch.ex
+    expected: alive
+    because: The application invokes the dynamic dispatcher.
+  - kind: export
+    name: NeutralLocal.Dispatch.live_action/1
+    file: lib/neutral_local/dispatch.ex
+    expected: alive
+    because: The application invokes the concrete live action.
+  - kind: export
+    name: NeutralLocal.Dispatch.possible_action/1
+    file: lib/neutral_local/dispatch.ex
+    expected: dead
+    minConfidence: medium
+    because: The local dispatcher can select this public function at runtime.
+  - kind: file
+    name: lib/neutral_local/unrelated.ex
+    file: lib/neutral_local/unrelated.ex
+    expected: dead
+    minConfidence: high
+    because: A __MODULE__ dispatch cannot select functions on this unrelated module.

@@ -184,6 +184,82 @@ describe("extractElixirRuntimeReferences", () => {
     );
   });
 
+  it("recovers list arity only for unambiguous proper lists and enforces source cardinality", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-apply-arity-"));
+    const file = "apply_shapes.ex";
+    const lines = [
+      "defmodule NeutralApply.Shapes do",
+      "  def empty, do: apply(__MODULE__, :target, [])",
+      "  def whitespace, do: apply(__MODULE__, :target, [   ])",
+      "  def commented, do: apply(__MODULE__, :target, [ # inert, text",
+      "  ])",
+      "  def nested(value, other, third), do: apply(__MODULE__, :target, [value, {:ok, other}, [third]])",
+      "  def tail(head, rest), do: apply(__MODULE__, :target, [head | rest])",
+      "  def bitstring, do: apply(__MODULE__, :target, [<<1, 2>>])",
+      "  def anonymous(fun), do: apply(__MODULE__, :target, [fn a, b -> fun.(a, b) end])",
+      "  def trailing(value), do: apply(__MODULE__, :target, [value,])",
+      "  def collision(selected, value), do: (apply(__MODULE__, selected, [value]); apply(runtime_module(), :target, arguments(value)))",
+      "  def target, do: :zero",
+      "  def target(value), do: value",
+      "  def target(a, b, c), do: {a, b, c}",
+      "end",
+    ];
+    const lineOf = (needle: string): number => lines.findIndex((line) => line.includes(needle)) + 1;
+    const applyEvent = (fromFun: string, needle: string): TraceEvent => ({
+      ...dynamicApplyEvent(fromFun, lineOf(needle)),
+      file,
+      from_mod: "NeutralApply.Shapes",
+    });
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod("NeutralApply.Shapes", file)],
+      functions: [
+        fn("NeutralApply.Shapes", "target", 0, file),
+        fn("NeutralApply.Shapes", "target", 1, file),
+        fn("NeutralApply.Shapes", "target", 3, file),
+      ],
+      events: [
+        applyEvent("empty/0", "def empty"),
+        applyEvent("whitespace/0", "def whitespace"),
+        applyEvent("commented/0", "def commented"),
+        applyEvent("nested/3", "def nested"),
+        applyEvent("tail/2", "def tail"),
+        applyEvent("bitstring/0", "def bitstring"),
+        applyEvent("anonymous/1", "def anonymous"),
+        applyEvent("trailing/1", "def trailing"),
+        applyEvent("collision/2", "def collision"),
+      ],
+    };
+
+    try {
+      writeFileSync(join(root, file), `${lines.join("\n")}\n`);
+      const dispatches = extractElixirRuntimeConventions(root, trace).dynamicDispatches;
+      expect(dispatches.map((dispatch) => dispatch.kind)).toEqual([
+        "exact",
+        "exact",
+        "bounded",
+        "exact",
+        "bounded",
+        "bounded",
+        "bounded",
+        "bounded",
+        "opaque",
+      ]);
+      expect(dispatches[0]?.targets.map((target) => target.arity)).toEqual([0]);
+      expect(dispatches[1]?.targets.map((target) => target.arity)).toEqual([0]);
+      expect(dispatches[3]?.targets.map((target) => target.arity)).toEqual([3]);
+      for (const index of [2, 4, 5, 6, 7]) {
+        expect(dispatches[index]?.targets.map((target) => target.arity)).toEqual([0, 1, 3]);
+      }
+      expect(dispatches[8]?.targets).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("retains an opaque fallback when source arguments cannot bound the tracer event", () => {
     const trace: TraceResult = {
       appMod: "Dyn.Application",
@@ -441,6 +517,45 @@ describe("extractElixirRuntimeReferences", () => {
       }),
     ]);
   });
+
+  it("indexes deeply nested recognized apply sites near-linearly", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-nested-apply-scaling-"));
+    const file = "nested_applies.ex";
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod("NeutralScale.NestedApplies", file)],
+      functions: [],
+      events: [],
+    };
+    const measure = (depth: number): number => {
+      const expression = [
+        "apply(__MODULE__, :target, [".repeat(depth),
+        ":value",
+        "])".repeat(depth),
+      ].join("");
+      writeFileSync(
+        join(root, file),
+        `defmodule NeutralScale.NestedApplies do\n  def run, do: ${expression}\nend\n`,
+      );
+      const started = performance.now();
+      extractElixirRuntimeConventions(root, trace);
+      return performance.now() - started;
+    };
+    const median = (values: readonly number[]): number =>
+      [...values].sort((left, right) => left - right)[Math.floor(values.length / 2)] ?? 0;
+
+    try {
+      measure(100);
+      const small = median([measure(500), measure(500), measure(500)]);
+      const large = median([measure(2_000), measure(2_000), measure(2_000)]);
+      expect(large).toBeLessThan(small * 8 + 30);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 10_000);
 
   it("indexes adversarial Enum.map sites and tuple producers near-linearly", () => {
     const root = mkdtempSync(join(tmpdir(), "unused-enum-map-scaling-"));

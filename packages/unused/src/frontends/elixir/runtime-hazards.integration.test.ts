@@ -85,6 +85,95 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
     expect(sameFileDecoy).toMatchObject({ outcome: "dead", confidence: "high" });
   }, 60_000);
 
+  it("keeps computed-argument __MODULE__ dispatch local to its owner module", async () => {
+    const analysis = await analyzeElixirProjectWithGraph(fixture("dynamic-local-dispatch"), {
+      now: new Date(0),
+    });
+    const hazards = analysis.graph
+      .hazards()
+      .filter((hazard) => hazard.hazardClass === "elixir-dynamic-dispatch");
+    expect(hazards).toEqual([
+      expect.objectContaining({
+        carrierSymbol: expect.stringContaining("NeutralLocal.Dispatch.dispatch/2"),
+        affectedSymbols: expect.arrayContaining([
+          expect.stringContaining("NeutralLocal.Dispatch.possible_action/1"),
+        ]),
+      }),
+    ]);
+    expect(
+      hazards[0]?.affectedSymbols?.some((symbol) => symbol.includes("NeutralLocal.Unrelated")),
+    ).toBe(false);
+
+    const possible = whyAlive({
+      graph: analysis.graph,
+      reachability: analysis.reachability,
+      claims: analysis.result.claims,
+      query: "NeutralLocal.Dispatch.possible_action/1",
+      hazardEvaluations: [analysis.hazardEvaluation],
+    });
+    expect(possible).toMatchObject({ outcome: "dead", confidence: "medium" });
+    if (possible.outcome !== "dead") throw new Error("expected local dynamic candidate");
+    expect(
+      computeDeletionPlan({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        subject: possible.subject,
+        hazardEvaluations: [analysis.hazardEvaluation],
+      }),
+    ).toMatchObject({ supported: false });
+
+    const unrelated = whyAlive({
+      graph: analysis.graph,
+      reachability: analysis.reachability,
+      claims: analysis.result.claims,
+      query: "lib/neutral_local/unrelated.ex",
+      hazardEvaluations: [analysis.hazardEvaluation],
+    });
+    expect(unrelated).toMatchObject({ outcome: "dead", confidence: "high" });
+    if (unrelated.outcome !== "dead") throw new Error("expected unrelated dead module");
+    expect(
+      computeDeletionPlan({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        subject: unrelated.subject,
+        hazardEvaluations: [analysis.hazardEvaluation],
+      }),
+    ).toMatchObject({ supported: true });
+  }, 60_000);
+
+  it("keeps a runtime-selected module boundary-wide for why and deletion", async () => {
+    const analysis = await analyzeElixirProjectWithGraph(fixture("dynamic-global-dispatch"), {
+      now: new Date(0),
+    });
+    const hazards = analysis.graph
+      .hazards()
+      .filter((hazard) => hazard.hazardClass === "elixir-dynamic-dispatch");
+    expect(hazards).toEqual([
+      expect.objectContaining({
+        carrierSymbol: expect.stringContaining("NeutralGlobal.Dispatch.dispatch/3"),
+      }),
+    ]);
+    expect(hazards[0]?.affectedSymbols).toBeUndefined();
+
+    const unrelated = whyAlive({
+      graph: analysis.graph,
+      reachability: analysis.reachability,
+      claims: analysis.result.claims,
+      query: "lib/neutral_global/unrelated.ex",
+      hazardEvaluations: [analysis.hazardEvaluation],
+    });
+    expect(unrelated).toMatchObject({ outcome: "dead", confidence: "medium" });
+    if (unrelated.outcome !== "dead") throw new Error("expected globally uncertain dead module");
+    expect(
+      computeDeletionPlan({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        subject: unrelated.subject,
+        hazardEvaluations: [analysis.hazardEvaluation],
+      }),
+    ).toMatchObject({ supported: false, stages: [] });
+  }, 60_000);
+
   it("treats direct Map-key atom production as data and masks inert text", async () => {
     const root = fixture("atom-map-key-safe");
     const trace = runTracer(root);
@@ -170,7 +259,13 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
     ).toMatchObject({ supported: false });
   }, 60_000);
 
-  it.each(["dynamic-use-helpers", "atom-map-key-safe", "atom-dynamic-receiver"])(
+  it.each([
+    "dynamic-use-helpers",
+    "dynamic-local-dispatch",
+    "dynamic-global-dispatch",
+    "atom-map-key-safe",
+    "atom-dynamic-receiver",
+  ])(
     "preserves Elixir claims after mixed-plugin composition: %s",
     async (name) => {
       const direct = await analyzeElixirProjectWithGraph(fixture(name), { now: new Date(0) });

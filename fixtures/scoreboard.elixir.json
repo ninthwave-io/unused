@@ -1,25 +1,25 @@
 {
   "analyzer": "elixir-reference-graph",
   "corpus": {
-    "cases": 17,
-    "subjects": 56
+    "cases": 19,
+    "subjects": 63
   },
   "precision": 1,
-  "recall": 0.9583333333333334,
+  "recall": 0.9629629629629629,
   "falsePositives": 0,
   "confidenceViolations": 0,
   "misses": 1,
   "unlabelledClaims": 0,
   "byConfidenceTier": {
     "high": {
-      "claims": 18,
-      "truePositives": 18,
+      "claims": 19,
+      "truePositives": 19,
       "falsePositives": 0,
       "confidenceViolations": 0
     },
     "medium": {
-      "claims": 5,
-      "truePositives": 5,
+      "claims": 7,
+      "truePositives": 7,
       "falsePositives": 0,
       "confidenceViolations": 0
     },
@@ -89,6 +89,28 @@
     {
       "case": "dynamic-dispatch",
       "subjects": 3,
+      "deadLabels": 2,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "dynamic-global-dispatch",
+      "subjects": 3,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "dynamic-local-dispatch",
+      "subjects": 4,
       "deadLabels": 2,
       "precision": 1,
       "recall": 1,

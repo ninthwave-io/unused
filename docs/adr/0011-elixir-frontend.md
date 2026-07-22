@@ -228,6 +228,20 @@ and the project does not own `Phoenix.Controller`. A masked generic source
 opaque. A module-to-`action/2` convention edge activates the bounded hazard when
 the owner module becomes reachable.
 
+Ordinary `apply/3` extraction preserves each independently proven dimension:
+the source module expression, function atom/name role, and, only for a closed
+proper list of unambiguously separated arguments, arity. A computed argument
+expression therefore does not erase a literal `__MODULE__` bound; the hazard
+affects only reflected public functions on that owner module. A computed module
+with a proven name and/or arity searches the corresponding cross-module indexed
+candidate set; with no other proven dimension it remains boundary-wide. Parsed
+inference also requires exactly one source `apply` token at the tracer site,
+because the tracer can deduplicate same-line events; ambiguous source/tracer
+cardinality and unparseable leading arguments remain opaque. Candidate sets are
+directly indexed by module/name/arity dimensions, and the deletion planner
+consumes the same affected-symbol scope as `why`, so an active local dispatcher
+cannot refuse deletion of an unrelated module.
+
 Function-scoped `String.to_atom/1` and `String.to_existing_atom/1` remain
 dynamic proxies by default because an immediate atom receiver can emit no outer
 compiler event. A non-hazard role is either a complete direct key argument to a

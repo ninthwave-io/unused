@@ -1,0 +1,21 @@
+case: dynamic-global-dispatch
+description: >-
+  A reachable apply with a runtime-selected module remains boundary-wide. A
+  dead module is still reported, but cannot be presented as safely deletable.
+subjects:
+  - kind: export
+    name: NeutralGlobal.Dispatch.dispatch/3
+    file: lib/neutral_global/dispatch.ex
+    expected: alive
+    because: The application invokes the runtime dispatcher.
+  - kind: export
+    name: NeutralGlobal.Target.live_action/1
+    file: lib/neutral_global/target.ex
+    expected: alive
+    because: The application passes this target module and function to the dispatcher.
+  - kind: file
+    name: lib/neutral_global/unrelated.ex
+    file: lib/neutral_global/unrelated.ex
+    expected: dead
+    minConfidence: medium
+    because: The module has no static inbound references, but global dispatch prevents safe deletion.

@@ -57,10 +57,12 @@ const MFA_RE = new RegExp(
 const USE_RE = new RegExp(String.raw`\buse\s+(${MODULE})\s*,\s*:(${FUNCTION})\b`, "gu");
 const USING_SELECTOR_RE =
   /\bdefmacro\s+__using__\s*\(\s*([a-z_][A-Za-z0-9_]*)\s*\)(?:\s+when\b[^\n]*)?\s+do\b/gu;
-const SIMPLE_APPLY_RE = new RegExp(
-  String.raw`\b(?:(?:Kernel|:erlang)\.)?apply\s*\(\s*(${MODULE}|__MODULE__|[a-z_][A-Za-z0-9_]*)\s*,\s*(:${FUNCTION}|[a-z_][A-Za-z0-9_]*)\s*,\s*(\[\s*(?:[A-Za-z0-9_:.!?-]+\s*(?:,\s*[A-Za-z0-9_:.!?-]+\s*)*)?\])\s*\)`,
+const APPLY_PREFIX_RE = new RegExp(
+  String.raw`(?:\bKernel\s*\.\s*|:erlang\s*\.\s*|\b)apply\s*\(\s*(${MODULE}|__MODULE__|[a-z_][A-Za-z0-9_]*)\s*,\s*(:${FUNCTION}|[a-z_][A-Za-z0-9_]*)\s*,`,
   "gu",
 );
+const STATIC_LIST_ELEMENT_RE =
+  /(?:[A-Za-z_][A-Za-z0-9_.]*[!?]?|:[A-Za-z_][A-Za-z0-9_]*[!?]?|[-+]?\d[\d_.]*)/uy;
 const ANY_APPLY_RE = /(?:\bKernel\s*\.\s*|:erlang\s*\.\s*|\b)apply\s*\(/gu;
 const ATOM_PRODUCER_RE = /\bString\.(to_atom|to_existing_atom)\s*\(/gu;
 const PHOENIX_CONTROLLER = "Phoenix.Controller";
@@ -102,7 +104,7 @@ export function extractElixirRuntimeConventions(
   );
   const ownerIndex = indexOwners(traceResult);
   const parsedBySite = indexParsedApplies(sources);
-  const sourceApplySites = indexSourceApplySites(sources);
+  const sourceApplyCountsBySite = indexSourceApplyCountsBySite(sources);
   const usingSelectorsByCarrier = indexUsingSelectorsByCarrier(traceResult.events, sources);
   const dispatchModules = indexUseDispatcherModules(
     traceResult.events,
@@ -185,7 +187,7 @@ export function extractElixirRuntimeConventions(
     traceResult,
     sources,
     parsedBySite,
-    sourceApplySites,
+    sourceApplyCountsBySite,
     usingSelectorsByCarrier,
     functionsByModuleName,
     references,
@@ -200,31 +202,87 @@ function indexParsedApplies(
 ): ReadonlyMap<string, ParsedApply[]> {
   const parsedBySite = new Map<string, ParsedApply[]>();
   for (const [file, source] of sources) {
-    for (const match of source.code.matchAll(SIMPLE_APPLY_RE)) {
+    for (const match of source.code.matchAll(APPLY_PREFIX_RE)) {
       const moduleExpr = match[1];
       const functionExpr = match[2];
-      const argsExpr = match[3];
-      if (moduleExpr === undefined || functionExpr === undefined || argsExpr === undefined)
-        continue;
+      if (moduleExpr === undefined || functionExpr === undefined) continue;
+      const callOpen = (match.index ?? 0) + match[0].indexOf("(");
+      const callClose = source.closeByOpen.get(callOpen);
+      const commas = source.commasByOpen.get(callOpen) ?? [];
+      if (callClose === undefined || commas.length !== 2 || commas[1] === undefined) continue;
+      const argsStart = skipWhitespaceForward(source.code, commas[1] + 1, callClose);
+      const argsEnd = skipWhitespaceBackward(source.code, callClose, argsStart);
+      const arity = staticProperListArity(source, argsStart, argsEnd);
       const line = lineAt(source.lineStarts, match.index ?? 0);
       append(parsedBySite, dispatchSiteKey(file, line), {
         moduleExpr,
         functionExpr,
-        arity: listArity(argsExpr),
+        arity,
       });
     }
   }
   return parsedBySite;
 }
 
-function indexSourceApplySites(sources: ReadonlyMap<string, SourceIndex>): ReadonlySet<string> {
-  const sites = new Set<string>();
+/**
+ * Recover an apply arity only from a closed proper list whose top-level
+ * elements cannot hide commas in syntax the lightweight delimiter index does
+ * not model. Anything richer remains dynamic instead of filtering candidates.
+ */
+function staticProperListArity(source: SourceIndex, start: number, end: number): number | null {
+  if (source.code[start] !== "[" || source.closeByOpen.get(start) !== end - 1) return null;
+  if (skipWhitespaceForward(source.content, start + 1, end - 1) === end - 1) return 0;
+
+  const close = end - 1;
+  const commas = source.commasByOpen.get(start) ?? [];
+  const boundaries = [start + 1, ...commas.map((comma) => comma + 1), close];
+  for (let index = 0; index + 1 < boundaries.length; index += 1) {
+    const segmentStart = skipWhitespaceForward(source.code, boundaries[index] ?? close, close);
+    const segmentEnd = skipWhitespaceBackward(
+      source.code,
+      (boundaries[index + 1] ?? close) - (index < commas.length ? 1 : 0),
+      segmentStart,
+    );
+    if (!isStaticallySeparatedListElement(source, segmentStart, segmentEnd)) return null;
+  }
+  return commas.length + 1;
+}
+
+function isStaticallySeparatedListElement(
+  source: SourceIndex,
+  start: number,
+  end: number,
+): boolean {
+  if (start >= end) return false;
+  STATIC_LIST_ELEMENT_RE.lastIndex = start;
+  if (STATIC_LIST_ELEMENT_RE.exec(source.code) !== null && STATIC_LIST_ELEMENT_RE.lastIndex === end)
+    return true;
+
+  const opener = source.code[start];
+  if (
+    (opener === "[" || opener === "{" || opener === "(") &&
+    source.closeByOpen.get(start) === end - 1
+  ) {
+    return true;
+  }
+  return (
+    opener === "%" &&
+    source.code[start + 1] === "{" &&
+    source.closeByOpen.get(start + 1) === end - 1
+  );
+}
+
+function indexSourceApplyCountsBySite(
+  sources: ReadonlyMap<string, SourceIndex>,
+): ReadonlyMap<string, number> {
+  const counts = new Map<string, number>();
   for (const [file, source] of sources) {
     for (const match of source.code.matchAll(ANY_APPLY_RE)) {
-      sites.add(dispatchSiteKey(file, lineAt(source.lineStarts, match.index ?? 0)));
+      const key = dispatchSiteKey(file, lineAt(source.lineStarts, match.index ?? 0));
+      counts.set(key, (counts.get(key) ?? 0) + 1);
     }
   }
-  return sites;
+  return counts;
 }
 
 function indexUseDispatcherModules(
@@ -320,19 +378,15 @@ function extractDynamicDispatches(
   traceResult: TraceResult,
   sources: ReadonlyMap<string, SourceIndex>,
   parsedBySite: ReadonlyMap<string, ParsedApply[]>,
-  sourceApplySites: ReadonlySet<string>,
+  sourceApplyCountsBySite: ReadonlyMap<string, number>,
   usingSelectorsByCarrier: ReadonlyMap<string, number>,
   functionsByModuleName: ReadonlyMap<string, FunctionRecord[]>,
   references: ElixirRuntimeReference[],
   seenReferences: Set<string>,
   provenUseEvents: readonly TraceEvent[],
 ): ElixirDynamicDispatch[] {
-  const functionsByModule = new Map<string, FunctionRecord[]>();
-  for (const fn of traceResult.functions) {
-    const bucket = functionsByModule.get(fn.mod);
-    if (bucket === undefined) functionsByModule.set(fn.mod, [fn]);
-    else bucket.push(fn);
-  }
+  const candidateIndex = indexFunctionCandidates(traceResult.functions, functionsByModuleName);
+  const functionsByModule = candidateIndex.byModule;
   const aliasTargetsByCarrierSite = indexAliasTargets(traceResult.events);
 
   const dynamicEventsBySite = indexDynamicEventsBySite(traceResult.events);
@@ -386,7 +440,7 @@ function extractDynamicDispatches(
       (parsed === undefined || parsed.length === 0) &&
       event.from_mod !== null &&
       event.from_fun === "action/2" &&
-      !sourceApplySites.has(dispatchSiteKey(event.file, event.line)) &&
+      (sourceApplyCountsBySite.get(dispatchSiteKey(event.file, event.line)) ?? 0) === 0 &&
       provenUseSites.has(generatedUseSiteKey(event)) &&
       phoenixActionUseSites.get(generatedUseSiteKey(event)) === 1
     ) {
@@ -439,7 +493,13 @@ function extractDynamicDispatches(
       });
       continue;
     }
-    if (!isApply3 || siteEvents.length !== 1 || parsed?.length !== 1 || parsed[0] === undefined) {
+    if (
+      !isApply3 ||
+      siteEvents.length !== 1 ||
+      sourceApplyCountsBySite.get(dispatchSiteKey(event.file, event.line)) !== 1 ||
+      parsed?.length !== 1 ||
+      parsed[0] === undefined
+    ) {
       dispatches.push({
         ...owner,
         file: event.file,
@@ -459,14 +519,7 @@ function extractDynamicDispatches(
       aliasTargetsByCarrierSite,
     );
     const targetFunction = call.functionExpr.startsWith(":") ? call.functionExpr.slice(1) : null;
-    const targets = candidateFunctions(
-      traceResult.functions,
-      functionsByModule,
-      functionsByModuleName,
-      targetModule,
-      targetFunction,
-      call.arity,
-    );
+    const targets = candidateFunctions(candidateIndex, targetModule, targetFunction, call.arity);
 
     if (targetModule !== null && targetFunction !== null && call.arity !== null) {
       const target = targets[0];
@@ -905,23 +958,63 @@ interface ParsedApply {
   readonly arity: number | null;
 }
 
+interface FunctionCandidateIndex {
+  readonly all: readonly FunctionRecord[];
+  readonly byModule: ReadonlyMap<string, FunctionRecord[]>;
+  readonly byName: ReadonlyMap<string, FunctionRecord[]>;
+  readonly byArity: ReadonlyMap<number, FunctionRecord[]>;
+  readonly byModuleName: ReadonlyMap<string, FunctionRecord[]>;
+  readonly byModuleArity: ReadonlyMap<string, FunctionRecord[]>;
+  readonly byNameArity: ReadonlyMap<string, FunctionRecord[]>;
+  readonly byModuleNameArity: ReadonlyMap<string, FunctionRecord[]>;
+}
+
+function indexFunctionCandidates(
+  functions: readonly FunctionRecord[],
+  byModuleName: ReadonlyMap<string, FunctionRecord[]>,
+): FunctionCandidateIndex {
+  const byModule = new Map<string, FunctionRecord[]>();
+  const byName = new Map<string, FunctionRecord[]>();
+  const byArity = new Map<number, FunctionRecord[]>();
+  const byModuleArity = new Map<string, FunctionRecord[]>();
+  const byNameArity = new Map<string, FunctionRecord[]>();
+  const byModuleNameArity = new Map<string, FunctionRecord[]>();
+  for (const fn of functions) {
+    append(byModule, fn.mod, fn);
+    append(byName, fn.name, fn);
+    append(byArity, fn.arity, fn);
+    append(byModuleArity, `${fn.mod}\0${fn.arity}`, fn);
+    append(byNameArity, `${fn.name}\0${fn.arity}`, fn);
+    append(byModuleNameArity, `${fn.mod}\0${fn.name}\0${fn.arity}`, fn);
+  }
+  return {
+    all: functions,
+    byModule,
+    byName,
+    byArity,
+    byModuleName,
+    byModuleArity,
+    byNameArity,
+    byModuleNameArity,
+  };
+}
+
 function candidateFunctions(
-  allFunctions: readonly FunctionRecord[],
-  functionsByModule: ReadonlyMap<string, FunctionRecord[]>,
-  functionsByModuleName: ReadonlyMap<string, FunctionRecord[]>,
+  index: FunctionCandidateIndex,
   module: string | null,
   name: string | null,
   arity: number | null,
-): FunctionRecord[] {
-  if (module !== null && name !== null) {
-    return (functionsByModuleName.get(`${module}\0${name}`) ?? []).filter(
-      (fn) => arity === null || fn.arity === arity,
-    );
-  }
-  const candidates = module === null ? allFunctions : (functionsByModule.get(module) ?? []);
-  return candidates.filter(
-    (fn) => (name === null || fn.name === name) && (arity === null || fn.arity === arity),
-  );
+): readonly FunctionRecord[] {
+  if (module !== null && name !== null && arity !== null)
+    return index.byModuleNameArity.get(`${module}\0${name}\0${arity}`) ?? [];
+  if (module !== null && name !== null) return index.byModuleName.get(`${module}\0${name}`) ?? [];
+  if (module !== null && arity !== null)
+    return index.byModuleArity.get(`${module}\0${arity}`) ?? [];
+  if (name !== null && arity !== null) return index.byNameArity.get(`${name}\0${arity}`) ?? [];
+  if (module !== null) return index.byModule.get(module) ?? [];
+  if (name !== null) return index.byName.get(name) ?? [];
+  if (arity !== null) return index.byArity.get(arity) ?? [];
+  return index.all;
 }
 
 function moduleToken(value: string): boolean {
@@ -978,11 +1071,6 @@ function aliasCarrierSiteKey(event: TraceEvent): string {
   return [event.file, event.line, event.from_mod ?? "", event.from_fun ?? "", event.partition].join(
     "\0",
   );
-}
-
-function listArity(value: string): number | null {
-  const body = value.slice(1, -1).trim();
-  return body === "" ? 0 : body.split(",").length;
 }
 
 function dispatchSiteKey(file: string, line: number): string {
