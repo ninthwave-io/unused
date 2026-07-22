@@ -9,6 +9,7 @@ import {
   entrypointId,
   fileId,
   type HazardClass,
+  type HazardEffect,
   IRGraph,
   type ReferenceKind,
   type Site,
@@ -29,6 +30,10 @@ const PROVENANCE: Provenance = {
 
 const SPAN = { start: 0, end: 0, startLine: 1, endLine: 1 };
 const site = (file: string): Site => ({ file, span: SPAN });
+const symbolEffect = (ids: readonly string[]): HazardEffect => ({
+  scope: { kind: "symbols", ids },
+  worlds: ["production"],
+});
 
 interface SymbolOpts {
   local?: boolean;
@@ -404,7 +409,7 @@ describe("hazard registry — scoped effects (T3.1)", () => {
       hazardClass: "elixir-dynamic-dispatch",
       detail: "bounded neutral dispatch",
       site: site("lib/router.ex"),
-      affectedSymbols: [symbolId("lib/handlers.ex", "Neutral.Handlers.possible/0")],
+      effect: symbolEffect([symbolId("lib/handlers.ex", "Neutral.Handlers.possible/0")]),
     });
 
     const byName = Object.fromEntries(
@@ -426,7 +431,7 @@ describe("hazard registry — scoped effects (T3.1)", () => {
       hazardClass: "elixir-dynamic-dispatch",
       detail: "bounded neutral dispatch",
       site: site("lib/dormant_router.ex"),
-      affectedSymbols: [symbolId("lib/handlers.ex", "Neutral.Handlers.possible/0")],
+      effect: symbolEffect([symbolId("lib/handlers.ex", "Neutral.Handlers.possible/0")]),
     });
 
     expect(
@@ -445,7 +450,7 @@ describe("hazard registry — scoped effects (T3.1)", () => {
       hazardClass: "elixir-dynamic-dispatch",
       detail: "bounded neutral dispatch",
       site: site("lib/router.ex"),
-      affectedSymbols: [symbolId("lib/candidate.ex", "Neutral.Candidate.possible/0")],
+      effect: symbolEffect([symbolId("lib/candidate.ex", "Neutral.Candidate.possible/0")]),
     });
 
     expect(shape(run(g))).toContainEqual(
@@ -487,7 +492,7 @@ describe("hazard registry — scoped effects (T3.1)", () => {
         hazardClass: "elixir-dynamic-dispatch",
         detail: "bounded neutral dispatch",
         site: site("lib/router.ex"),
-        affectedSymbols: [symbolId("lib/handlers.ex", "Neutral.Handlers.possible/0")],
+        effect: symbolEffect([symbolId("lib/handlers.ex", "Neutral.Handlers.possible/0")]),
       });
       const reachability = computePartitionedReachability(g);
       expect(
@@ -521,7 +526,7 @@ describe("hazard registry — scoped effects (T3.1)", () => {
       hazardClass: "elixir-dynamic-dispatch",
       detail: "bounded neutral dispatch",
       site: site("lib/router.ex"),
-      affectedSymbols: [symbolId("lib/target.ex", "Neutral.Target.possible/0")],
+      effect: symbolEffect([symbolId("lib/target.ex", "Neutral.Target.possible/0")]),
     });
     g.addHazard({
       file: fileId("lib/target.ex"),
@@ -567,7 +572,7 @@ describe("hazard registry — scoped effects (T3.1)", () => {
       hazardClass: "elixir-dynamic-dispatch",
       detail: "first bounded neutral dispatch",
       site: site("lib/router.ex"),
-      affectedSymbols: [symbolId("lib/first.ex", "Neutral.First.possible/0")],
+      effect: symbolEffect([symbolId("lib/first.ex", "Neutral.First.possible/0")]),
     });
     g.addHazard({
       file: fileId("lib/second.ex"),
@@ -575,7 +580,7 @@ describe("hazard registry — scoped effects (T3.1)", () => {
       hazardClass: "elixir-dynamic-dispatch",
       detail: "downstream bounded neutral dispatch",
       site: site("lib/second.ex"),
-      affectedSymbols: [symbolId("lib/final.ex", "Neutral.Final.possible/0")],
+      effect: symbolEffect([symbolId("lib/final.ex", "Neutral.Final.possible/0")]),
     });
 
     const claims = run(g);
@@ -617,6 +622,31 @@ describe("hazard registry — scoped effects (T3.1)", () => {
     ).toEqual([]);
   });
 
+  it("applies an explicit file effect only at that file and retains its world", () => {
+    const g = new IRGraph();
+    addEntry(g, "lib/router.ex");
+    addFile(g, "lib/unrelated.ex");
+    g.addHazard({
+      file: fileId("lib/router.ex"),
+      hazardClass: "elixir-dynamic-dispatch",
+      detail: "file-local neutral uncertainty",
+      site: site("lib/router.ex"),
+      effect: { scope: { kind: "file" }, worlds: ["test"] },
+    });
+    const evaluation = evaluateHazards({
+      graph: g,
+      reachability: computePartitionedReachability(g),
+    });
+
+    expect(evaluation.effectsForSubject({ kind: "file", file: "lib/router.ex" })).toEqual([
+      expect.objectContaining({
+        effectScope: { kind: "file" },
+        worlds: ["test"],
+      }),
+    ]);
+    expect(evaluation.effectsForSubject({ kind: "file", file: "lib/unrelated.ex" })).toEqual([]);
+  });
+
   it("caps test-reachable targets reached independently by a production-active hazard", () => {
     const g = new IRGraph();
     addEntry(g, "lib/application.ex");
@@ -652,7 +682,7 @@ describe("hazard registry — scoped effects (T3.1)", () => {
       hazardClass: "elixir-dynamic-dispatch",
       detail: "production-active bounded dispatch",
       site: site("lib/router.ex"),
-      affectedSymbols: [symbolId("lib/first.ex", "Neutral.First.possible/0")],
+      effect: symbolEffect([symbolId("lib/first.ex", "Neutral.First.possible/0")]),
     });
 
     const claims = run(g);
@@ -770,6 +800,66 @@ describe("hazard registry — scoped effects (T3.1)", () => {
     expect(performance.snapshot().counters.fixedPointIterations).toBe(1);
   });
 
+  it("keeps many overlapping bounded sources on a delta-driven propagation curve", () => {
+    const g = new IRGraph();
+    const sourceCount = 800;
+    const chainLength = 150;
+    addEntry(g, "lib/application.ex");
+    addSymbol(g, "lib/router.ex", "Neutral.Router.dispatch/0");
+    ref(
+      g,
+      "lib/application.ex",
+      symbolId("lib/router.ex", "Neutral.Router.dispatch/0"),
+      "static",
+      "Neutral.Router.dispatch/0",
+    );
+    for (let index = 0; index < chainLength; index += 1) {
+      addSymbol(g, "lib/chain.ex", `Neutral.Chain.step_${index}/0`);
+      if (index > 0) {
+        g.addEdge({
+          kind: "references",
+          referenceKind: "static",
+          from: symbolId("lib/chain.ex", `Neutral.Chain.step_${index - 1}/0`),
+          to: symbolId("lib/chain.ex", `Neutral.Chain.step_${index}/0`),
+          name: `Neutral.Chain.step_${index}/0`,
+          site: site("lib/chain.ex"),
+        });
+      }
+    }
+    for (let index = 0; index < sourceCount; index += 1) {
+      g.addHazard({
+        file: fileId("lib/router.ex"),
+        carrierSymbol: symbolId("lib/router.ex", "Neutral.Router.dispatch/0"),
+        hazardClass: "elixir-dynamic-dispatch",
+        detail: `bounded neutral source ${index}`,
+        site: {
+          file: "lib/router.ex",
+          span: { ...SPAN, startLine: index + 1, endLine: index + 1 },
+        },
+        effect: symbolEffect([symbolId("lib/chain.ex", "Neutral.Chain.step_0/0")]),
+      });
+    }
+
+    const performanceTracker = new PerformanceTracker();
+    const started = performance.now();
+    const evaluation = evaluateHazards({
+      graph: g,
+      reachability: computePartitionedReachability(g),
+      performance: performanceTracker,
+    });
+    const elapsed = performance.now() - started;
+
+    expect(
+      evaluation.effectsForSubject({
+        kind: "export",
+        file: "lib/chain.ex",
+        name: `Neutral.Chain.step_${chainLength - 1}/0`,
+      }),
+    ).toHaveLength(sourceCount);
+    expect(performanceTracker.snapshot().counters.fixedPointIterations).toBe(1);
+    expect(elapsed).toBeLessThan(1_500);
+  });
+
   it("bounds a symbol-set hazard without suppressing its owning file", () => {
     const dead = new IRGraph();
     addEntry(dead, "lib/application.ex");
@@ -779,7 +869,9 @@ describe("hazard registry — scoped effects (T3.1)", () => {
       hazardClass: "elixir-behaviour-callback",
       detail: "bounded neutral callback surface",
       site: site("lib/orphan_server.ex"),
-      affectedSymbols: [symbolId("lib/orphan_server.ex", "Neutral.OrphanServer.handle_call/3")],
+      effect: symbolEffect([
+        symbolId("lib/orphan_server.ex", "Neutral.OrphanServer.handle_call/3"),
+      ]),
     });
 
     expect(shape(run(dead))).toContainEqual({
@@ -810,7 +902,7 @@ describe("hazard registry — scoped effects (T3.1)", () => {
       hazardClass: "elixir-behaviour-callback",
       detail: "bounded neutral callback surface",
       site: site("lib/server.ex"),
-      affectedSymbols: [symbolId("lib/server.ex", "Neutral.Server.handle_call/3")],
+      effect: symbolEffect([symbolId("lib/server.ex", "Neutral.Server.handle_call/3")]),
     });
 
     const reachableClaims = run(reachable);

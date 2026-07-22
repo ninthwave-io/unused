@@ -36,7 +36,13 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
       now: new Date(0),
     });
     expect(
-      analysis.graph.hazards().filter((hazard) => hazard.hazardClass === "elixir-dynamic-dispatch"),
+      analysis.graph
+        .hazards()
+        .filter(
+          (hazard) =>
+            hazard.hazardClass === "elixir-dynamic-dispatch" ||
+            hazard.hazardClass === "elixir-computed-atom-escape",
+        ),
     ).toEqual([]);
 
     const selected = whyAlive({
@@ -95,13 +101,21 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
     expect(hazards).toEqual([
       expect.objectContaining({
         carrierSymbol: expect.stringContaining("NeutralLocal.Dispatch.dispatch/2"),
-        affectedSymbols: expect.arrayContaining([
-          expect.stringContaining("NeutralLocal.Dispatch.possible_action/1"),
-        ]),
+        effect: {
+          scope: {
+            kind: "symbols",
+            ids: expect.arrayContaining([
+              expect.stringContaining("NeutralLocal.Dispatch.possible_action/1"),
+            ]),
+          },
+          worlds: ["production"],
+        },
       }),
     ]);
+    const scope = hazards[0]?.effect?.scope;
     expect(
-      hazards[0]?.affectedSymbols?.some((symbol) => symbol.includes("NeutralLocal.Unrelated")),
+      scope?.kind === "symbols" &&
+        scope.ids.some((symbol) => symbol.includes("NeutralLocal.Unrelated")),
     ).toBe(false);
 
     const possible = whyAlive({
@@ -153,7 +167,10 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
         carrierSymbol: expect.stringContaining("NeutralGlobal.Dispatch.dispatch/3"),
       }),
     ]);
-    expect(hazards[0]?.affectedSymbols).toBeUndefined();
+    expect(hazards[0]?.effect).toEqual({
+      scope: { kind: "unit" },
+      worlds: ["production"],
+    });
 
     const unrelated = whyAlive({
       graph: analysis.graph,
@@ -185,7 +202,13 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
     ).toEqual(expect.arrayContaining(["map/2", "into/2"]));
     const analysis = await analyzeElixirProjectWithGraph(root, { now: new Date(0) });
     expect(
-      analysis.graph.hazards().filter((hazard) => hazard.hazardClass === "elixir-dynamic-dispatch"),
+      analysis.graph
+        .hazards()
+        .filter(
+          (hazard) =>
+            hazard.hazardClass === "elixir-dynamic-dispatch" ||
+            hazard.hazardClass === "elixir-computed-atom-escape",
+        ),
     ).toEqual([]);
     const rebuilt = whyAlive({
       graph: analysis.graph,
@@ -245,7 +268,13 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
 
     const analysis = await analyzeElixirProjectWithGraph(root, { now: new Date(0) });
     expect(
-      analysis.graph.hazards().filter((hazard) => hazard.hazardClass === "elixir-dynamic-dispatch"),
+      analysis.graph
+        .hazards()
+        .filter(
+          (hazard) =>
+            hazard.hazardClass === "elixir-dynamic-dispatch" ||
+            hazard.hazardClass === "elixir-computed-atom-escape",
+        ),
     ).toEqual([]);
     const dead = whyAlive({
       graph: analysis.graph,
@@ -288,7 +317,13 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
 
     const analysis = await analyzeElixirProjectWithGraph(root, { now: new Date(0) });
     expect(
-      analysis.graph.hazards().filter((hazard) => hazard.hazardClass === "elixir-dynamic-dispatch"),
+      analysis.graph
+        .hazards()
+        .filter(
+          (hazard) =>
+            hazard.hazardClass === "elixir-dynamic-dispatch" ||
+            hazard.hazardClass === "elixir-computed-atom-escape",
+        ),
     ).toEqual([]);
     const alive = whyAlive({
       graph: analysis.graph,
@@ -348,7 +383,13 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
 
     const analysis = await analyzeElixirProjectWithGraph(root, { now: new Date(0) });
     expect(
-      analysis.graph.hazards().filter((hazard) => hazard.hazardClass === "elixir-dynamic-dispatch"),
+      analysis.graph
+        .hazards()
+        .filter(
+          (hazard) =>
+            hazard.hazardClass === "elixir-dynamic-dispatch" ||
+            hazard.hazardClass === "elixir-computed-atom-escape",
+        ),
     ).toEqual([]);
     const alive = whyAlive({
       graph: analysis.graph,
@@ -391,23 +432,47 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
     const analysis = await analyzeElixirProjectWithGraph(fixture("atom-dynamic-receiver"), {
       now: new Date(0),
     });
-    const hazards = analysis.graph
+    const invocationHazards = analysis.graph
       .hazards()
       .filter((hazard) => hazard.hazardClass === "elixir-dynamic-dispatch");
-    expect(hazards.map((hazard) => hazard.carrierSymbol).sort()).toEqual([
+    expect(invocationHazards.map((hazard) => hazard.carrierSymbol).sort()).toEqual([
+      expect.stringContaining("assigned_apply/2"),
+      expect.stringContaining("immediate/1"),
+      expect.stringContaining("mfa_pipeline/1"),
+      expect.stringContaining("mixed/2"),
+    ]);
+    const escapeHazards = analysis.graph
+      .hazards()
+      .filter((hazard) => hazard.hazardClass === "elixir-computed-atom-escape");
+    expect(escapeHazards.map((hazard) => hazard.carrierSymbol).sort()).toEqual([
       expect.stringContaining("assigned/2"),
       expect.stringContaining("assigned_apply/2"),
       expect.stringContaining("assigned_capture/2"),
       expect.stringContaining("assigned_mfa/2"),
-      expect.stringContaining("immediate/1"),
       expect.stringContaining("inline_dynamic_key/3"),
       expect.stringContaining("intervening_pipeline/1"),
-      expect.stringContaining("mfa_pipeline/1"),
-      expect.stringContaining("mixed/2"),
       expect.stringContaining("nested_pipeline/1"),
       expect.stringContaining("sequenced_pipeline/1"),
       expect.stringContaining("tuple_only/2"),
     ]);
+    for (const hazard of escapeHazards) {
+      expect(hazard.effect).toEqual({ scope: { kind: "unit" }, worlds: ["production"] });
+    }
+    expect(
+      invocationHazards.find((hazard) => hazard.carrierSymbol?.includes("assigned_apply/2"))
+        ?.effect,
+    ).toEqual({
+      scope: {
+        kind: "symbols",
+        ids: [expect.stringContaining("NeutralAtomFlow.Target.run/0")],
+      },
+      worlds: ["production"],
+    });
+    for (const hazard of invocationHazards.filter(
+      (candidate) => !candidate.carrierSymbol?.includes("assigned_apply/2"),
+    )) {
+      expect(hazard.effect).toEqual({ scope: { kind: "unit" }, worlds: ["production"] });
+    }
     const dead = whyAlive({
       graph: analysis.graph,
       reachability: analysis.reachability,

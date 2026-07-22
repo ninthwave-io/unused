@@ -167,6 +167,15 @@ describe("extractElixirRuntimeReferences", () => {
       "exact",
     ]);
     expect(
+      extraction.dynamicDispatches.map((dispatch) => ({
+        factKind: dispatch.factKind,
+        world: dispatch.world,
+      })),
+    ).toEqual([
+      { factKind: "dynamic-invocation", world: "production" },
+      { factKind: "dynamic-invocation", world: "production" },
+    ]);
+    expect(
       extraction.dynamicDispatches[0]?.targets.map((target) => `${target.mod}.${target.name}/0`),
     ).toEqual(["Dyn.Handlers.ping/0", "Dyn.Handlers.dead_handler/0"]);
     expect(
@@ -182,6 +191,117 @@ describe("extractElixirRuntimeReferences", () => {
         convention: "dynamic-apply",
       }),
     );
+  });
+
+  it("separates computed-atom escape from direct invocation roles", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-computed-atom-facts-"));
+    const file = "computed_atom_facts.ex";
+    const lines = [
+      "defmodule NeutralFacts.Dispatch do",
+      "  def produce(name), do: String.to_atom(name)",
+      "  def receive(name), do: String.to_atom(name).run()",
+      "  def capture_module(name), do: Function.capture(String.to_atom(name), :run, 0)",
+      "  def capture_function(name), do: Function.capture(NeutralFacts.Target, String.to_atom(name), 0)",
+      "  def mfa_module(name), do: {String.to_atom(name), :run, []}",
+      "  def mfa_function(name), do: {NeutralFacts.Target, String.to_atom(name), []}",
+      "  def four_tuple(name), do: {String.to_atom(name), :run, [], :metadata}",
+      "end",
+    ];
+    const atomEvent = (fromFun: string, line: number): TraceEvent => ({
+      k: "event",
+      kind: "remote",
+      file,
+      line,
+      from_mod: "NeutralFacts.Dispatch",
+      from_fun: fromFun,
+      to_mod: "String",
+      name: "to_atom",
+      arity: 1,
+      dyn: true,
+      partition: "prod",
+    });
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod("NeutralFacts.Dispatch", file)],
+      functions: [],
+      events: [
+        atomEvent("produce/1", 2),
+        atomEvent("receive/1", 3),
+        atomEvent("capture_module/1", 4),
+        atomEvent("capture_function/1", 5),
+        atomEvent("mfa_module/1", 6),
+        atomEvent("mfa_function/1", 7),
+        atomEvent("four_tuple/1", 8),
+      ],
+    };
+
+    try {
+      writeFileSync(join(root, file), `${lines.join("\n")}\n`);
+      expect(
+        extractElixirRuntimeConventions(root, trace).dynamicDispatches.map((fact) => ({
+          fromFun: fact.fromFun,
+          factKind: fact.factKind,
+          flow: fact.factKind === "computed-atom" ? fact.flow : undefined,
+          kind: fact.kind,
+          world: fact.world,
+        })),
+      ).toEqual([
+        {
+          fromFun: "produce/1",
+          factKind: "computed-atom",
+          flow: "escape",
+          kind: "opaque",
+          world: "production",
+        },
+        {
+          fromFun: "receive/1",
+          factKind: "dynamic-invocation",
+          flow: undefined,
+          kind: "opaque",
+          world: "production",
+        },
+        {
+          fromFun: "capture_module/1",
+          factKind: "dynamic-invocation",
+          flow: undefined,
+          kind: "opaque",
+          world: "production",
+        },
+        {
+          fromFun: "capture_function/1",
+          factKind: "dynamic-invocation",
+          flow: undefined,
+          kind: "opaque",
+          world: "production",
+        },
+        {
+          fromFun: "mfa_module/1",
+          factKind: "dynamic-invocation",
+          flow: undefined,
+          kind: "opaque",
+          world: "production",
+        },
+        {
+          fromFun: "mfa_function/1",
+          factKind: "dynamic-invocation",
+          flow: undefined,
+          kind: "opaque",
+          world: "production",
+        },
+        {
+          fromFun: "four_tuple/1",
+          factKind: "computed-atom",
+          flow: "escape",
+          kind: "opaque",
+          world: "production",
+        },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("recovers list arity only for unambiguous proper lists and enforces source cardinality", () => {
@@ -959,7 +1079,14 @@ describe("extractElixirRuntimeReferences", () => {
 
     expect(
       extractElixirRuntimeConventions(fixture("dynamic-dispatch"), trace).dynamicDispatches,
-    ).toEqual([expect.objectContaining({ kind: "opaque", targets: [] })]);
+    ).toEqual([
+      expect.objectContaining({
+        factKind: "dynamic-invocation",
+        kind: "opaque",
+        targets: [],
+        world: "production",
+      }),
+    ]);
   });
 
   it("keeps duplicate same-line use events conservative", () => {
@@ -1358,6 +1485,57 @@ describe("extractElixirRuntimeReferences", () => {
           "end\n",
         ].join(""),
       );
+      const started = performance.now();
+      extractElixirRuntimeConventions(root, trace);
+      return performance.now() - started;
+    };
+    const median = (values: readonly number[]): number =>
+      [...values].sort((left, right) => left - right)[Math.floor(values.length / 2)] ?? 0;
+
+    try {
+      measure(50);
+      const small = median([measure(250), measure(250), measure(250)]);
+      const large = median([measure(1_000), measure(1_000), measure(1_000)]);
+      expect(large).toBeLessThan(small * 8 + 30);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  it("joins many compiler-populated atom receiver events near-linearly", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-atom-event-scaling-"));
+    const file = "many_atom_events.ex";
+    const measure = (count: number): number => {
+      const functions = Array.from(
+        { length: count },
+        (_, index) => `  def run_${index}(name), do: String.to_existing_atom(name).run()\n`,
+      ).join("");
+      writeFileSync(
+        join(root, file),
+        ["defmodule NeutralScale.AtomEvents do\n", functions, "end\n"].join(""),
+      );
+      const events: TraceEvent[] = Array.from({ length: count }, (_, index) => ({
+        k: "event",
+        kind: "remote",
+        file,
+        line: index + 2,
+        from_mod: "NeutralScale.AtomEvents",
+        from_fun: `run_${index}/1`,
+        to_mod: "String",
+        name: "to_existing_atom",
+        arity: 1,
+        dyn: true,
+        partition: "prod",
+      }));
+      const trace: TraceResult = {
+        appMod: null,
+        deps: [],
+        compileOk: true,
+        testPartition: "complete",
+        modules: [mod("NeutralScale.AtomEvents", file)],
+        functions: [],
+        events,
+      };
       const started = performance.now();
       extractElixirRuntimeConventions(root, trace);
       return performance.now() - started;

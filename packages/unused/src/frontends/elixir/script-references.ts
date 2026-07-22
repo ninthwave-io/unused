@@ -321,21 +321,24 @@ export function extractElixirScriptFacts(
       });
     }
     if (rootReason !== null) {
-      const affectedSymbols = [...referencedModules]
+      const affectedSymbolIds = [...referencedModules]
         .flatMap((moduleName) =>
           (functionsByModule.get(moduleName) ?? []).map((fn) =>
             symbolId(fn.file, `${fn.mod}.${fn.name}/${fn.arity}`),
           ),
         )
         .sort(compare);
-      if (affectedSymbols.length > 0) {
+      if (affectedSymbolIds.length > 0) {
         hazards.push({
           file: fileId(file),
           hazardClass: "elixir-dynamic-dispatch",
           detail:
             "rooted standalone script may use referenced module functions through syntax outside exact extraction",
           site: siteAt(file, 1),
-          affectedSymbols,
+          effect: {
+            scope: { kind: "symbols", ids: affectedSymbolIds },
+            worlds: ["config"],
+          },
         });
       }
       if (opaque) {
@@ -344,6 +347,7 @@ export function extractElixirScriptFacts(
           hazardClass: "elixir-dynamic-dispatch",
           detail: "rooted standalone script contains opaque dynamic invocation",
           site: siteAt(file, 1),
+          effect: { scope: { kind: "unit" }, worlds: ["config"] },
         });
       }
     }

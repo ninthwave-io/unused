@@ -221,7 +221,10 @@ visits, summary iterations, exact/bounded/opaque sinks, and escapes.
 1. **Facts and characterization.** Add neutral tests that distinguish atom
    production, data use, exact/bounded/opaque invocation, and escape. Introduce
    explicit internal fact types without changing emitted hazards. The current
-   unit fallback is the oracle for conservative behavior.
+   unit fallback is the oracle for conservative behavior. Phase 1A records the
+   originating worlds as effect provenance but intentionally retains unioned
+   activation; world-specific filtering begins only in phase 4 after its
+   false-positive safety fixtures exist.
 2. **Local indexed flow.** Build the per-function IR and migrate existing
    source-role proofs behind declarative summaries. Compare old and new facts;
    any disagreement remains opaque until independently reviewed.

@@ -1,6 +1,12 @@
 /** Central, reusable hazard activation and subject-effect evaluation. */
 
-import { fileId, type HazardAnnotation, type IRGraph } from "../ir/index.js";
+import {
+  fileId,
+  type HazardAnnotation,
+  type HazardEffectScope,
+  type HazardWorld,
+  type IRGraph,
+} from "../ir/index.js";
 import {
   type ConfidenceCap,
   capIsStrongerOrEqual,
@@ -16,6 +22,9 @@ export interface AppliedHazardCap {
   readonly siteFile: string;
   readonly siteLine: number;
   readonly hazardClass: HazardAnnotation["hazardClass"];
+  /** Present only when the frontend supplied an authoritative explicit scope. */
+  readonly effectScope?: HazardEffectScope;
+  readonly worlds: readonly HazardWorld[];
 }
 
 export interface HazardEvaluationInput {
@@ -192,6 +201,10 @@ export function evaluateHazards(input: HazardEvaluationInput): HazardEvaluation 
   const executableSymbolEdges = context.executableSymbolEdges;
 
   const activeHazards = new Set<HazardAnnotation>();
+  // ADR 0014 Phase 1A records authoritative fact worlds but deliberately
+  // preserves the existing unioned activation behavior. Phase 4 will evaluate
+  // worlds independently; until then, filtering here could make a previously
+  // protected subject claimable and would violate this checkpoint's rollback.
   const reachableCarrierNodes = new Set<string>([
     ...reachability.production.reachableFiles,
     ...reachability.production.reachableSymbols,
@@ -200,16 +213,20 @@ export function evaluateHazards(input: HazardEvaluationInput): HazardEvaluation 
     ...reachability.test.reachableFiles,
     ...reachability.test.reachableSymbols,
   ]);
-  const queue = [...reachableCarrierNodes];
+  const queue: Array<{ readonly carrier: string; readonly source?: HazardAnnotation }> = [
+    ...reachableCarrierNodes,
+  ].map((carrier) => ({ carrier }));
   let queueIndex = 0;
-  const syntheticSourceBySymbol = new Map<string, HazardAnnotation>();
+  const activatedCarriers = new Set<string>();
+  const syntheticSourcesBySymbol = new Map<string, Set<HazardAnnotation>>();
   const unreachedFiles = new UnreachedFileIndex(fileNodes, ownerRootRelDir, reachableCarrierNodes);
 
   const activate = (item: RegisteredHazard): void => {
     if (activeHazards.has(item.hazard)) return;
     activeHazards.add(item.hazard);
     if (item.entry.propagation === "affected-symbols") {
-      for (const target of item.hazard.affectedSymbols ?? []) {
+      const scope = item.hazard.effect?.scope;
+      for (const target of scope?.kind === "symbols" ? scope.ids : []) {
         markSyntheticSymbol(target, item.hazard);
       }
       return;
@@ -217,19 +234,27 @@ export function evaluateHazards(input: HazardEvaluationInput): HazardEvaluation 
     for (const target of propagationTargets(item, unreachedFiles, ownerRootRelDir, graph)) {
       if (reachableCarrierNodes.has(target)) continue;
       reachableCarrierNodes.add(target);
-      queue.push(target);
+      queue.push({ carrier: target });
     }
   };
 
   const markSyntheticSymbol = (target: string, source: HazardAnnotation): void => {
     if (graph.getNode(target)?.kind !== "symbol") return;
-    if (syntheticSourceBySymbol.has(target)) return;
-    syntheticSourceBySymbol.set(target, source);
+    let sources = syntheticSourcesBySymbol.get(target);
+    if (sources === undefined) {
+      sources = new Set();
+      syntheticSourcesBySymbol.set(target, sources);
+    }
+    if (sources.has(source)) return;
+    sources.add(source);
     reachableCarrierNodes.add(target);
     // Queue even when ordinary production/config/test reachability already
     // contains the symbol: synthetic uncertainty has its own effect closure,
     // and a test-only target still needs the production-active hazard cap.
-    queue.push(target);
+    // Each queue item is the newly discovered (symbol, source) delta. Processing
+    // the accumulated Set for every addition would make H overlapping hazards
+    // on an S-symbol chain O(S*H^2) instead of the necessary O(H*E).
+    queue.push({ carrier: target, source });
   };
 
   for (const item of registered) {
@@ -239,14 +264,16 @@ export function evaluateHazards(input: HazardEvaluationInput): HazardEvaluation 
     performance?.increment("fixedPointIterations");
   }
   while (queueIndex < queue.length) {
-    const carrier = queue[queueIndex];
+    const item = queue[queueIndex];
     queueIndex += 1;
-    if (carrier === undefined) continue;
-    for (const item of byCarrier.get(carrier) ?? []) activate(item);
-    const syntheticSource = syntheticSourceBySymbol.get(carrier);
-    if (syntheticSource !== undefined) {
-      for (const target of executableSymbolEdges.get(carrier) ?? []) {
-        markSyntheticSymbol(target, syntheticSource);
+    if (item === undefined) continue;
+    if (!activatedCarriers.has(item.carrier)) {
+      activatedCarriers.add(item.carrier);
+      for (const registeredItem of byCarrier.get(item.carrier) ?? []) activate(registeredItem);
+    }
+    if (item.source !== undefined) {
+      for (const target of executableSymbolEdges.get(item.carrier) ?? []) {
+        markSyntheticSymbol(target, item.source);
       }
     }
   }
@@ -261,9 +288,14 @@ export function evaluateHazards(input: HazardEvaluationInput): HazardEvaluation 
     const { hazard, entry } = item;
     if (!activeHazards.has(hazard)) continue;
     const applied = appliedCap(hazard, entry.cap);
-    if (hazard.affectedSymbols !== undefined) {
-      if (entry.propagation === "affected-symbols") continue;
-      for (const id of hazard.affectedSymbols) {
+    const explicitScope = hazard.effect?.scope;
+    if (explicitScope?.kind === "symbols") {
+      if (entry.propagation === "affected-symbols") {
+        // Synthetic propagation applies these effects below after computing the
+        // executable-symbol closure.
+        continue;
+      }
+      for (const id of explicitScope.ids) {
         const symbol = graph.getNode(id);
         if (symbol?.kind !== "symbol" || !isInScope(symbol.file, analysisFiles)) continue;
         mergeCap(symbolCap, symbol.id, applied);
@@ -274,6 +306,16 @@ export function evaluateHazards(input: HazardEvaluationInput): HazardEvaluation 
           addEffect(fileEffects, containingFile, applied);
         }
       }
+      continue;
+    }
+    if (explicitScope?.kind === "file") {
+      mergeCap(fileCap, hazard.file, applied);
+      addEffect(fileEffects, hazard.file, applied);
+      addEffect(exportEffects, hazard.file, applied);
+      continue;
+    }
+    if (explicitScope?.kind === "unit") {
+      raiseUnitCap(ownerRootRelDir(carrierPath(hazard, graph)), applied);
       continue;
     }
 
@@ -309,17 +351,19 @@ export function evaluateHazards(input: HazardEvaluationInput): HazardEvaluation 
     }
   }
 
-  for (const [id, source] of syntheticSourceBySymbol) {
+  for (const [id, sources] of syntheticSourcesBySymbol) {
     const symbol = graph.getNode(id);
     if (symbol?.kind !== "symbol" || !isInScope(symbol.file, analysisFiles)) continue;
-    const entry = lookupHazard(source.hazardClass);
-    if (entry === undefined) continue;
-    const applied = appliedCap(source, entry.cap);
-    mergeCap(symbolCap, symbol.id, applied);
-    addEffect(symbolEffects, symbol.id, applied);
-    const containingFile = fileId(symbol.file);
-    mergeCap(fileOnlyCap, containingFile, applied);
-    addEffect(fileEffects, containingFile, applied);
+    for (const source of sources) {
+      const entry = lookupHazard(source.hazardClass);
+      if (entry === undefined) continue;
+      const applied = appliedCap(source, entry.cap);
+      mergeCap(symbolCap, symbol.id, applied);
+      addEffect(symbolEffects, symbol.id, applied);
+      const containingFile = fileId(symbol.file);
+      mergeCap(fileOnlyCap, containingFile, applied);
+      addEffect(fileEffects, containingFile, applied);
+    }
   }
 
   applyRangeCaps(fileNodes, rangeCaps, fileCap);
@@ -709,7 +753,13 @@ function dependencySubjectKey(file: string, name: string): string {
 }
 
 function effectKey(effect: AppliedHazardCap): string {
-  return `${effect.siteFile}\0${effect.siteLine}\0${effect.hazardClass}\0${effect.detail}\0${effect.cap}`;
+  return `${effect.siteFile}\0${effect.siteLine}\0${effect.hazardClass}\0${effect.detail}\0${effect.cap}\0${effect.worlds.join(",")}\0${effect.effectScope === undefined ? "registry" : effectScopeKey(effect.effectScope)}`;
+}
+
+function effectScopeKey(scope: HazardEffectScope): string {
+  // Scope membership is already resolved by the indexed maps before this key
+  // is consulted. Do not join a potentially large symbol set per claim.
+  return scope.kind;
 }
 
 function compareText(a: string, b: string): number {
@@ -723,6 +773,8 @@ function appliedCap(hazard: HazardAnnotation, cap: ConfidenceCap): AppliedHazard
     siteFile: hazard.site.file,
     siteLine: hazard.site.span.startLine,
     hazardClass: hazard.hazardClass,
+    ...(hazard.effect === undefined ? {} : { effectScope: hazard.effect.scope }),
+    worlds: hazard.effect?.worlds ?? ["production", "config", "test"],
   };
 }
 
@@ -753,7 +805,7 @@ function addToList<T>(map: Map<string, T[]>, key: string, value: T): void {
 function stableEffects(effects: readonly AppliedHazardCap[]): AppliedHazardCap[] {
   const byKey = new Map<string, AppliedHazardCap>();
   for (const effect of effects) {
-    const key = `${effect.hazardClass}\0${effect.siteFile}\0${effect.siteLine}\0${effect.detail}\0${effect.cap}`;
+    const key = effectKey(effect);
     if (!byKey.has(key)) byKey.set(key, effect);
   }
   return [...byKey.values()].sort(

@@ -87,10 +87,11 @@ export type HazardClass =
   | "config-named-dependency"
   | "capacitor-platform-dependency"
   // Elixir frontend (ADR 0011). The vocabulary is language-agnostic by
-  // construction, but these three classes are only ever cited by the Elixir
+  // construction, but these classes are only ever cited by the Elixir
   // frontend; core applies their scope/cap with zero language knowledge, exactly
   // as for the TS classes above.
   | "elixir-behaviour-callback"
+  | "elixir-computed-atom-escape"
   | "elixir-dynamic-dispatch"
   | "elixir-script-opaque"
   | "elixir-phoenix-runtime"
@@ -109,6 +110,24 @@ export type NodeKind = "symbol" | "file" | "dependency" | "endpoint" | "entrypoi
  * (test partitioning + the `test-only` verdict are M5).
  */
 export type EntrypointKind = "production" | "test" | "config";
+
+/** The authoritative reachability world in which a hazard fact was observed. */
+export type HazardWorld = EntrypointKind;
+
+/**
+ * An explicit confidence/deletion effect supplied by a frontend when the
+ * registry's ordinary scope would be too broad or too implicit.
+ */
+export type HazardEffectScope =
+  | { readonly kind: "symbols"; readonly ids: readonly string[] }
+  | { readonly kind: "file" }
+  | { readonly kind: "unit" };
+
+export interface HazardEffect {
+  readonly scope: HazardEffectScope;
+  /** Sorted, unique worlds whose facts justify this effect. */
+  readonly worlds: readonly HazardWorld[];
+}
 
 /** A discovered, analyzable source file. Identity: its POSIX repo-relative path. */
 export interface FileNode {
@@ -292,7 +311,7 @@ export interface HazardAnnotation {
   /**
    * Node id of the carrier file whose reachability activates the hazard. For
    * ordinary file/directory/project hazards this is also the affected file.
-   * `affectedSymbols` separates those roles for bounded runtime dispatch.
+   * `effect.scope` separates those roles for bounded runtime dispatch.
    */
   readonly file: string;
   /**
@@ -315,15 +334,11 @@ export interface HazardAnnotation {
    */
   readonly subtreePrefix?: string;
   /**
-   * Exact symbol node ids that this otherwise broader hazard can affect. When
-   * present, core always caps only these symbols; it also caps their containing
-   * file claims when the registry scope is not `symbol-set` (for example, a
-   * bounded dynamic-dispatch target whose whole file cannot be deleted safely).
-   * The registry's normal scope remains the conservative fallback when absent.
-   * This is intentionally a symbol-id set rather than a file scope because a
-   * single Elixir source file may define several modules.
+   * Explicit effect scope and provenance worlds. When absent, the registry's
+   * normal scope applies. A symbol effect also caps containing-file deletion
+   * claims unless the registry scope is `symbol-set`.
    */
-  readonly affectedSymbols?: readonly string[];
+  readonly effect?: HazardEffect;
 }
 
 // ---------------------------------------------------------------------------

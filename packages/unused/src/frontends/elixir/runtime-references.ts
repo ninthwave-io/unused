@@ -31,17 +31,32 @@ export interface ElixirRuntimeReference {
   readonly convention: "runtime-mfa" | "use-helper" | "dynamic-apply";
 }
 
-export interface ElixirDynamicDispatch {
+interface ElixirDynamicFactBase {
   readonly fromMod: string;
   readonly fromFun?: string;
   readonly file: string;
   readonly line: number;
   readonly kind: "exact" | "bounded" | "opaque";
+  readonly world: "production" | "test";
   /** Exact compiler event identity; avoids conflating same-line carriers. */
   readonly eventKey: string;
   /** Compiler-confirmed public functions that a bounded call may select. */
   readonly targets: readonly FunctionRecord[];
 }
+
+/** A known atom-producing call and the bounded disposition of its result. */
+export interface ElixirComputedAtomFact extends ElixirDynamicFactBase {
+  readonly factKind: "computed-atom";
+  readonly flow: "data" | "escape";
+  readonly kind: "exact" | "opaque";
+}
+
+/** A runtime operation that actually selects executable code. */
+export interface ElixirDynamicInvocationFact extends ElixirDynamicFactBase {
+  readonly factKind: "dynamic-invocation";
+}
+
+export type ElixirDynamicDispatch = ElixirComputedAtomFact | ElixirDynamicInvocationFact;
 
 export interface ElixirRuntimeConventions {
   readonly references: readonly ElixirRuntimeReference[];
@@ -434,7 +449,9 @@ function extractDynamicDispatches(
   const aliasTargetsByCarrierSite = indexAliasTargets(traceResult.events);
 
   const dynamicEventsBySite = indexDynamicEventsBySite(traceResult.events);
-  const safeAtomEvents = safeAtomProducerEvents(traceResult.events, sources);
+  const atomProducerRoles = classifyAtomProducerEvents(traceResult.events, sources);
+  const safeAtomEvents = atomProducerRoles.data;
+  const directAtomInvocationEvents = atomProducerRoles.invocation;
   const exactUseDispatchEvents = exactUseDispatcherEvents(
     traceResult,
     references,
@@ -456,7 +473,10 @@ function extractDynamicDispatches(
         ...owner,
         file: event.file,
         line: event.line,
+        factKind: "computed-atom",
+        flow: "data",
         kind: "exact",
+        world: event.partition === "test" ? "test" : "production",
         eventKey,
         targets: [],
       });
@@ -468,7 +488,9 @@ function extractDynamicDispatches(
         ...owner,
         file: event.file,
         line: event.line,
+        factKind: "dynamic-invocation",
         kind: "exact",
+        world: event.partition === "test" ? "test" : "production",
         eventKey,
         targets: exactUseTargets,
       });
@@ -500,7 +522,9 @@ function extractDynamicDispatches(
           ...owner,
           file: event.file,
           line: event.line,
+          factKind: "dynamic-invocation",
           kind: "opaque",
+          world: event.partition === "test" ? "test" : "production",
           eventKey,
           targets: [],
         });
@@ -531,7 +555,9 @@ function extractDynamicDispatches(
         ...owner,
         file: event.file,
         line: event.line,
+        factKind: "dynamic-invocation",
         kind: "bounded",
+        world: event.partition === "test" ? "test" : "production",
         eventKey,
         targets,
       });
@@ -544,11 +570,17 @@ function extractDynamicDispatches(
       parsed?.length !== 1 ||
       parsed[0] === undefined
     ) {
+      const atomProducer = isAtomProducerEvent(event);
+      const directInvocation = directAtomInvocationEvents.has(event);
       dispatches.push({
         ...owner,
         file: event.file,
         line: event.line,
+        ...(atomProducer && !directInvocation
+          ? { factKind: "computed-atom" as const, flow: "escape" as const }
+          : { factKind: "dynamic-invocation" as const }),
         kind: "opaque",
+        world: event.partition === "test" ? "test" : "production",
         eventKey,
         targets: [],
       });
@@ -582,7 +614,9 @@ function extractDynamicDispatches(
         ...owner,
         file: event.file,
         line: event.line,
+        factKind: "dynamic-invocation",
         kind: "exact",
+        world: event.partition === "test" ? "test" : "production",
         eventKey,
         targets,
       });
@@ -594,7 +628,9 @@ function extractDynamicDispatches(
         ...owner,
         file: event.file,
         line: event.line,
+        factKind: "dynamic-invocation",
         kind: "bounded",
+        world: event.partition === "test" ? "test" : "production",
         eventKey,
         targets,
       });
@@ -604,7 +640,9 @@ function extractDynamicDispatches(
       ...owner,
       file: event.file,
       line: event.line,
+      factKind: "dynamic-invocation",
       kind: "opaque",
+      world: event.partition === "test" ? "test" : "production",
       eventKey,
       targets: [],
     });
@@ -628,10 +666,13 @@ function indexDynamicEventsBySite(events: readonly TraceEvent[]): Map<string, Tr
  * rebuild. Receiver dispatch, assignment, arbitrary tuples, intervening or
  * unproven pipelines, and same-line ambiguity deliberately fail this proof.
  */
-function safeAtomProducerEvents(
+function classifyAtomProducerEvents(
   events: readonly TraceEvent[],
   sources: ReadonlyMap<string, SourceIndex>,
-): ReadonlySet<TraceEvent> {
+): {
+  readonly data: ReadonlySet<TraceEvent>;
+  readonly invocation: ReadonlySet<TraceEvent>;
+} {
   const sourceFacts = new Map<string, AtomProducerFact[]>();
   for (const [file, source] of sources) {
     const mapCalls = indexMapCalls(source);
@@ -667,6 +708,7 @@ function safeAtomProducerEvents(
         file,
         line,
         name,
+        directInvocation: isDirectAtomInvocationConsumer(source, start, open, close),
         ...(safeMap === null ? {} : { safeMap }),
         ...(safeMapInto === null ? {} : { safeMapInto }),
         ...(safeAssignedMapValues === null ? {} : { safeAssignedMapValues }),
@@ -690,6 +732,7 @@ function safeAtomProducerEvents(
   }
 
   const safe = new Set<TraceEvent>();
+  const invocation = new Set<TraceEvent>();
   for (const [key, facts] of sourceFacts) {
     const matchingEvents = eventFacts.get(key) ?? [];
     // The tracer has line but not column provenance. Never guess which role a
@@ -698,6 +741,10 @@ function safeAtomProducerEvents(
     const fact = facts[0];
     const event = matchingEvents[0];
     if (fact === undefined || event === undefined) continue;
+    if (fact.directInvocation) {
+      invocation.add(event);
+      continue;
+    }
     if (fact.safeMap !== undefined) {
       const safeMap = fact.safeMap;
       const mapCarrierSite = carrierAt(fact.file, safeMap.line, event);
@@ -767,13 +814,64 @@ function safeAtomProducerEvents(
     );
     if (inlineGuardCalls.length === 1 && inlineMapCalls.length === 1) safe.add(event);
   }
-  return safe;
+  return { data: safe, invocation };
+}
+
+function isDirectAtomInvocationConsumer(
+  source: SourceIndex,
+  producerStart: number,
+  producerOpen: number,
+  producerClose: number,
+): boolean {
+  const after = skipWhitespaceForward(source.code, producerClose + 1, source.code.length);
+  const receiverSuffix = source.code.slice(after, Math.min(source.code.length, after + 96));
+  if (/^\.[a-z_][A-Za-z0-9_]*[!?]?\s*\(/u.test(receiverSuffix)) return true;
+
+  const parentOpen = source.parentByOpen.get(producerOpen);
+  if (parentOpen === undefined) return false;
+  const first = callArgumentRange(source, parentOpen, 0);
+  const second = callArgumentRange(source, parentOpen, 1);
+  const third = callArgumentRange(source, parentOpen, 2);
+  const commaCount = source.commasByOpen.get(parentOpen)?.length ?? 0;
+  const isComplete = (range: { readonly start: number; readonly end: number } | null): boolean =>
+    range?.start === producerStart && range.end === producerClose + 1;
+
+  if (source.code[parentOpen] === "{") {
+    return (
+      commaCount === 2 &&
+      third !== null &&
+      source.code[third.start] === "[" &&
+      ((isComplete(first) &&
+        second !== null &&
+        LITERAL_ATOM_RE.test(source.code.slice(second.start, second.end))) ||
+        isComplete(second))
+    );
+  }
+
+  const prefix = source.code.slice(Math.max(0, parentOpen - 48), parentOpen);
+  if (/Function\s*\.\s*capture\s*$/u.test(prefix)) {
+    return commaCount === 2 && (isComplete(first) || isComplete(second));
+  }
+  if (/(?:Kernel\s*\.\s*|:erlang\s*\.\s*|\b)apply\s*$/u.test(prefix)) {
+    return commaCount === 2 && (isComplete(first) || isComplete(second));
+  }
+  return false;
+}
+
+function isAtomProducerEvent(event: TraceEvent): event is TraceEvent & { readonly name: string } {
+  return (
+    event.dyn &&
+    event.to_mod === "String" &&
+    event.arity === 1 &&
+    (event.name === "to_atom" || event.name === "to_existing_atom")
+  );
 }
 
 interface AtomProducerFact {
   readonly file: string;
   readonly line: number;
   readonly name: string;
+  readonly directInvocation: boolean;
   readonly safeMap?: { readonly name: string; readonly arity: number; readonly line: number };
   readonly safeMapInto?: { readonly mapLine: number; readonly intoLine: number };
   readonly safeAssignedMapValues?: {

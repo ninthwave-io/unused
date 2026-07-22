@@ -35,6 +35,7 @@ const ALL_CLASSES: readonly HazardClass[] = [
   "config-named-dependency",
   "capacitor-platform-dependency",
   "elixir-behaviour-callback",
+  "elixir-computed-atom-escape",
   "elixir-dynamic-dispatch",
   "elixir-phoenix-runtime",
   "elixir-script-opaque",
@@ -134,11 +135,13 @@ describe("HAZARD_REGISTRY — scope/cap per class group (T3.1a)", () => {
 
   it("dynamic runtime hazards follow their carriers; all other hazards remain always active", () => {
     expect(HAZARD_REGISTRY["elixir-dynamic-dispatch"].activation).toBe("carrier-reachable");
+    expect(HAZARD_REGISTRY["elixir-computed-atom-escape"].activation).toBe("carrier-reachable");
     expect(HAZARD_REGISTRY["rustler-ambiguous-registration"].activation).toBe("carrier-reachable");
     for (const [cls, entry] of Object.entries(HAZARD_REGISTRY)) {
       if (
         cls === "computed-dynamic-import" ||
         cls === "computed-require" ||
+        cls === "elixir-computed-atom-escape" ||
         cls === "elixir-dynamic-dispatch" ||
         cls === "rustler-ambiguous-registration"
       ) {
@@ -150,6 +153,7 @@ describe("HAZARD_REGISTRY — scope/cap per class group (T3.1a)", () => {
 
   it("separates dynamic confidence scope from activation propagation", () => {
     expect(HAZARD_REGISTRY["elixir-dynamic-dispatch"].propagation).toBe("affected-symbols");
+    expect(HAZARD_REGISTRY["elixir-computed-atom-escape"].propagation).toBe("affected-symbols");
     expect(HAZARD_REGISTRY["rustler-ambiguous-registration"].propagation).toBe("none");
   });
 

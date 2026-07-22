@@ -56,7 +56,10 @@ describe("rebaseGraph", () => {
       detail: "neutral dynamic dispatch",
       site: SITE,
       subtreePrefix: "lib/plugins/",
-      affectedSymbols: [symbolId("lib/callback.ex", "App.callback/1")],
+      effect: {
+        scope: { kind: "symbols", ids: [symbolId("lib/callback.ex", "App.callback/1")] },
+        worlds: ["test"],
+      },
     });
 
     const rebased = rebaseGraph(graph, "apps/backend");
@@ -93,7 +96,13 @@ describe("rebaseGraph", () => {
       carrierSymbol: symbolId("apps/backend/lib/callback.ex", "App.callback/1"),
       site: { file: "apps/backend/lib/callback.ex" },
       subtreePrefix: "apps/backend/lib/plugins/",
-      affectedSymbols: [symbolId("apps/backend/lib/callback.ex", "App.callback/1")],
+      effect: {
+        scope: {
+          kind: "symbols",
+          ids: [symbolId("apps/backend/lib/callback.ex", "App.callback/1")],
+        },
+        worlds: ["test"],
+      },
     });
   });
 
@@ -104,6 +113,26 @@ describe("rebaseGraph", () => {
     expect(() => prefixRepositoryPath("../outside", "lib/a.ex")).toThrow(
       "path must be repository-relative",
     );
+  });
+
+  it.each(["file", "unit"] as const)("preserves an explicit %s effect while rebasing", (kind) => {
+    const graph = new IRGraph();
+    graph.addNode({ kind: "file", id: fileId("lib/loader.ex"), path: "lib/loader.ex" });
+    graph.addHazard({
+      file: fileId("lib/loader.ex"),
+      hazardClass: "elixir-dynamic-dispatch",
+      detail: "neutral contextual effect",
+      site: { ...SITE, file: "lib/loader.ex" },
+      effect: { scope: { kind }, worlds: ["config"] },
+    });
+
+    expect(rebaseGraph(graph, "apps/backend").hazards()).toEqual([
+      expect.objectContaining({
+        file: fileId("apps/backend/lib/loader.ex"),
+        site: expect.objectContaining({ file: "apps/backend/lib/loader.ex" }),
+        effect: { scope: { kind }, worlds: ["config"] },
+      }),
+    ]);
   });
 
   it("rebases line counts, dependency sites, units, and file scopes", () => {
@@ -160,7 +189,13 @@ describe("rebaseGraph", () => {
             hazardClass: "elixir-dynamic-dispatch",
             detail: "neutral",
             site: SITE,
-            affectedSymbols: [symbolId("lib/callback.ex", "App.callback/1")],
+            effect: {
+              scope: {
+                kind: "symbols",
+                ids: [symbolId("lib/callback.ex", "App.callback/1")],
+              },
+              worlds: ["production"],
+            },
           },
         ],
       },
@@ -177,7 +212,13 @@ describe("rebaseGraph", () => {
       file: fileId("apps/backend/lib/callback.ex"),
       carrierSymbol: symbolId("apps/backend/lib/callback.ex", "App.callback/1"),
       site: { file: "apps/backend/lib/callback.ex" },
-      affectedSymbols: [symbolId("apps/backend/lib/callback.ex", "App.callback/1")],
+      effect: {
+        scope: {
+          kind: "symbols",
+          ids: [symbolId("apps/backend/lib/callback.ex", "App.callback/1")],
+        },
+        worlds: ["production"],
+      },
     });
   });
 });

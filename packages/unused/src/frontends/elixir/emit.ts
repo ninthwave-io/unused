@@ -418,7 +418,14 @@ function emitModuleHazards(
       hazardClass,
       detail,
       site: siteAt(mod.file, mod.line),
-      ...(reflectiveCarrier ? { affectedSymbols } : {}),
+      ...(reflectiveCarrier
+        ? {
+            effect: {
+              scope: { kind: "symbols" as const, ids: affectedSymbols },
+              worlds: [partitionWorld(mod.partition)],
+            },
+          }
+        : {}),
     });
     const carrierId = symbolId(mod.file, mod.mod);
     for (const fn of affectedFunctions) {
@@ -469,7 +476,11 @@ function emitDynamicDispatchHazards(
         ...(ev.from_fun === undefined ? {} : { fromFun: ev.from_fun }),
         file: ev.file,
         line: ev.line,
+        ...(isAtomProducerEvent(ev)
+          ? { factKind: "computed-atom" as const, flow: "escape" as const }
+          : { factKind: "dynamic-invocation" as const }),
         kind: "opaque" as const,
+        world: partitionWorld(ev.partition),
         eventKey: dynamicEventKey(ev),
         targets: [],
       },
@@ -493,36 +504,78 @@ function emitDynamicDispatchHazards(
   }
 
   for (const { file, mod, carrierSymbol, dispatches } of byCarrier.values()) {
-    const opaque = dispatches.find((dispatch) => dispatch.kind === "opaque");
-    const bounded = dispatches.filter((dispatch) => dispatch.kind === "bounded");
-    if (opaque === undefined && bounded.length === 0) continue; // exact edges need no cap
-    const affectedSymbols =
-      opaque === undefined
-        ? [
-            ...new Set(
-              bounded.flatMap((dispatch) =>
-                dispatch.targets.map((target) =>
-                  symbolId(target.file, `${target.mod}.${target.name}/${target.arity}`),
-                ),
-              ),
+    for (const world of ["production", "test"] as const) {
+      const inWorld = dispatches.filter((dispatch) => dispatch.world === world);
+      const atomEscapes = inWorld.filter(
+        (dispatch) => dispatch.factKind === "computed-atom" && dispatch.flow === "escape",
+      );
+      const firstEscape = atomEscapes[0];
+      if (firstEscape !== undefined) {
+        graph.addHazard({
+          file: fileId(file),
+          ...(carrierSymbol === undefined ? {} : { carrierSymbol }),
+          hazardClass: "elixir-computed-atom-escape",
+          detail: `computed atom in \`${mod.mod}\` escapes before its consumer can be classified`,
+          site: siteAt(firstEscape.file, firstEscape.line),
+          effect: { scope: { kind: "unit" }, worlds: [world] },
+        });
+      }
+
+      const opaqueInvocations = inWorld.filter(
+        (dispatch) => dispatch.factKind === "dynamic-invocation" && dispatch.kind === "opaque",
+      );
+      const firstOpaque = opaqueInvocations[0];
+      if (firstOpaque !== undefined) {
+        graph.addHazard({
+          file: fileId(file),
+          ...(carrierSymbol === undefined ? {} : { carrierSymbol }),
+          hazardClass: "elixir-dynamic-dispatch",
+          detail: `opaque dynamic invocation in \`${mod.mod}\` — an apply, computed module, capture, MFA, or computed receiver is not statically resolvable`,
+          site: siteAt(firstOpaque.file, firstOpaque.line),
+          effect: { scope: { kind: "unit" }, worlds: [world] },
+        });
+      }
+
+      const boundedInvocations = inWorld.filter(
+        (dispatch) => dispatch.factKind === "dynamic-invocation" && dispatch.kind === "bounded",
+      );
+      const firstBounded = boundedInvocations[0];
+      if (firstBounded === undefined) continue;
+      const affectedSymbolIds = [
+        ...new Set(
+          boundedInvocations.flatMap((dispatch) =>
+            dispatch.targets.map((target) =>
+              symbolId(target.file, `${target.mod}.${target.name}/${target.arity}`),
             ),
-          ].sort()
-        : undefined;
-    if (opaque === undefined && affectedSymbols?.length === 0) continue;
-    const source = opaque ?? bounded[0];
-    if (source === undefined) continue;
-    graph.addHazard({
-      file: fileId(file),
-      ...(carrierSymbol === undefined ? {} : { carrierSymbol }),
-      hazardClass: "elixir-dynamic-dispatch",
-      detail:
-        affectedSymbols === undefined
-          ? `opaque dynamic dispatch in \`${mod.mod}\` — an apply, computed module, or computed atom receiver is not statically resolvable`
-          : `bounded dynamic dispatch in \`${mod.mod}\` may select ${affectedSymbols.length} compiler-confirmed public function(s)`,
-      site: siteAt(source.file, source.line),
-      ...(affectedSymbols === undefined ? {} : { affectedSymbols }),
-    });
+          ),
+        ),
+      ].sort();
+      if (affectedSymbolIds.length === 0) continue;
+      graph.addHazard({
+        file: fileId(file),
+        ...(carrierSymbol === undefined ? {} : { carrierSymbol }),
+        hazardClass: "elixir-dynamic-dispatch",
+        detail: `bounded dynamic dispatch in \`${mod.mod}\` may select ${affectedSymbolIds.length} compiler-confirmed public function(s)`,
+        site: siteAt(firstBounded.file, firstBounded.line),
+        effect: {
+          scope: { kind: "symbols", ids: affectedSymbolIds },
+          worlds: [world],
+        },
+      });
+    }
   }
+}
+
+function partitionWorld(partition: TraceEvent["partition"]): "production" | "test" {
+  return partition === "test" ? "test" : "production";
+}
+
+function isAtomProducerEvent(event: TraceEvent): boolean {
+  return (
+    event.to_mod === "String" &&
+    event.arity === 1 &&
+    (event.name === "to_atom" || event.name === "to_existing_atom")
+  );
 }
 
 function isPhoenixEntrypoint(mod: ModuleRecord): boolean {

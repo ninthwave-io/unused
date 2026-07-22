@@ -443,13 +443,19 @@ describe("extractElixirScriptFacts", () => {
     expect(bareDynamicHazards).toHaveLength(2);
     expect(bareDynamicHazards).toContainEqual(
       expect.objectContaining({
-        affectedSymbols: [
-          symbolId("lib/target.ex", "Neutral.Target.one/1"),
-          symbolId("lib/target.ex", "Neutral.Target.zero/0"),
-        ],
+        effect: {
+          scope: {
+            kind: "symbols",
+            ids: [
+              symbolId("lib/target.ex", "Neutral.Target.one/1"),
+              symbolId("lib/target.ex", "Neutral.Target.zero/0"),
+            ],
+          },
+          worlds: ["config"],
+        },
       }),
     );
-    expect(bareDynamicHazards?.some((hazard) => hazard.affectedSymbols === undefined)).toBe(true);
+    expect(bareDynamicHazards?.some((hazard) => hazard.effect?.scope.kind === "unit")).toBe(true);
     expect(facts.contribution.edges).toContainEqual(
       expect.objectContaining({
         referenceKind: "static",

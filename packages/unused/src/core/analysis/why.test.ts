@@ -299,7 +299,13 @@ describe("whyAlive — resolution outcomes", () => {
         hazardClass: "elixir-dynamic-dispatch",
         detail: "bounded neutral dispatch",
         site: { file: "lib/router.ex", span: { ...SPAN, startLine: 9, endLine: 9 } },
-        affectedSymbols: [symbolId("lib/handler.ex", "Neutral.Handler.possible/0")],
+        effect: {
+          scope: {
+            kind: "symbols",
+            ids: [symbolId("lib/handler.ex", "Neutral.Handler.possible/0")],
+          },
+          worlds: ["production"],
+        },
       });
       return ask(g, "Neutral.Handler.possible/0");
     };
@@ -314,7 +320,94 @@ describe("whyAlive — resolution outcomes", () => {
         {
           hazardClass: "elixir-dynamic-dispatch",
           detail: "bounded neutral dispatch",
+          worlds: ["production"],
           site: "lib/router.ex:9",
+        },
+      ]);
+    }
+  });
+
+  it("preserves overlapping bounded effect worlds through executable-symbol closure", () => {
+    const g = new IRGraph();
+    file(g, "lib/application.ex");
+    entrypoint(g, "production", "lib/application.ex", "application-callback");
+    file(g, "lib/router.ex");
+    exportSym(g, "lib/router.ex", "Neutral.Router.dispatch/0");
+    staticRef(g, "lib/application.ex", "lib/router.ex", "Neutral.Router.dispatch/0");
+    file(g, "lib/handler.ex");
+    exportSym(g, "lib/handler.ex", "Neutral.Handler.possible/0");
+    exportSym(g, "lib/handler.ex", "Neutral.Handler.consequence/0");
+    g.addEdge({
+      kind: "references",
+      referenceKind: "static",
+      from: symbolId("lib/handler.ex", "Neutral.Handler.possible/0"),
+      to: symbolId("lib/handler.ex", "Neutral.Handler.consequence/0"),
+      name: "Neutral.Handler.consequence/0",
+      site: { file: "lib/handler.ex", span: SPAN },
+    });
+
+    for (const [line, world] of [
+      [9, "production"],
+      [10, "test"],
+    ] as const) {
+      g.addHazard({
+        file: fileId("lib/router.ex"),
+        carrierSymbol: symbolId("lib/router.ex", "Neutral.Router.dispatch/0"),
+        hazardClass: "elixir-dynamic-dispatch",
+        detail: `bounded neutral ${world} dispatch`,
+        site: { file: "lib/router.ex", span: { ...SPAN, startLine: line, endLine: line } },
+        effect: {
+          scope: {
+            kind: "symbols",
+            ids: [symbolId("lib/handler.ex", "Neutral.Handler.possible/0")],
+          },
+          worlds: [world],
+        },
+      });
+    }
+
+    const result = ask(g, "Neutral.Handler.consequence/0");
+    expect(result.outcome).toBe("dead");
+    if (result.outcome === "dead") {
+      expect(result.hazards).toEqual([
+        {
+          hazardClass: "elixir-dynamic-dispatch",
+          detail: "bounded neutral production dispatch",
+          worlds: ["production"],
+          site: "lib/router.ex:9",
+        },
+        {
+          hazardClass: "elixir-dynamic-dispatch",
+          detail: "bounded neutral test dispatch",
+          worlds: ["test"],
+          site: "lib/router.ex:10",
+        },
+      ]);
+    }
+  });
+
+  it("describes an active computed-atom escape without calling it an invocation", () => {
+    const g = new IRGraph();
+    file(g, "lib/application.ex");
+    entrypoint(g, "production", "lib/application.ex", "application-callback");
+    file(g, "lib/candidate.ex");
+    g.addHazard({
+      file: fileId("lib/application.ex"),
+      hazardClass: "elixir-computed-atom-escape",
+      detail: "computed atom escapes before its consumer can be classified",
+      site: { file: "lib/application.ex", span: { ...SPAN, startLine: 14, endLine: 14 } },
+      effect: { scope: { kind: "unit" }, worlds: ["production"] },
+    });
+
+    const result = ask(g, "lib/candidate.ex");
+    expect(result.outcome).toBe("dead");
+    if (result.outcome === "dead") {
+      expect(result.hazards).toEqual([
+        {
+          hazardClass: "elixir-computed-atom-escape",
+          detail: "computed atom escapes before its consumer can be classified",
+          worlds: ["production"],
+          site: "lib/application.ex:14",
         },
       ]);
     }

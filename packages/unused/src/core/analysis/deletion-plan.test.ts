@@ -154,7 +154,13 @@ describe("computeDeletionPlan", () => {
         hazardClass: "elixir-dynamic-dispatch",
         detail: "bounded neutral dispatch",
         site: site("lib/router.ex", 8),
-        affectedSymbols: [symbolId("lib/target.ex", "Neutral.Target.possible/0")],
+        effect: {
+          scope: {
+            kind: "symbols",
+            ids: [symbolId("lib/target.ex", "Neutral.Target.possible/0")],
+          },
+          worlds: ["production"],
+        },
       });
       return graph;
     };
@@ -170,7 +176,8 @@ describe("computeDeletionPlan", () => {
       ).toMatchObject({
         supported: false,
         unsupportedReason:
-          "active elixir-dynamic-dispatch hazard at lib/router.ex:8 prevents proving deletion safe",
+          "active elixir-dynamic-dispatch hazard at lib/router.ex:8 in production " +
+          "prevents proving deletion safe",
         stages: [],
       });
     }
@@ -187,6 +194,62 @@ describe("computeDeletionPlan", () => {
         },
       }),
     ).toMatchObject({ supported: true });
+  });
+
+  it("refuses a descendant covered by overlapping bounded effects without losing world provenance", () => {
+    const graph = new IRGraph();
+    addEntry(graph, "lib/application.ex");
+    addSymbol(graph, "lib/router.ex", "Neutral.Router.dispatch/0");
+    addSymbol(graph, "lib/target.ex", "Neutral.Target.possible/0");
+    addSymbol(graph, "lib/target.ex", "Neutral.Target.consequence/0");
+    reference(
+      graph,
+      fileId("lib/application.ex"),
+      symbolId("lib/router.ex", "Neutral.Router.dispatch/0"),
+    );
+    reference(
+      graph,
+      symbolId("lib/target.ex", "Neutral.Target.possible/0"),
+      symbolId("lib/target.ex", "Neutral.Target.consequence/0"),
+    );
+    for (const [line, world] of [
+      [8, "production"],
+      [9, "test"],
+    ] as const) {
+      graph.addHazard({
+        file: fileId("lib/router.ex"),
+        carrierSymbol: symbolId("lib/router.ex", "Neutral.Router.dispatch/0"),
+        hazardClass: "elixir-dynamic-dispatch",
+        detail: `bounded neutral ${world} dispatch`,
+        site: site("lib/router.ex", line),
+        effect: {
+          scope: {
+            kind: "symbols",
+            ids: [symbolId("lib/target.ex", "Neutral.Target.possible/0")],
+          },
+          worlds: [world],
+        },
+      });
+    }
+
+    const reachability = computePartitionedReachability(graph);
+    expect(
+      computeDeletionPlan({
+        graph,
+        reachability,
+        subject: {
+          kind: "export",
+          file: "lib/target.ex",
+          name: "Neutral.Target.consequence/0",
+        },
+      }),
+    ).toMatchObject({
+      supported: false,
+      unsupportedReason:
+        "active elixir-dynamic-dispatch hazard at lib/router.ex:8 in production " +
+        "prevents proving deletion safe",
+      stages: [],
+    });
   });
 
   it("refuses a subject covered by a reachable opaque unit hazard", () => {
@@ -209,7 +272,35 @@ describe("computeDeletionPlan", () => {
     ).toMatchObject({
       supported: false,
       unsupportedReason:
-        "active elixir-dynamic-dispatch hazard at lib/application.ex:12 prevents proving deletion safe",
+        "active elixir-dynamic-dispatch hazard at lib/application.ex:12 " +
+        "in production/config/test prevents proving deletion safe",
+      stages: [],
+    });
+  });
+
+  it("refuses an unproved computed-atom escape with explicit unit/world evidence", () => {
+    const graph = new IRGraph();
+    addEntry(graph, "lib/application.ex");
+    addFile(graph, "lib/candidate.ex");
+    graph.addHazard({
+      file: fileId("lib/application.ex"),
+      hazardClass: "elixir-computed-atom-escape",
+      detail: "computed atom escapes before its consumer can be classified",
+      site: site("lib/application.ex", 14),
+      effect: { scope: { kind: "unit" }, worlds: ["production"] },
+    });
+
+    expect(
+      computeDeletionPlan({
+        graph,
+        reachability: computePartitionedReachability(graph),
+        subject: { kind: "file", file: "lib/candidate.ex" },
+      }),
+    ).toMatchObject({
+      supported: false,
+      unsupportedReason:
+        "computed atom escapes analysis at lib/application.ex:14 in production " +
+        "and prevents proving deletion safe",
       stages: [],
     });
   });

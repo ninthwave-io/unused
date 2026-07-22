@@ -278,7 +278,8 @@ describe("Elixir analysis policy", () => {
       ).toMatchObject({
         supported: false,
         unsupportedReason:
-          "active elixir-script-opaque hazard at scripts/module_surface.exs:1 prevents proving deletion safe",
+          "active elixir-script-opaque hazard at scripts/module_surface.exs:1 " +
+          "in production/config/test prevents proving deletion safe",
       });
 
       const runnable = spawnSync("mix", ["run", "scripts/neutral_bench.exs"], {

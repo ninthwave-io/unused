@@ -76,6 +76,7 @@ const ELIXIR_RUNTIME_PLUGIN_ID = "convention:elixir-runtime";
 const ELIXIR_SCRIPTS_PLUGIN_ID = "convention:elixir-scripts";
 const ELIXIR_RUNTIME_HAZARDS = new Set([
   "elixir-behaviour-callback",
+  "elixir-computed-atom-escape",
   "elixir-dynamic-dispatch",
   "elixir-phoenix-runtime",
 ]);

@@ -81,6 +81,7 @@ const DEAD_HAZARD: WhyReportInput = {
       hazardClass: "computed-dynamic-import",
       detail: "dynamic import() with a computed (non-string-literal) specifier",
       site: "src/index.ts:4",
+      worlds: ["production", "config", "test"],
     },
   ],
 };
@@ -178,7 +179,7 @@ describe("renderWhy", () => {
           - 0 inbound references to \`src/mods/alpha.ts\` ...; capped medium.
 
         hazards checked near this subject:
-          - computed-dynamic-import: dynamic import() with a computed (non-string-literal) specifier (src/index.ts:4)
+          - computed-dynamic-import: dynamic import() with a computed (non-string-literal) specifier (src/index.ts:4; worlds: production/config/test)
       "
     `);
   });

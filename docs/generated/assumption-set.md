@@ -162,6 +162,14 @@ The `.d.ts` companion of an imported source file: kept alive in the graph via a 
 
 An Elixir module that declares one or more behaviours (`@behaviour`, or `use GenServer`/`Supervisor`/`Agent`/`Task`/a custom behaviour, detected reflectively via the compiled module's `:behaviour` attributes) has its callback functions — `handle_call/3`, `init/1`, `child_spec/1`, and the rest — invoked reflectively by the OTP runtime or the behaviour dispatcher, never called by name from user source. A syntactic call-graph therefore sees zero callers and would false-flag every callback as unused. Because the frontend does not model which of a behaviour module's functions are callbacks versus ordinary helpers, the cap is deliberately the whole module's public-function surface (symbol-set): all of its function claims are suppressed (never emitted). The module's own file liveness is unaffected — a behaviour module referenced by nothing (not in any supervision tree, not aliased) is still claimable as a dead file.
 
+### elixir-computed-atom-escape
+
+- **Activation:** carrier-reachable
+- **Scope:** project
+- **Confidence cap:** medium
+
+When its exact function carrier (or conservative file fallback) is reachable, a compiler-confirmed String.to_atom/1 or String.to_existing_atom/1 result whose consumer cannot be classified may escape into runtime dispatch that the compiler tracer cannot observe. The escape is distinct from a proven invocation but remains fail-closed: its explicit effect scope is capped at medium, with the owning workspace unit used when no narrower target is proven. An unreachable carrier does not activate the effect.
+
 ### elixir-dynamic-dispatch
 
 - **Activation:** carrier-reachable

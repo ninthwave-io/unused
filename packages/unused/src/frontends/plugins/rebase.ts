@@ -161,12 +161,18 @@ function rebaseHazard(
     ...(hazard.subtreePrefix === undefined || hazard.subtreePrefix === ""
       ? {}
       : { subtreePrefix: prefixRepositoryPath(prefix, hazard.subtreePrefix) }),
-    ...(hazard.affectedSymbols === undefined
+    ...(hazard.effect?.scope.kind !== "symbols"
       ? {}
       : {
-          affectedSymbols: hazard.affectedSymbols.map(
-            (symbol) => ids.get(symbol) ?? prefixNodeId(symbol, prefix),
-          ),
+          effect: {
+            ...hazard.effect,
+            scope: {
+              kind: "symbols" as const,
+              ids: hazard.effect.scope.ids.map(
+                (symbol) => ids.get(symbol) ?? prefixNodeId(symbol, prefix),
+              ),
+            },
+          },
         }),
   };
 }

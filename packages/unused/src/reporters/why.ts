@@ -54,6 +54,7 @@ export interface WhyHazardView {
   readonly hazardClass: string;
   readonly detail: string;
   readonly site: string;
+  readonly worlds: readonly WhyEntrypointKind[];
 }
 
 /** The renderable why-answer — structurally the core `WhyAliveResult`. */
@@ -170,7 +171,9 @@ export function renderWhy(input: WhyReportInput, ascii: boolean): string {
       } else {
         lines.push("  hazards checked near this subject:");
         for (const h of input.hazards)
-          lines.push(`    - ${h.hazardClass}: ${h.detail} (${h.site})`);
+          lines.push(
+            `    - ${h.hazardClass}: ${h.detail} (${h.site}; worlds: ${h.worlds.join("/")})`,
+          );
       }
       return `${lines.join("\n")}\n`;
     }

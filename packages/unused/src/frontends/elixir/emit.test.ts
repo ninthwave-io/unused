@@ -311,7 +311,13 @@ describe("emitElixirIR — unreachable behaviour carrier", () => {
       expect.arrayContaining([
         expect.objectContaining({
           hazardClass: "elixir-behaviour-callback",
-          affectedSymbols: [symbolId("lib/app/orphan_server.ex", "App.OrphanServer.handle_call/3")],
+          effect: {
+            scope: {
+              kind: "symbols",
+              ids: [symbolId("lib/app/orphan_server.ex", "App.OrphanServer.handle_call/3")],
+            },
+            worlds: ["production"],
+          },
         }),
       ]),
     );
@@ -420,6 +426,122 @@ describe("emitElixirIR — dynamic dispatch", () => {
     });
   });
 
+  it("emits an unproved atom flow as an explicit unit-scoped escape", () => {
+    const events = DYNAMIC.events.map((event) =>
+      event.dyn ? { ...event, to_mod: "String", name: "to_atom", arity: 1 } : event,
+    );
+    const trace = { ...DYNAMIC, events };
+    const atomEvent = events.find((event) => event.dyn);
+    expect(atomEvent).toBeDefined();
+    if (atomEvent === undefined) throw new Error("expected atom event");
+    const graph = emitElixirIR({
+      traceResult: trace,
+      configReferencedModules: new Set(),
+      dynamicDispatches: [
+        {
+          fromMod: "App.Router",
+          fromFun: "dispatch/1",
+          file: "lib/app/router.ex",
+          line: atomEvent.line,
+          factKind: "computed-atom",
+          flow: "escape",
+          kind: "opaque",
+          world: "production",
+          eventKey: dynamicEventKey(atomEvent),
+          targets: [],
+        },
+      ],
+    });
+
+    expect(
+      graph.hazards().find((hazard) => hazard.hazardClass === "elixir-computed-atom-escape"),
+    ).toMatchObject({
+      carrierSymbol: symbolId("lib/app/router.ex", "App.Router.dispatch/1"),
+      detail: expect.stringContaining("escapes before its consumer can be classified"),
+      effect: { scope: { kind: "unit" }, worlds: ["production"] },
+    });
+  });
+
+  it("preserves mixed escape/invocation scopes and worlds on one carrier", () => {
+    const productionEvent = DYNAMIC.events.find((event) => event.dyn);
+    const target = DYNAMIC.functions.find((candidate) => candidate.name === "dead_handler");
+    expect(productionEvent).toBeDefined();
+    expect(target).toBeDefined();
+    if (productionEvent === undefined || target === undefined) {
+      throw new Error("expected dynamic event and bounded target");
+    }
+    const testEvent = { ...productionEvent, partition: "test" as const };
+    const trace = { ...DYNAMIC, events: [...DYNAMIC.events, testEvent] };
+    const common = {
+      fromMod: "App.Router",
+      fromFun: "dispatch/1",
+      file: "lib/app/router.ex",
+      line: productionEvent.line,
+      targets: [],
+    };
+    const graph = emitElixirIR({
+      traceResult: trace,
+      configReferencedModules: new Set(),
+      dynamicDispatches: [
+        {
+          ...common,
+          factKind: "computed-atom",
+          flow: "escape",
+          kind: "opaque",
+          world: "production",
+          eventKey: dynamicEventKey(productionEvent),
+        },
+        {
+          ...common,
+          factKind: "dynamic-invocation",
+          kind: "bounded",
+          world: "production",
+          eventKey: dynamicEventKey(productionEvent),
+          targets: [target],
+        },
+        {
+          ...common,
+          factKind: "computed-atom",
+          flow: "escape",
+          kind: "opaque",
+          world: "test",
+          eventKey: dynamicEventKey(testEvent),
+        },
+        {
+          ...common,
+          factKind: "dynamic-invocation",
+          kind: "opaque",
+          world: "test",
+          eventKey: dynamicEventKey(testEvent),
+        },
+      ],
+    });
+
+    expect(
+      graph
+        .hazards()
+        .filter(
+          (hazard) =>
+            hazard.hazardClass === "elixir-computed-atom-escape" ||
+            hazard.hazardClass === "elixir-dynamic-dispatch",
+        )
+        .map((hazard) => ({
+          hazardClass: hazard.hazardClass,
+          scope: hazard.effect?.scope.kind,
+          worlds: hazard.effect?.worlds,
+        })),
+    ).toEqual([
+      {
+        hazardClass: "elixir-computed-atom-escape",
+        scope: "unit",
+        worlds: ["production"],
+      },
+      { hazardClass: "elixir-dynamic-dispatch", scope: "symbols", worlds: ["production"] },
+      { hazardClass: "elixir-computed-atom-escape", scope: "unit", worlds: ["test"] },
+      { hazardClass: "elixir-dynamic-dispatch", scope: "unit", worlds: ["test"] },
+    ]);
+  });
+
   it("caps a dead function to medium when the unit performs apply/3", () => {
     const c = claim(claims, "App.Handlers.dead_handler/0");
     expect(c?.verdict).toBe("unused");
@@ -454,7 +576,9 @@ describe("emitElixirIR — dynamic dispatch", () => {
           fromFun: "dispatch/1",
           file: "lib/app/router.ex",
           line: 5,
+          factKind: "dynamic-invocation",
           kind: "bounded",
+          world: "production",
           eventKey: dynamicEventKey(DYNAMIC.events.find((event) => event.dyn) as TraceEvent),
           targets: target === undefined ? [] : [target],
         },

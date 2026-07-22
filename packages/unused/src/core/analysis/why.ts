@@ -80,6 +80,8 @@ export type WhySubjectRef = DeletionPlanSubject;
 export interface WhyHazard {
   readonly hazardClass: string;
   readonly detail: string;
+  /** Reachability worlds whose facts justify this effect. */
+  readonly worlds: readonly ("production" | "config" | "test")[];
   /** `file:line` of the hazard site. */
   readonly site: string;
 }
@@ -478,6 +480,7 @@ function deadResult(
   const hazards: WhyHazard[] = effectsForSubject(hazardEvaluations, subject).map((effect) => ({
     hazardClass: effect.hazardClass,
     detail: effect.detail,
+    worlds: effect.worlds,
     site: `${effect.siteFile}:${effect.siteLine}`,
   }));
 

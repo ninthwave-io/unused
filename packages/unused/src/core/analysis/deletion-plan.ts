@@ -159,9 +159,7 @@ export function computeDeletionPlan(input: ComputeDeletionPlanInput): DeletionPl
       schemaVersion: SCHEMA_VERSION,
       selected: subject,
       supported: false,
-      unsupportedReason:
-        `active ${hazardBlocker.hazardClass} hazard at ` +
-        `${hazardBlocker.siteFile}:${hazardBlocker.siteLine} prevents proving deletion safe`,
+      unsupportedReason: hazardDeletionBlockerReason(hazardBlocker),
       reExportEdits: [],
       stages: [],
     });
@@ -207,6 +205,22 @@ export function computeDeletionPlan(input: ComputeDeletionPlanInput): DeletionPl
     reExportEdits,
     stages,
   });
+}
+
+function hazardDeletionBlockerReason(
+  effect: ReturnType<HazardEvaluation["effectsForSubject"]>[number],
+): string {
+  const site = `${effect.siteFile}:${effect.siteLine}`;
+  if (effect.hazardClass === "elixir-computed-atom-escape") {
+    return (
+      `computed atom escapes analysis at ${site} in ${effect.worlds.join("/")} ` +
+      "and prevents proving deletion safe"
+    );
+  }
+  return (
+    `active ${effect.hazardClass} hazard at ${site} in ${effect.worlds.join("/")} ` +
+    "prevents proving deletion safe"
+  );
 }
 
 function blockedInboundPlan(subject: DeletionPlanConsequenceSubject, edge: IREdge): DeletionPlan {
