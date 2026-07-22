@@ -649,6 +649,70 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
     ).toMatchObject({ supported: true });
   }, 60_000);
 
+  it("keeps a private computed-atom data flow bounded and deletable", async () => {
+    const analysis = await analyzeElixirProjectWithGraph(fixture("atom-role-private-flow"), {
+      now: new Date(0),
+    });
+    expect(
+      analysis.graph
+        .hazards()
+        .filter((hazard) => hazard.file.includes("neutral_private_flow/safe.ex")),
+    ).toEqual([]);
+
+    const unrelated = whyAlive({
+      graph: analysis.graph,
+      reachability: analysis.reachability,
+      claims: analysis.result.claims,
+      query: "NeutralPrivateFlow.Safe.genuinely_unused/0",
+      hazardEvaluations: [analysis.hazardEvaluation],
+    });
+    expect(unrelated).toMatchObject({ outcome: "dead", confidence: "high", hazards: [] });
+    if (unrelated.outcome !== "dead") throw new Error("expected private-flow dead control");
+    expect(
+      computeDeletionPlan({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        subject: unrelated.subject,
+        hazardEvaluations: [analysis.hazardEvaluation],
+      }),
+    ).toMatchObject({ supported: true });
+  }, 60_000);
+
+  it("explains and refuses private return and invocation boundaries", async () => {
+    const analysis = await analyzeElixirProjectWithGraph(fixture("atom-role-private-unsafe"), {
+      now: new Date(0),
+    });
+    const risky = whyAlive({
+      graph: analysis.graph,
+      reachability: analysis.reachability,
+      claims: analysis.result.claims,
+      query: "NeutralPrivateUnsafe.Flow.risky_unused/0",
+      hazardEvaluations: [analysis.hazardEvaluation],
+    });
+    expect(risky).toMatchObject({ outcome: "dead", confidence: "medium" });
+    if (risky.outcome !== "dead") throw new Error("expected private-boundary dead control");
+    expect(risky.hazards).toEqual([
+      expect.objectContaining({
+        hazardClass: "elixir-computed-atom-escape",
+        site: "lib/neutral_private_unsafe/flow.ex:7",
+        worlds: ["production"],
+      }),
+      expect.objectContaining({
+        hazardClass: "elixir-dynamic-dispatch",
+        site: "lib/neutral_private_unsafe/flow.ex:8",
+        worlds: ["production"],
+      }),
+    ]);
+    expect(
+      computeDeletionPlan({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        subject: risky.subject,
+        hazardEvaluations: [analysis.hazardEvaluation],
+      }),
+    ).toMatchObject({ supported: false, stages: [] });
+  }, 60_000);
+
   it.each([
     "dynamic-use-helpers",
     "dynamic-local-dispatch",
@@ -661,6 +725,8 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
     "atom-role-summaries",
     "atom-role-data-safe",
     "atom-role-escape",
+    "atom-role-private-flow",
+    "atom-role-private-unsafe",
   ])(
     "preserves Elixir claims after mixed-plugin composition: %s",
     async (name) => {

@@ -1,0 +1,22 @@
+case: atom-role-private-unsafe
+description: >-
+  A private computed-atom producer returned into a public boundary remains an
+  escape, and a private invocation selector remains executable. Active hazards
+  keep deletion conservative.
+subjects:
+  - kind: export
+    name: NeutralPrivateUnsafe.Flow.public_escape/1
+    file: lib/neutral_private_unsafe/flow.ex
+    expected: alive
+    because: The application calls the public boundary receiving a private producer result.
+  - kind: export
+    name: NeutralPrivateUnsafe.Flow.invoke/1
+    file: lib/neutral_private_unsafe/flow.ex
+    expected: alive
+    because: The application calls the private invocation-selector flow.
+  - kind: export
+    name: NeutralPrivateUnsafe.Flow.risky_unused/0
+    file: lib/neutral_private_unsafe/flow.ex
+    expected: dead
+    minConfidence: medium
+    because: Active escape and invocation hazards prevent a high-confidence deletion.

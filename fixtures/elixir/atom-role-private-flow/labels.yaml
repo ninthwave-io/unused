@@ -1,0 +1,17 @@
+case: atom-role-private-flow
+description: >-
+  Exact same-module private calls propagate computed atoms by parameter and
+  return role. Data consumption stays hazard-free and does not contaminate an
+  unrelated dead export.
+subjects:
+  - kind: export
+    name: NeutralPrivateFlow.Safe.lookup?/2
+    file: lib/neutral_private_flow/safe.ex
+    expected: alive
+    because: The application calls the private-return flow whose atom is consumed as a map key.
+  - kind: export
+    name: NeutralPrivateFlow.Safe.genuinely_unused/0
+    file: lib/neutral_private_flow/safe.ex
+    expected: dead
+    minConfidence: high
+    because: The proven private data flow does not contaminate an unrelated dead export.

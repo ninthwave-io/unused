@@ -462,6 +462,38 @@ describe("emitElixirIR — dynamic dispatch", () => {
     });
   });
 
+  it("explains a private-summary degree refusal as an explicit precision bound", () => {
+    const events = DYNAMIC.events.map((event) =>
+      event.dyn ? { ...event, to_mod: "String", name: "to_atom", arity: 1 } : event,
+    );
+    const trace = { ...DYNAMIC, events };
+    const atomEvent = events.find((event) => event.dyn);
+    if (atomEvent === undefined) throw new Error("expected atom event");
+    const graph = emitElixirIR({
+      traceResult: trace,
+      configReferencedModules: new Set(),
+      dynamicDispatches: [
+        {
+          fromMod: "App.Router",
+          fromFun: "dispatch/1",
+          file: "lib/app/router.ex",
+          line: atomEvent.line,
+          factKind: "computed-atom",
+          flow: "escape",
+          escapeReason: "private-summary-bound",
+          kind: "opaque",
+          world: "production",
+          eventKey: dynamicEventKey(atomEvent),
+          targets: [],
+        },
+      ],
+    });
+
+    expect(
+      graph.hazards().find((hazard) => hazard.hazardClass === "elixir-computed-atom-escape"),
+    ).toMatchObject({ detail: expect.stringContaining("call degree exceeds the reviewed bound") });
+  });
+
   it("preserves mixed escape/invocation scopes and worlds on one carrier", () => {
     const productionEvent = DYNAMIC.events.find((event) => event.dyn);
     const target = DYNAMIC.functions.find((candidate) => candidate.name === "dead_handler");

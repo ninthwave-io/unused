@@ -1,7 +1,7 @@
 # 0014 — Typed Elixir computed-value flow and explicit hazard scope
 
 Date: 2026-07-22
-Status: Accepted (phases 1A and 1B1 implemented; later phases pending)
+Status: Accepted (phases 1A, 1B1, 1B1.2, and 1B2A implemented; later phases pending)
 
 ## Context
 
@@ -361,6 +361,57 @@ escape density constant, asserts role-edge and queue-visit bounds per site, and
 remains bounded by the existing indexed node/edge algorithm. This checkpoint
 adds metadata and fail-closed roles only: it does not add callback binder edges,
 local return summaries, or interprocedural propagation.
+
+### Phase 1B2A implementation checkpoint
+
+The first interprocedural slice is limited to exact same-module private
+functions. A candidate must be one unambiguous top-level `defp`, use an exact
+parenthesized list of distinct variable parameters, and have compiler evidence
+for its carrier or local target identity in the same file and partition. Calls
+join by exact caller, name, arity, source line, partition, and unique source and
+event cardinality. Public functions, cross-module calls, default arguments,
+multiple clauses, missing or duplicate events, and generated or otherwise
+ambiguous definitions remain escape boundaries.
+
+Identity confirmation alone cannot prove that a macro did not generate an
+additional private clause. Therefore any unreviewed callable compiler event at
+module scope disables private summaries for that module. Only the exact
+`Kernel.def/2`, `Kernel.defp/2`, `:elixir_def.store_definition/3`, and
+`:elixir_utils.noop/0` scaffolding emitted for ordinary definitions is accepted.
+This intentionally conservative boundary retains opaque escape for modules
+using other compile-time expansion until private clause inventory has its own
+compiler/reflection evidence.
+
+Each eligible parameter has a finite data, invocation, escape, delegated-
+invocation, or return effect. Return effects are joined across every exact
+caller; one unsafe caller makes the return unsafe. Container propagation keeps
+the producer-specific relation, and argument effects remain indexed by
+parameter, so an invocation role in one argument does not contaminate a data
+role in another. Production and test definitions have distinct identities and
+are solved independently.
+
+Private-call adjacency is indexed once. Tarjan SCCs solve monotone bitmasks in
+callee-first order for parameter effects and caller-first order for result
+effects. Within an SCC, a delta queue reevaluates only callers or callees whose
+dependency acquired a new bit. A cycle that cannot acquire a proven terminal
+is seeded as escape.
+The bounded cost is O(local role edges + private call edges × finite lattice
+height); the implementation neither rescans every call for every function nor
+clones state per call path. Counters expose eligible private functions,
+parameter summaries, exact call edges, opaque identities, member evaluations,
+and bit updates. A private identity with more than 64 distinct private callees
+or more than 64 exact callers is initialized as opaque escape before its local
+transfer graph is solved. This explicit constant keeps dense hubs bounded while
+retaining the pre-phase conservative result. Generated chains, terminal-bearing
+cyclic SCCs, and dense hubs of 250, 500, and 1,000 private functions or edges
+hold semantic density constant and assert linear counter bounds.
+
+This checkpoint intentionally does not infer public or cross-module summaries,
+does not emit private functions as public claim subjects, and does not change
+the JSON schema. Neutral real-compiler coverage proves a private producer and
+consumer can end at a data sink without contaminating an unrelated high-
+confidence deletion. Public returns and private invocation helpers retain the
+existing escape or invocation hazards and deletion refusal.
 
 ## Acceptance
 

@@ -55,6 +55,7 @@ export interface ElixirComputedAtomFact extends ElixirDynamicFactBase {
   readonly factKind: "computed-atom";
   readonly flow: "data" | "delegated-invocation" | "escape";
   readonly kind: "exact" | "opaque";
+  readonly escapeReason?: "private-summary-bound";
 }
 
 /** A runtime operation that actually selects executable code. */
@@ -86,6 +87,18 @@ export interface ElixirAtomFlowStats {
   readonly unjoinedOpaqueFallbacks: number;
   /** Outcomes where the legacy data predicate and indexed data result differ. */
   readonly legacyIndexedDisagreements: number;
+  /** Exact, unambiguous private function definitions eligible for Phase 1B2A. */
+  readonly privateFunctions: number;
+  /** Argument-sensitive private summaries materialized by the SCC solver. */
+  readonly privateSummaries: number;
+  /** Exact compiler-confirmed same-module private call edges. */
+  readonly privateCallEdges: number;
+  /** Monotone SCC member evaluations performed by the private-summary solver. */
+  readonly privateSccIterations: number;
+  /** New outcome bits committed to private parameter and return summaries. */
+  readonly privateSummaryUpdates: number;
+  /** Private identities made opaque by the bounded call-degree contract. */
+  readonly privateOpaqueFunctions: number;
 }
 
 type MutableAtomFlowStats = { -readonly [K in keyof ElixirAtomFlowStats]: number };
@@ -117,7 +130,8 @@ const FN_TUPLE_CLAUSE_HEAD_RE =
   /^\{\s*[a-z_][A-Za-z0-9_]*\s*,\s*[a-z_][A-Za-z0-9_]*\s*\}(?:\s+when\b[^\n]*?)?\s*$/u;
 const ASSIGNMENT_RE = /([a-z_][A-Za-z0-9_]*)\s*=\s*/uy;
 const LOCAL_IDENTIFIER_RE = /[a-z_][A-Za-z0-9_]*/uy;
-const FUNCTION_DEFINITION_RE = /^([ \t]*)defp?\s+[a-z_][A-Za-z0-9_]*[!?]?\b/gmu;
+const FUNCTION_DEFINITION_RE = /^([ \t]*)(defp?)\s+([a-z_][A-Za-z0-9_]*[!?]?)(?=\s|\()/gmu;
+const MODULE_DEFINITION_RE = new RegExp(String.raw`^[ \t]*defmodule\s+(${MODULE})\s+do\b`, "gmu");
 const EXACT_BINARY_GUARD_RE = /^when\s+is_binary\s*\(\s*([a-z_][A-Za-z0-9_]*)\s*\)\s+do\s*$/u;
 const CLAUSE_GUARD_RE = /^(.+?)\s+when\s+(.+)$/u;
 const SIMPLE_BINDER_RE = /^[a-z_][A-Za-z0-9_]*$/u;
@@ -138,9 +152,29 @@ interface FunctionRange {
   readonly start: number;
   readonly end: number;
   readonly headerEnd: number;
+  readonly bodyStart: number;
   readonly indent: number;
   readonly parent?: number;
   readonly binaryGuards: ReadonlySet<string>;
+  readonly name: string;
+  readonly arity: number;
+  readonly private: boolean;
+  readonly parameters: readonly {
+    readonly name: string;
+    readonly index: number;
+    readonly start: number;
+    readonly end: number;
+  }[];
+  readonly exactParameters: boolean;
+  readonly ambiguous: boolean;
+  readonly blockParent?: number;
+}
+
+interface ModuleRange {
+  readonly module: string;
+  readonly line: number;
+  readonly bodyOpen: number;
+  readonly end: number;
 }
 
 interface BlockRange {
@@ -169,6 +203,7 @@ interface SourceIndex {
   readonly arrowsByBlockOpen: ReadonlyMap<number, readonly number[]>;
   readonly rescuesByBlockOpen: ReadonlyMap<number, readonly number[]>;
   readonly functionRanges: readonly FunctionRange[];
+  readonly moduleRanges: readonly ModuleRange[];
   readonly usingSignatures: readonly { readonly line: number; readonly selector: string }[];
 }
 
@@ -199,6 +234,12 @@ export function extractElixirRuntimeConventions(
     joinedProducerOutcomes: 0,
     unjoinedOpaqueFallbacks: 0,
     legacyIndexedDisagreements: 0,
+    privateFunctions: 0,
+    privateSummaries: 0,
+    privateCallEdges: 0,
+    privateSccIterations: 0,
+    privateSummaryUpdates: 0,
+    privateOpaqueFunctions: 0,
   };
   const functionsByModuleName = indexFunctions(traceResult.functions);
   const atomRoleSummaryLookup = createElixirAtomRoleSummaryLookup(
@@ -663,6 +704,7 @@ function extractDynamicDispatches(
   const safeAtomEvents = atomProducerRoles.data;
   const directAtomInvocationEvents = atomProducerRoles.invocation;
   const delegatedAtomInvocationEvents = atomProducerRoles.delegatedInvocation;
+  const boundedAtomEscapeEvents = atomProducerRoles.boundedEscape;
   const exactUseDispatchEvents = exactUseDispatcherEvents(
     traceResult,
     references,
@@ -802,7 +844,13 @@ function extractDynamicDispatches(
         file: event.file,
         line: event.line,
         ...(atomProducer && !directInvocation
-          ? { factKind: "computed-atom" as const, flow: "escape" as const }
+          ? {
+              factKind: "computed-atom" as const,
+              flow: "escape" as const,
+              ...(boundedAtomEscapeEvents.has(event)
+                ? { escapeReason: "private-summary-bound" as const }
+                : {}),
+            }
           : { factKind: "dynamic-invocation" as const }),
         kind: "opaque",
         world: event.partition === "test" ? "test" : "production",
@@ -903,6 +951,7 @@ interface AtomFlowResult {
   readonly requiredCalls: readonly IndexedRoleCall[];
   /** A compiler-confirmed dynamic call will emit the invocation hazard itself. */
   readonly delegatedInvocation?: true;
+  readonly escapeReason?: "private-summary-bound";
 }
 
 interface AtomRoleIndex {
@@ -918,6 +967,9 @@ interface AtomFlowContext {
   readonly stats: MutableAtomFlowStats;
   /** Reviewed migration adapter for legacy exact terminal proofs only. */
   readonly legacyTerminal: boolean;
+  readonly privateFlow?: PrivateFlowIndex;
+  readonly privateMode?: "parameter-summary" | "result-summary" | "producer";
+  readonly currentPrivateFunction?: string;
 }
 
 const ATOM_FLOW_DATA = 1 << 0;
@@ -925,6 +977,9 @@ const ATOM_FLOW_INVOCATION = 1 << 1;
 const ATOM_FLOW_ESCAPE = 1 << 2;
 const ATOM_FLOW_DELEGATED_INVOCATION = 1 << 3;
 const ATOM_FLOW_LEGACY_DATA = 1 << 4;
+const ATOM_FLOW_RETURN = 1 << 5;
+const ATOM_FLOW_BOUNDED_ESCAPE = 1 << 6;
+const PRIVATE_SUMMARY_MAX_CALL_DEGREE = 64;
 
 interface AtomFlowNode {
   readonly key: string;
@@ -946,6 +1001,33 @@ interface AtomFlowGraph {
   readonly nodes: Map<string, AtomFlowNode>;
   readonly pending: AtomFlowNode[];
   readonly stats: MutableAtomFlowStats;
+}
+
+interface PrivateFunctionDefinition {
+  readonly key: string;
+  readonly module: string;
+  readonly file: string;
+  readonly partition: "prod" | "test";
+  readonly range: FunctionRange;
+}
+
+interface PrivateCallSite {
+  readonly call: IndexedRoleCall;
+  readonly event: TraceEvent;
+  readonly target: PrivateFunctionDefinition;
+  readonly callerPrivateFunction?: string;
+}
+
+interface PrivateFlowIndex {
+  readonly definitions: ReadonlyMap<string, PrivateFunctionDefinition>;
+  readonly targetByIdentity: ReadonlyMap<string, PrivateFunctionDefinition>;
+  readonly callsByTarget: ReadonlyMap<string, readonly PrivateCallSite[]>;
+  readonly dependenciesByCaller: ReadonlyMap<string, ReadonlySet<string>>;
+  readonly callByEvent: ReadonlyMap<string, PrivateCallSite>;
+  readonly unsafeResultTargets: ReadonlySet<string>;
+  readonly opaqueFunctions: ReadonlySet<string>;
+  readonly summaries: Map<string, number[]>;
+  readonly resultSummaries: Map<string, number>;
 }
 
 /**
@@ -1173,7 +1255,10 @@ function expandAtomAssignmentNode(graph: AtomFlowGraph, node: AtomFlowNode): voi
     );
     addAtomFlowEdge(graph, node, useKey);
   }
-  if (uses === 0) node.terminal |= ATOM_FLOW_ESCAPE;
+  if (uses === 0) {
+    node.terminal |=
+      node.context.privateMode === "parameter-summary" ? ATOM_FLOW_DATA : ATOM_FLOW_ESCAPE;
+  }
 }
 
 function expandAtomValueNode(graph: AtomFlowGraph, node: AtomFlowNode): void {
@@ -1229,7 +1314,37 @@ function expandAtomValueNode(graph: AtomFlowGraph, node: AtomFlowNode): void {
     addAtomFlowEdge(graph, node, ensureAtomAssignmentNode(graph, assignment, node.context));
     return;
   }
+  const range = containingFunctionRange(source.functionRanges, node.start);
+  if (range !== null && isExactFunctionReturn(source, range, node.start, node.end)) {
+    if (
+      range.private &&
+      range.exactParameters &&
+      !range.ambiguous &&
+      node.context.currentPrivateFunction !== undefined
+    ) {
+      if (node.context.privateMode === "parameter-summary") {
+        node.terminal |= ATOM_FLOW_RETURN;
+      } else {
+        node.terminal |=
+          node.context.privateFlow?.resultSummaries.get(node.context.currentPrivateFunction) ??
+          ATOM_FLOW_ESCAPE;
+      }
+    } else {
+      node.terminal |= ATOM_FLOW_ESCAPE;
+    }
+    return;
+  }
   node.terminal |= node.context.legacyTerminal ? ATOM_FLOW_LEGACY_DATA : ATOM_FLOW_ESCAPE;
+}
+
+function isExactFunctionReturn(
+  source: SourceIndex,
+  range: FunctionRange,
+  valueStart: number,
+  valueEnd: number,
+): boolean {
+  if (valueStart < range.bodyStart || valueEnd > range.end) return false;
+  return skipWhitespaceForward(source.code, valueEnd, range.end) === range.end;
 }
 
 function expandAtomCallRole(
@@ -1251,6 +1366,23 @@ function expandAtomCallRole(
   const invocation = invocationCallEvent(call, argument, node.context);
   if (invocation !== undefined) {
     node.terminal |= invocation.dyn ? ATOM_FLOW_DELEGATED_INVOCATION : ATOM_FLOW_INVOCATION;
+    return;
+  }
+  const privateCall = resolvePrivateCall(call, node.context);
+  if (privateCall !== undefined) {
+    const effect = node.context.privateFlow?.summaries.get(privateCall.target.key)?.[argument];
+    if (effect === undefined) {
+      node.terminal |= ATOM_FLOW_ESCAPE;
+      return;
+    }
+    node.terminal |=
+      effect &
+      (ATOM_FLOW_DATA |
+        ATOM_FLOW_INVOCATION |
+        ATOM_FLOW_ESCAPE |
+        ATOM_FLOW_DELEGATED_INVOCATION |
+        ATOM_FLOW_BOUNDED_ESCAPE);
+    if ((effect & ATOM_FLOW_RETURN) !== 0) addAtomCallResultEdge(graph, node, call);
     return;
   }
   const summary = resolveRoleSummary(call, node.context);
@@ -1335,6 +1467,13 @@ function atomFlowResult(graph: AtomFlowGraph, rootKey: string): AtomFlowResult {
   }
   if ((outcome & ATOM_FLOW_ESCAPE) !== 0) {
     return { disposition: "escape", requiredCalls: [] };
+  }
+  if ((outcome & ATOM_FLOW_BOUNDED_ESCAPE) !== 0) {
+    return {
+      disposition: "escape",
+      requiredCalls: [],
+      escapeReason: "private-summary-bound",
+    };
   }
   if ((outcome & ATOM_FLOW_DELEGATED_INVOCATION) !== 0) {
     return { disposition: "invocation", requiredCalls: [], delegatedInvocation: true };
@@ -1435,21 +1574,48 @@ function resolveRoleSummary(
   return summary;
 }
 
+function resolvePrivateCall(
+  call: IndexedRoleCall,
+  context: AtomFlowContext,
+): PrivateCallSite | undefined {
+  const event = resolveSourceCallEvent(call, context);
+  if (event === undefined || context.privateFlow === undefined) return undefined;
+  const site = context.privateFlow.callByEvent.get(privateCallEventKey(event));
+  return site?.call.start === call.start ? site : undefined;
+}
+
 function resolveSourceCallEvent(
   call: IndexedRoleCall,
   context: AtomFlowContext,
 ): TraceEvent | undefined {
   if (call.sourceCardinality !== 1) return undefined;
-  const events = context.eventsBySourceCall.get(
-    roleSourceCallKey(
-      context.producerEvent.file,
-      call.line,
-      context.producerEvent,
-      call.name,
-      call.arity,
-    ),
+  const events = roleEventsForCall(
+    context.eventsBySourceCall,
+    context.producerEvent.file,
+    call.line,
+    context.producerEvent,
+    call.name,
+    call.arity,
   );
   return events?.length === 1 ? events[0] : undefined;
+}
+
+function roleEventsForCall(
+  eventsBySourceCall: ReadonlyMap<string, readonly TraceEvent[]>,
+  file: string,
+  line: number,
+  carrier: TraceEvent,
+  name: string,
+  arity: number,
+): readonly TraceEvent[] | undefined {
+  const exact = eventsBySourceCall.get(roleSourceCallKey(file, line, carrier, name, arity));
+  if (exact !== undefined || carrier.partition !== "test") return exact;
+  // Validated test traces discard exact production-event re-emissions. The
+  // production event therefore supplies the unchanged compiler identity for a
+  // production-owned function body, while any novel test event above wins.
+  return eventsBySourceCall.get(
+    roleSourceCallKey(file, line, { ...carrier, partition: "prod" }, name, arity),
+  );
 }
 
 function isMfaSelectorPosition(
@@ -1561,13 +1727,27 @@ function classifyAtomProducerEvents(
   readonly data: ReadonlySet<TraceEvent>;
   readonly invocation: ReadonlySet<TraceEvent>;
   readonly delegatedInvocation: ReadonlySet<TraceEvent>;
+  readonly boundedEscape: ReadonlySet<TraceEvent>;
 } {
   const events = traceResult.events;
   const projectModules = new Set(traceResult.modules.map((module) => module.mod));
   const eventsBySourceCall = indexRoleEvents(events);
+  const rolesByFile = new Map(
+    [...sources].map(([file, source]) => [file, indexAtomRoles(source)] as const),
+  );
+  const privateFlow = buildPrivateFlowIndex(traceResult, sources, rolesByFile, stats);
+  solvePrivateFlowSummaries(
+    privateFlow,
+    sources,
+    rolesByFile,
+    eventsBySourceCall,
+    summaryLookup,
+    projectModules,
+    stats,
+  );
   const sourceFacts = new Map<string, AtomProducerFact[]>();
   for (const [file, source] of sources) {
-    const roleIndex = indexAtomRoles(source);
+    const roleIndex = rolesByFile.get(file) ?? indexAtomRoles(source);
     const mapCalls = indexMapCalls(source);
     const enumMapCalls = indexEnumMapCalls(source);
     const enumCallByMapOpen = new Map<number, EnumMapCall | null>();
@@ -1631,6 +1811,7 @@ function classifyAtomProducerEvents(
   const safe = new Set<TraceEvent>();
   const invocation = new Set<TraceEvent>();
   const delegatedInvocation = new Set<TraceEvent>();
+  const boundedEscape = new Set<TraceEvent>();
   const graphs = new Map<string, AtomFlowGraph>();
   const roots: Array<{
     readonly graph: AtomFlowGraph;
@@ -1665,6 +1846,7 @@ function classifyAtomProducerEvents(
       if (carrierEvents.length !== 1) continue;
       const event = carrierEvents[0];
       if (event === undefined) continue;
+      const privateCarrier = privateDefinitionForCarrier(privateFlow, event);
       const context: AtomFlowContext = {
         producerEvent: event,
         eventsBySourceCall,
@@ -1672,6 +1854,9 @@ function classifyAtomProducerEvents(
         projectModules,
         stats,
         legacyTerminal: legacyExactTerminal(fact, event, eventsBySourceCall, summaryLookup),
+        privateFlow,
+        privateMode: "producer",
+        ...(privateCarrier === undefined ? {} : { currentPrivateFunction: privateCarrier.key }),
       };
       const rootKey = ensureAtomValueNode(
         graph,
@@ -1719,8 +1904,9 @@ function classifyAtomProducerEvents(
       continue;
     }
     stats.escapes += 1;
+    if (flow.escapeReason === "private-summary-bound") boundedEscape.add(event);
   }
-  return { data: safe, invocation, delegatedInvocation };
+  return { data: safe, invocation, delegatedInvocation, boundedEscape };
 }
 
 function atomProducerCarrierKey(event: TraceEvent): string {
@@ -1738,6 +1924,611 @@ function indexRoleEvents(
   return index;
 }
 
+function privateFunctionKey(
+  module: string,
+  file: string,
+  partition: "prod" | "test",
+  name: string,
+  arity: number,
+): string {
+  return [module, file, partition, name, arity].join("\0");
+}
+
+function privateCallEventKey(event: TraceEvent): string {
+  return [
+    event.file,
+    event.line,
+    event.from_mod ?? "",
+    event.from_fun ?? "",
+    event.partition,
+    event.name ?? "",
+    event.arity ?? -1,
+  ].join("\0");
+}
+
+function privateDefinitionForCarrier(
+  index: PrivateFlowIndex,
+  event: TraceEvent,
+): PrivateFunctionDefinition | undefined {
+  if (event.from_mod === null || event.from_fun === undefined) return undefined;
+  const slash = event.from_fun.lastIndexOf("/");
+  if (slash <= 0) return undefined;
+  const name = event.from_fun.slice(0, slash);
+  const arity = Number(event.from_fun.slice(slash + 1));
+  if (!Number.isInteger(arity) || arity < 0) return undefined;
+  return index.targetByIdentity.get(
+    privateFunctionKey(event.from_mod, event.file, event.partition, name, arity),
+  );
+}
+
+function buildPrivateFlowIndex(
+  traceResult: TraceResult,
+  sources: ReadonlyMap<string, SourceIndex>,
+  rolesByFile: ReadonlyMap<string, AtomRoleIndex>,
+  stats: MutableAtomFlowStats,
+): PrivateFlowIndex {
+  const candidates = new Map<string, PrivateFunctionDefinition>();
+  const unsafeExpansionModules = new Set<string>();
+  for (const event of traceResult.events) {
+    if (
+      event.from_mod !== null &&
+      event.from_fun === undefined &&
+      (event.kind === "remote" || event.kind === "imported" || event.kind === "local") &&
+      !isPrivateDefinitionScaffoldingEvent(event)
+    ) {
+      unsafeExpansionModules.add(privateModuleWorldKey(event.from_mod, event.partition));
+    }
+  }
+  const ownersByFileWorld = groupBy(
+    traceResult.modules,
+    (module) => `${module.file}\0${module.partition}`,
+  );
+  const productionOwnerByFileModule = new Map(
+    traceResult.modules
+      .filter((module) => module.partition === "prod")
+      .map((module) => [`${module.file}\0${module.mod}`, module] as const),
+  );
+  const testOwnersByFile = new Map<string, Set<string>>();
+  for (const event of traceResult.events) {
+    if (event.partition !== "test" || event.from_mod === null) continue;
+    const owner = productionOwnerByFileModule.get(`${event.file}\0${event.from_mod}`);
+    if (owner === undefined) continue;
+    const owners = testOwnersByFile.get(event.file) ?? new Set<string>();
+    owners.add(owner.mod);
+    testOwnersByFile.set(event.file, owners);
+  }
+  for (const [file, source] of sources) {
+    const moduleRangesByIdentity = groupBy(
+      source.moduleRanges,
+      (range) => `${range.module}\0${range.line}`,
+    );
+    for (const partition of ["prod", "test"] as const) {
+      const directOwners = ownersByFileWorld.get(`${file}\0${partition}`) ?? [];
+      const inheritedOwners =
+        partition === "test"
+          ? (ownersByFileWorld.get(`${file}\0prod`) ?? []).filter(
+              (owner) => testOwnersByFile.get(file)?.has(owner.mod) === true,
+            )
+          : [];
+      for (const owner of [...directOwners, ...inheritedOwners]) {
+        if (
+          unsafeExpansionModules.has(privateModuleWorldKey(owner.mod, partition)) ||
+          (partition === "test" &&
+            unsafeExpansionModules.has(privateModuleWorldKey(owner.mod, "prod")))
+        ) {
+          continue;
+        }
+        const modules = moduleRangesByIdentity.get(`${owner.mod}\0${owner.line}`) ?? [];
+        if (modules.length !== 1) continue;
+        const moduleRange = modules[0];
+        if (moduleRange === undefined) continue;
+        for (const range of source.functionRanges) {
+          if (
+            !range.private ||
+            !range.exactParameters ||
+            range.ambiguous ||
+            range.parent !== undefined ||
+            range.blockParent !== moduleRange.bodyOpen ||
+            range.end > moduleRange.end
+          ) {
+            continue;
+          }
+          const key = privateFunctionKey(owner.mod, file, partition, range.name, range.arity);
+          const definition = { key, module: owner.mod, file, partition, range } as const;
+          candidates.set(key, definition);
+        }
+      }
+    }
+  }
+
+  const confirmed = new Set<string>();
+  for (const event of traceResult.events) {
+    const carrier = privateDefinitionForIdentity(candidates, event, true);
+    if (carrier !== undefined) confirmed.add(carrier.key);
+    const target = privateDefinitionForIdentity(candidates, event, false);
+    if (target !== undefined && isSameModuleLocalEvent(event)) {
+      confirmed.add(target.key);
+    }
+  }
+  const definitions = new Map([...candidates].filter(([key]) => confirmed.has(key)));
+  const targetByIdentity = new Map(definitions);
+  const sourcePrivateStarts = new Set(
+    [...definitions.values()].map((definition) => `${definition.file}\0${definition.range.start}`),
+  );
+  stats.privateFunctions = sourcePrivateStarts.size;
+
+  const callByEvent = new Map<string, PrivateCallSite>();
+  const callsByTarget = new Map<string, PrivateCallSite[]>();
+  const dependenciesByCaller = new Map<string, Set<string>>();
+  const unsafeResultTargets = new Set<string>();
+  const targetEvents = new Map<string, TraceEvent[]>();
+  const joinedEvents = new Set<TraceEvent>();
+  const eventsBySource = new Map<string, TraceEvent[]>();
+  for (const event of traceResult.events) {
+    if (event.name === undefined || event.arity === undefined || event.from_fun === undefined)
+      continue;
+    append(
+      eventsBySource,
+      [event.file, event.line, event.from_fun, event.name, event.arity].join("\0"),
+      event,
+    );
+    const target = privateDefinitionForIdentity(targetByIdentity, event, false);
+    if (target !== undefined && isSameModuleLocalEvent(event)) {
+      append(targetEvents, target.key, event);
+    }
+  }
+  for (const [file, source] of sources) {
+    const roles = rolesByFile.get(file) ?? indexAtomRoles(source);
+    for (const call of roles.callsByOpen.values()) {
+      if (call.sourceCardinality !== 1) continue;
+      const caller = containingFunctionRange(source.functionRanges, call.start);
+      if (caller === null) continue;
+      const fromFun = `${caller.name}/${caller.arity}`;
+      const candidates =
+        eventsBySource.get([file, call.line, fromFun, call.name, call.arity].join("\0")) ?? [];
+      for (const worldEvents of groupBy(candidates, (event) => event.partition).values()) {
+        if (worldEvents.length !== 1) continue;
+        const event = worldEvents[0];
+        if (event === undefined || !isSameModuleLocalEvent(event) || event.from_mod === null) {
+          continue;
+        }
+        const target = targetByIdentity.get(
+          privateFunctionKey(
+            event.from_mod,
+            file,
+            event.partition,
+            event.name ?? "",
+            event.arity ?? -1,
+          ),
+        );
+        if (target === undefined) continue;
+        const callerPrivateFunction = caller.private
+          ? targetByIdentity.get(
+              privateFunctionKey(event.from_mod, file, event.partition, caller.name, caller.arity),
+            )?.key
+          : undefined;
+        const site: PrivateCallSite = {
+          call,
+          event,
+          target,
+          ...(callerPrivateFunction === undefined ? {} : { callerPrivateFunction }),
+        };
+        const eventKey = privateCallEventKey(event);
+        if (callByEvent.has(eventKey)) {
+          unsafeResultTargets.add(target.key);
+          continue;
+        }
+        callByEvent.set(eventKey, site);
+        joinedEvents.add(event);
+        append(callsByTarget, target.key, site);
+        if (callerPrivateFunction !== undefined) {
+          const dependencies = dependenciesByCaller.get(callerPrivateFunction) ?? new Set<string>();
+          dependencies.add(target.key);
+          dependenciesByCaller.set(callerPrivateFunction, dependencies);
+        }
+      }
+    }
+  }
+  for (const [key, targetCalls] of targetEvents) {
+    if (targetCalls.some((event) => !joinedEvents.has(event))) unsafeResultTargets.add(key);
+  }
+  stats.privateCallEdges = callByEvent.size;
+  const opaqueFunctions = new Set<string>();
+  for (const definition of definitions.values()) {
+    if (
+      (dependenciesByCaller.get(definition.key)?.size ?? 0) > PRIVATE_SUMMARY_MAX_CALL_DEGREE ||
+      (callsByTarget.get(definition.key)?.length ?? 0) > PRIVATE_SUMMARY_MAX_CALL_DEGREE
+    ) {
+      opaqueFunctions.add(definition.key);
+    }
+  }
+  stats.privateOpaqueFunctions = opaqueFunctions.size;
+  const summaries = new Map<string, number[]>();
+  const resultSummaries = new Map<string, number>();
+  for (const definition of definitions.values()) {
+    if (opaqueFunctions.has(definition.key)) {
+      stats.privateSummaryUpdates += definition.range.parameters.length + 1;
+    }
+    summaries.set(
+      definition.key,
+      definition.range.parameters.map(() =>
+        opaqueFunctions.has(definition.key) ? ATOM_FLOW_BOUNDED_ESCAPE : 0,
+      ),
+    );
+    resultSummaries.set(
+      definition.key,
+      opaqueFunctions.has(definition.key) ? ATOM_FLOW_BOUNDED_ESCAPE : 0,
+    );
+  }
+  stats.privateSummaries = [...definitions.values()].reduce(
+    (total, definition) => total + definition.range.parameters.length,
+    0,
+  );
+  return {
+    definitions,
+    targetByIdentity,
+    callsByTarget,
+    dependenciesByCaller,
+    callByEvent,
+    unsafeResultTargets,
+    opaqueFunctions,
+    summaries,
+    resultSummaries,
+  };
+}
+
+function privateModuleWorldKey(module: string, partition: "prod" | "test"): string {
+  return [module, partition].join("\0");
+}
+
+function isPrivateDefinitionScaffoldingEvent(event: TraceEvent): boolean {
+  return (
+    (event.to_mod === "Kernel" &&
+      (event.name === "def" || event.name === "defp") &&
+      event.arity === 2) ||
+    (event.to_mod === ":elixir_def" && event.name === "store_definition" && event.arity === 3) ||
+    (event.to_mod === ":elixir_utils" && event.name === "noop" && event.arity === 0)
+  );
+}
+
+function privateDefinitionForIdentity(
+  definitions: ReadonlyMap<string, PrivateFunctionDefinition>,
+  event: TraceEvent,
+  carrier: boolean,
+): PrivateFunctionDefinition | undefined {
+  const module = carrier ? event.from_mod : event.to_mod;
+  const identity = carrier ? event.from_fun : undefined;
+  const slash = identity?.lastIndexOf("/") ?? -1;
+  const name = carrier ? identity?.slice(0, slash) : event.name;
+  const arity = carrier ? Number(identity?.slice(slash + 1)) : event.arity;
+  if (
+    module === null ||
+    module === undefined ||
+    name === undefined ||
+    !Number.isInteger(arity) ||
+    (arity ?? -1) < 0
+  ) {
+    return undefined;
+  }
+  return definitions.get(
+    privateFunctionKey(module, event.file, event.partition, name, arity ?? -1),
+  );
+}
+
+function isSameModuleLocalEvent(event: TraceEvent): boolean {
+  return event.kind === "local" && event.from_mod !== null && event.to_mod === event.from_mod;
+}
+
+function privateDependencies(index: PrivateFlowIndex, key: string): readonly string[] {
+  return [...(index.dependenciesByCaller.get(key) ?? [])];
+}
+
+function privateFunctionSccs(index: PrivateFlowIndex): readonly (readonly string[])[] {
+  let nextIndex = 0;
+  const indexes = new Map<string, number>();
+  const lowLinks = new Map<string, number>();
+  const stack: string[] = [];
+  const onStack = new Set<string>();
+  const components: string[][] = [];
+  const visit = (key: string): void => {
+    indexes.set(key, nextIndex);
+    lowLinks.set(key, nextIndex);
+    nextIndex += 1;
+    stack.push(key);
+    onStack.add(key);
+    for (const dependency of privateDependencies(index, key)) {
+      if (!indexes.has(dependency)) {
+        visit(dependency);
+        lowLinks.set(key, Math.min(lowLinks.get(key) ?? 0, lowLinks.get(dependency) ?? 0));
+      } else if (onStack.has(dependency)) {
+        lowLinks.set(key, Math.min(lowLinks.get(key) ?? 0, indexes.get(dependency) ?? 0));
+      }
+    }
+    if (lowLinks.get(key) !== indexes.get(key)) return;
+    const component: string[] = [];
+    while (stack.length > 0) {
+      const member = stack.pop();
+      if (member === undefined) break;
+      onStack.delete(member);
+      component.push(member);
+      if (member === key) break;
+    }
+    components.push(component);
+  };
+  for (const key of index.definitions.keys()) if (!indexes.has(key)) visit(key);
+  return components;
+}
+
+function privateSummaryContext(
+  definition: PrivateFunctionDefinition,
+  eventsBySourceCall: ReadonlyMap<string, readonly TraceEvent[]>,
+  summaryLookup: ElixirAtomRoleSummaryLookup,
+  projectModules: ReadonlySet<string>,
+  stats: MutableAtomFlowStats,
+  privateFlow: PrivateFlowIndex,
+): AtomFlowContext {
+  return {
+    producerEvent: {
+      k: "event",
+      kind: "local",
+      file: definition.file,
+      line: 0,
+      from_mod: definition.module,
+      from_fun: `${definition.range.name}/${definition.range.arity}`,
+      to_mod: definition.module,
+      name: definition.range.name,
+      arity: definition.range.arity,
+      dyn: false,
+      partition: definition.partition,
+    },
+    eventsBySourceCall,
+    summaryLookup,
+    projectModules,
+    stats,
+    legacyTerminal: false,
+    privateFlow,
+    privateMode: "parameter-summary",
+    currentPrivateFunction: definition.key,
+  };
+}
+
+function evaluatePrivateParameter(
+  definition: PrivateFunctionDefinition,
+  parameter: FunctionRange["parameters"][number],
+  source: SourceIndex,
+  roles: AtomRoleIndex,
+  eventsBySourceCall: ReadonlyMap<string, readonly TraceEvent[]>,
+  summaryLookup: ElixirAtomRoleSummaryLookup,
+  projectModules: ReadonlySet<string>,
+  stats: MutableAtomFlowStats,
+  privateFlow: PrivateFlowIndex,
+): number {
+  const graph: AtomFlowGraph = {
+    source,
+    roles,
+    nodes: new Map(),
+    pending: [],
+    stats,
+  };
+  const context = privateSummaryContext(
+    definition,
+    eventsBySourceCall,
+    summaryLookup,
+    projectModules,
+    stats,
+    privateFlow,
+  );
+  const rootKey = ensureAtomAssignmentNode(
+    graph,
+    { name: parameter.name, start: parameter.start, end: parameter.end },
+    context,
+  );
+  solveAtomFlowGraph(graph);
+  return graph.nodes.get(rootKey)?.outcome ?? 0;
+}
+
+function evaluatePrivateResult(
+  definition: PrivateFunctionDefinition,
+  source: SourceIndex,
+  roles: AtomRoleIndex,
+  eventsBySourceCall: ReadonlyMap<string, readonly TraceEvent[]>,
+  summaryLookup: ElixirAtomRoleSummaryLookup,
+  projectModules: ReadonlySet<string>,
+  stats: MutableAtomFlowStats,
+  privateFlow: PrivateFlowIndex,
+): number {
+  const sites = privateFlow.callsByTarget.get(definition.key) ?? [];
+  if (sites.length === 0 || privateFlow.unsafeResultTargets.has(definition.key)) {
+    return ATOM_FLOW_ESCAPE;
+  }
+  const graph: AtomFlowGraph = {
+    source,
+    roles,
+    nodes: new Map(),
+    pending: [],
+    stats,
+  };
+  const roots: string[] = [];
+  for (const site of sites) {
+    const context: AtomFlowContext = {
+      producerEvent: site.event,
+      eventsBySourceCall,
+      summaryLookup,
+      projectModules,
+      stats,
+      legacyTerminal: false,
+      privateFlow,
+      privateMode: "result-summary",
+      ...(site.callerPrivateFunction === undefined
+        ? {}
+        : { currentPrivateFunction: site.callerPrivateFunction }),
+    };
+    roots.push(
+      ensureAtomValueNode(
+        graph,
+        site.call.start,
+        site.call.close + 1,
+        source.parentByOpen.get(site.call.open),
+        context,
+      ),
+    );
+  }
+  solveAtomFlowGraph(graph);
+  return roots.reduce((outcome, key) => outcome | (graph.nodes.get(key)?.outcome ?? 0), 0);
+}
+
+function solvePrivateFlowSummaries(
+  privateFlow: PrivateFlowIndex,
+  sources: ReadonlyMap<string, SourceIndex>,
+  rolesByFile: ReadonlyMap<string, AtomRoleIndex>,
+  eventsBySourceCall: ReadonlyMap<string, readonly TraceEvent[]>,
+  summaryLookup: ElixirAtomRoleSummaryLookup,
+  projectModules: ReadonlySet<string>,
+  stats: MutableAtomFlowStats,
+): void {
+  const components = privateFunctionSccs(privateFlow);
+  for (const component of components) {
+    const members = new Set(component);
+    const queue = [...component];
+    const scheduled = new Set(component);
+    const enqueueCallers = (key: string): void => {
+      for (const site of privateFlow.callsByTarget.get(key) ?? []) {
+        const caller = site.callerPrivateFunction;
+        if (caller === undefined || !members.has(caller) || scheduled.has(caller)) continue;
+        scheduled.add(caller);
+        queue.push(caller);
+      }
+    };
+    const drain = (): void => {
+      let index = 0;
+      while (index < queue.length) {
+        const key = queue[index];
+        index += 1;
+        if (key === undefined) continue;
+        scheduled.delete(key);
+        stats.privateSccIterations += 1;
+        if (privateFlow.opaqueFunctions.has(key)) continue;
+        const definition = privateFlow.definitions.get(key);
+        const source = definition === undefined ? undefined : sources.get(definition.file);
+        const roles = definition === undefined ? undefined : rolesByFile.get(definition.file);
+        const current = privateFlow.summaries.get(key);
+        if (
+          definition === undefined ||
+          source === undefined ||
+          roles === undefined ||
+          current === undefined
+        ) {
+          continue;
+        }
+        let changed = false;
+        for (const parameter of definition.range.parameters) {
+          const prior = current[parameter.index] ?? 0;
+          const next =
+            prior |
+            evaluatePrivateParameter(
+              definition,
+              parameter,
+              source,
+              roles,
+              eventsBySourceCall,
+              summaryLookup,
+              projectModules,
+              stats,
+              privateFlow,
+            );
+          if (next === prior) continue;
+          current[parameter.index] = next;
+          stats.privateSummaryUpdates += bitCount(next ^ prior);
+          changed = true;
+        }
+        if (changed) enqueueCallers(key);
+      }
+      queue.length = 0;
+    };
+    drain();
+    for (const key of component) {
+      const current = privateFlow.summaries.get(key);
+      if (current === undefined) continue;
+      let changed = false;
+      for (let index = 0; index < current.length; index += 1) {
+        if (current[index] === 0) {
+          current[index] = ATOM_FLOW_ESCAPE;
+          stats.privateSummaryUpdates += 1;
+          changed = true;
+        }
+      }
+      if (changed) {
+        enqueueCallers(key);
+      }
+    }
+    drain();
+  }
+
+  for (const component of [...components].reverse()) {
+    const members = new Set(component);
+    const queue = [...component];
+    const scheduled = new Set(component);
+    const enqueueCallees = (key: string): void => {
+      for (const callee of privateFlow.dependenciesByCaller.get(key) ?? []) {
+        if (!members.has(callee) || scheduled.has(callee)) continue;
+        scheduled.add(callee);
+        queue.push(callee);
+      }
+    };
+    const drain = (): void => {
+      let index = 0;
+      while (index < queue.length) {
+        const key = queue[index];
+        index += 1;
+        if (key === undefined) continue;
+        scheduled.delete(key);
+        stats.privateSccIterations += 1;
+        if (privateFlow.opaqueFunctions.has(key)) continue;
+        const definition = privateFlow.definitions.get(key);
+        const source = definition === undefined ? undefined : sources.get(definition.file);
+        const roles = definition === undefined ? undefined : rolesByFile.get(definition.file);
+        if (definition === undefined || source === undefined || roles === undefined) continue;
+        const current = privateFlow.resultSummaries.get(key) ?? 0;
+        const next =
+          current |
+          evaluatePrivateResult(
+            definition,
+            source,
+            roles,
+            eventsBySourceCall,
+            summaryLookup,
+            projectModules,
+            stats,
+            privateFlow,
+          );
+        if (next === current) continue;
+        privateFlow.resultSummaries.set(key, next);
+        stats.privateSummaryUpdates += bitCount(next ^ current);
+        enqueueCallees(key);
+      }
+      queue.length = 0;
+    };
+    drain();
+    for (const key of component) {
+      if ((privateFlow.resultSummaries.get(key) ?? 0) !== 0) continue;
+      privateFlow.resultSummaries.set(key, ATOM_FLOW_ESCAPE);
+      stats.privateSummaryUpdates += 1;
+      enqueueCallees(key);
+    }
+    drain();
+  }
+}
+
+function bitCount(value: number): number {
+  let remaining = value;
+  let count = 0;
+  while (remaining !== 0) {
+    remaining &= remaining - 1;
+    count += 1;
+  }
+  return count;
+}
+
 function legacyExactTerminal(
   fact: AtomProducerFact,
   event: TraceEvent,
@@ -1745,7 +2536,7 @@ function legacyExactTerminal(
   summaryLookup: ElixirAtomRoleSummaryLookup,
 ): boolean {
   const exact = (line: number, toMod: string, name: string, arity: number): boolean => {
-    const events = eventsBySourceCall.get(roleSourceCallKey(fact.file, line, event, name, arity));
+    const events = roleEventsForCall(eventsBySourceCall, fact.file, line, event, name, arity);
     return events?.length === 1 && events[0]?.to_mod === toMod;
   };
   if (fact.safeMap !== undefined) {
@@ -2928,9 +3719,28 @@ function indexSource(content: string): SourceIndex {
     blockRanges: blockIndex.ranges,
     arrowsByBlockOpen: blockIndex.arrowsByOpen,
     rescuesByBlockOpen,
-    functionRanges: indexFunctionRanges(code, blockIndex.closeByOpen),
+    functionRanges: indexFunctionRanges(code, blockIndex, closeByOpen, commasByOpen),
+    moduleRanges: indexModuleRanges(code, lineStarts, blockIndex.closeByOpen),
     usingSignatures,
   };
+}
+
+function indexModuleRanges(
+  code: string,
+  lineStarts: readonly number[],
+  blockCloseByOpen: ReadonlyMap<number, number>,
+): readonly ModuleRange[] {
+  const ranges: ModuleRange[] = [];
+  for (const match of code.matchAll(MODULE_DEFINITION_RE)) {
+    const module = match[1];
+    if (module === undefined) continue;
+    const start = match.index ?? 0;
+    const bodyOpen = start + match[0].lastIndexOf("do");
+    const end = blockCloseByOpen.get(bodyOpen);
+    if (end === undefined) continue;
+    ranges.push({ module, line: lineAt(lineStarts, start), bodyOpen, end });
+  }
+  return ranges;
 }
 
 function indexBlockStructure(code: string): BlockIndex {
@@ -2977,39 +3787,64 @@ function indexBlockStructure(code: string): BlockIndex {
 
 function indexFunctionRanges(
   code: string,
-  blockCloseByOpen: ReadonlyMap<number, number>,
+  blockIndex: BlockIndex,
+  closeByOpen: ReadonlyMap<number, number>,
+  commasByOpen: ReadonlyMap<number, readonly number[]>,
 ): readonly FunctionRange[] {
-  const ranges: FunctionRange[] = [];
+  const ranges: Array<Omit<FunctionRange, "ambiguous">> = [];
   for (const match of code.matchAll(FUNCTION_DEFINITION_RE)) {
     const start = match.index ?? 0;
     const indent = match[1]?.length ?? 0;
+    const definition = match[2];
+    const name = match[3];
+    if (definition === undefined || name === undefined) continue;
     const newline = code.indexOf("\n", start);
     const headerEnd = newline < 0 ? code.length : newline;
     const header = code.slice(start, headerEnd);
-    const oneLine = /,\s*do\s*:/u.test(header);
+    const oneLineMatch = /,\s*do\s*:\s*/u.exec(header);
+    const oneLine = oneLineMatch !== null;
+    const bodyStart = oneLine
+      ? start + (oneLineMatch?.index ?? 0) + (oneLineMatch?.[0].length ?? 0)
+      : headerEnd;
     let functionDo: number | null = null;
     for (const doMatch of header.matchAll(/\bdo\b/gu)) functionDo = start + (doMatch.index ?? 0);
     const end = oneLine
       ? headerEnd
       : functionDo === null
         ? start
-        : (blockCloseByOpen.get(functionDo) ?? start);
+        : (blockIndex.closeByOpen.get(functionDo) ?? start);
     const binaryGuards = new Set<string>();
     const guardStart = /\bwhen\b/u.exec(header)?.index;
     const guard = guardStart === undefined ? "" : header.slice(guardStart).trim();
     const variable = EXACT_BINARY_GUARD_RE.exec(guard)?.[1];
     if (variable !== undefined) binaryGuards.add(variable);
+    const parsedParameters = parseFunctionParameters(
+      code,
+      start,
+      headerEnd,
+      name,
+      closeByOpen,
+      commasByOpen,
+    );
+    const blockParent = containingBlockRange(blockIndex.ranges, start)?.open;
     ranges.push({
       start,
       end,
       headerEnd,
+      bodyStart,
       indent,
       binaryGuards,
+      name,
+      arity: parsedParameters.arity,
+      private: definition === "defp",
+      parameters: parsedParameters.parameters,
+      exactParameters: parsedParameters.exact,
+      ...(blockParent === undefined ? {} : { blockParent }),
     });
   }
 
   const stack: number[] = [];
-  return ranges.map((range, index) => {
+  const nested = ranges.map((range, index) => {
     while (stack.length > 0) {
       const parent = stack.at(-1);
       if (parent !== undefined && (ranges[parent]?.end ?? -1) > range.start) break;
@@ -3019,6 +3854,84 @@ function indexFunctionRanges(
     stack.push(index);
     return parent === undefined ? range : { ...range, parent };
   });
+  const cardinality = new Map<string, number>();
+  for (const range of nested) {
+    const key = `${range.name}\0${range.arity}`;
+    cardinality.set(key, (cardinality.get(key) ?? 0) + 1);
+  }
+  const unknownArityNames = new Set(
+    nested.filter((range) => range.arity < 0).map((range) => range.name),
+  );
+  return nested.map((range) => ({
+    ...range,
+    ambiguous:
+      range.arity < 0 ||
+      (cardinality.get(`${range.name}\0${range.arity}`) ?? 0) !== 1 ||
+      unknownArityNames.has(range.name),
+  }));
+}
+
+function parseFunctionParameters(
+  code: string,
+  headerStart: number,
+  headerEnd: number,
+  name: string,
+  closeByOpen: ReadonlyMap<number, number>,
+  commasByOpen: ReadonlyMap<number, readonly number[]>,
+): {
+  readonly parameters: FunctionRange["parameters"];
+  readonly exact: boolean;
+  readonly arity: number;
+} {
+  const header = code.slice(headerStart, headerEnd);
+  const nameAt = header.indexOf(name);
+  if (nameAt < 0) return { parameters: [], exact: false, arity: -1 };
+  const relativeOpen = skipHorizontalWhitespaceForward(header, nameAt + name.length);
+  if (header[relativeOpen] !== "(") return { parameters: [], exact: false, arity: -1 };
+  const open = headerStart + relativeOpen;
+  const close = closeByOpen.get(open);
+  if (close === undefined || close > headerEnd) {
+    return { parameters: [], exact: false, arity: -1 };
+  }
+  const commas = commasByOpen.get(open) ?? [];
+  const contentStart = skipWhitespaceForward(code, open + 1, close);
+  const arity = contentStart === close ? 0 : commas.length + 1;
+  if (arity === 0) {
+    const suffix = code.slice(close + 1, headerEnd);
+    return { parameters: [], exact: !/\bwhen\b/u.test(suffix) && /\bdo\b/u.test(suffix), arity };
+  }
+  const bounds = [open, ...commas, close];
+  const parameters: Array<FunctionRange["parameters"][number]> = [];
+  const names = new Set<string>();
+  for (let index = 0; index < arity; index += 1) {
+    const left = bounds[index];
+    const right = bounds[index + 1];
+    if (left === undefined || right === undefined) {
+      return { parameters: [], exact: false, arity };
+    }
+    const start = skipWhitespaceForward(code, left + 1, right);
+    const end = skipWhitespaceBackward(code, right, left + 1);
+    const trimmed = code.slice(start, end);
+    if (!/^[a-z_][A-Za-z0-9_]*$/u.test(trimmed) || names.has(trimmed)) {
+      return { parameters: [], exact: false, arity };
+    }
+    parameters.push({
+      name: trimmed,
+      index,
+      start,
+      end,
+    });
+    names.add(trimmed);
+  }
+  const suffix = code.slice(close + 1, headerEnd);
+  if (
+    /\\\\/u.test(code.slice(open, close + 1)) ||
+    /\bwhen\b/u.test(suffix) ||
+    !/\bdo\b/u.test(suffix)
+  ) {
+    return { parameters: [], exact: false, arity };
+  }
+  return { parameters, exact: true, arity };
 }
 
 /** Preserve byte/line coordinates while hiding inert Elixir lexical bodies. */
