@@ -99,6 +99,26 @@ export interface ElixirAtomFlowStats {
   readonly privateSummaryUpdates: number;
   /** Private identities made opaque by the bounded call-degree contract. */
   readonly privateOpaqueFunctions: number;
+  /** Compiler module-level events accepted as exact inert module scaffolding. */
+  readonly privateModuleScaffoldingEvents: number;
+  /** Compiler module-level events accepted as exact inert metadata attributes. */
+  readonly privateModuleMetadataEvents: number;
+  /** Compiler module-level events accepted as exact inert typespec attributes. */
+  readonly privateModuleTypespecEvents: number;
+  /** Candidate-bearing modules rejected because a direct `use` may expand definitions. */
+  readonly privateModuleUseRejections: number;
+  /** Candidate-bearing modules rejected because a compile hook attribute was present. */
+  readonly privateModuleHookRejections: number;
+  /** Candidate-bearing modules rejected because quoted/generated source was present. */
+  readonly privateModuleGeneratedRejections: number;
+  /** Candidate-bearing modules rejected because a custom module-body call was present. */
+  readonly privateModuleCustomRejections: number;
+  /** Candidate-bearing modules rejected because alias/import/require was not reviewed. */
+  readonly privateModuleDeclarationRejections: number;
+  /** Candidate-bearing modules rejected because an event had no exact source construct. */
+  readonly privateModuleUnknownEventRejections: number;
+  /** Candidate-bearing modules rejected because a source/event bundle was ambiguous. */
+  readonly privateModuleAmbiguousEventRejections: number;
 }
 
 type MutableAtomFlowStats = { -readonly [K in keyof ElixirAtomFlowStats]: number };
@@ -130,7 +150,7 @@ const FN_TUPLE_CLAUSE_HEAD_RE =
   /^\{\s*[a-z_][A-Za-z0-9_]*\s*,\s*[a-z_][A-Za-z0-9_]*\s*\}(?:\s+when\b[^\n]*?)?\s*$/u;
 const ASSIGNMENT_RE = /([a-z_][A-Za-z0-9_]*)\s*=\s*/uy;
 const LOCAL_IDENTIFIER_RE = /[a-z_][A-Za-z0-9_]*/uy;
-const FUNCTION_DEFINITION_RE = /^([ \t]*)(defp?)\s+([a-z_][A-Za-z0-9_]*[!?]?)(?=\s|\()/gmu;
+const FUNCTION_DEFINITION_RE = /^([ \t]*)(defp?)\s+([a-z_][A-Za-z0-9_]*[!?]?)(?=\s|\(|,)/gmu;
 const MODULE_DEFINITION_RE = new RegExp(String.raw`^[ \t]*defmodule\s+(${MODULE})\s+do\b`, "gmu");
 const EXACT_BINARY_GUARD_RE = /^when\s+is_binary\s*\(\s*([a-z_][A-Za-z0-9_]*)\s*\)\s+do\s*$/u;
 const CLAUSE_GUARD_RE = /^(.+?)\s+when\s+(.+)$/u;
@@ -177,6 +197,25 @@ interface ModuleRange {
   readonly end: number;
 }
 
+type PrivateModuleConstructKind =
+  | "module"
+  | "definition"
+  | "metadata"
+  | "typespec"
+  | "use"
+  | "hook"
+  | "generated"
+  | "custom"
+  | "declaration";
+
+interface PrivateModuleConstruct {
+  readonly module: string;
+  readonly line: number;
+  readonly start: number;
+  readonly kind: PrivateModuleConstructKind;
+  readonly name: string;
+}
+
 interface BlockRange {
   readonly open: number;
   readonly close: number;
@@ -204,6 +243,7 @@ interface SourceIndex {
   readonly rescuesByBlockOpen: ReadonlyMap<number, readonly number[]>;
   readonly functionRanges: readonly FunctionRange[];
   readonly moduleRanges: readonly ModuleRange[];
+  readonly privateModuleConstructs: readonly PrivateModuleConstruct[];
   readonly usingSignatures: readonly { readonly line: number; readonly selector: string }[];
 }
 
@@ -240,6 +280,16 @@ export function extractElixirRuntimeConventions(
     privateSccIterations: 0,
     privateSummaryUpdates: 0,
     privateOpaqueFunctions: 0,
+    privateModuleScaffoldingEvents: 0,
+    privateModuleMetadataEvents: 0,
+    privateModuleTypespecEvents: 0,
+    privateModuleUseRejections: 0,
+    privateModuleHookRejections: 0,
+    privateModuleGeneratedRejections: 0,
+    privateModuleCustomRejections: 0,
+    privateModuleDeclarationRejections: 0,
+    privateModuleUnknownEventRejections: 0,
+    privateModuleAmbiguousEventRejections: 0,
   };
   const functionsByModuleName = indexFunctions(traceResult.functions);
   const atomRoleSummaryLookup = createElixirAtomRoleSummaryLookup(
@@ -1961,6 +2011,151 @@ function privateDefinitionForCarrier(
   );
 }
 
+type PrivateModuleRejectionReason =
+  | "use"
+  | "hook"
+  | "generated"
+  | "custom"
+  | "declaration"
+  | "unknown-event"
+  | "ambiguous-event";
+
+interface PrivateModuleSafety {
+  readonly safe: boolean;
+  readonly reasons: ReadonlySet<PrivateModuleRejectionReason>;
+}
+
+function privateModuleEventSignature(event: TraceEvent): string {
+  return [
+    event.kind,
+    event.to_mod,
+    event.name ?? "",
+    event.arity ?? -1,
+    event.dyn ? "dynamic" : "static",
+  ].join("\0");
+}
+
+function expectedPrivateModuleEventSignatures(
+  construct: PrivateModuleConstruct,
+): readonly string[] {
+  const signature = (
+    kind: TraceEvent["kind"],
+    toMod: string,
+    name: string,
+    arity: number,
+  ): string => [kind, toMod, name, arity, "static"].join("\0");
+  switch (construct.kind) {
+    case "module":
+      return [signature("remote", ":elixir_utils", "noop", 0)];
+    case "definition":
+      return [
+        signature("imported", "Kernel", construct.name, 2),
+        signature("remote", ":elixir_def", "store_definition", 3),
+      ].sort();
+    case "metadata":
+      return [
+        signature("alias", "Module", "", -1),
+        signature("imported", "Kernel", "@", 1),
+        signature("remote", "Module", "__put_attribute__", 5),
+      ].sort();
+    case "typespec":
+      return [
+        signature("alias", "Kernel.Typespec", "", -1),
+        signature("imported", "Kernel", "@", 1),
+        signature("remote", "Kernel.Typespec", "deftypespec", 6),
+      ].sort();
+    default:
+      return [];
+  }
+}
+
+function privateModuleSiteKey(file: string, line: number): string {
+  return `${file}\0${line}`;
+}
+
+function classifyPrivateModuleSafety(
+  owner: ModuleRecord,
+  constructs: readonly PrivateModuleConstruct[],
+  events: readonly TraceEvent[],
+  stats: MutableAtomFlowStats,
+  requireCompleteBundles: boolean,
+): PrivateModuleSafety {
+  const reasons = new Set<PrivateModuleRejectionReason>();
+  const constructsBySite = groupBy(constructs, (construct) =>
+    privateModuleSiteKey(owner.file, construct.line),
+  );
+  const eventsBySite = groupBy(events, (event) => privateModuleSiteKey(event.file, event.line));
+
+  for (const construct of constructs) {
+    switch (construct.kind) {
+      case "use":
+        reasons.add("use");
+        break;
+      case "hook":
+        reasons.add("hook");
+        break;
+      case "generated":
+        reasons.add("generated");
+        break;
+      case "custom":
+        reasons.add("custom");
+        break;
+      case "declaration":
+        reasons.add("declaration");
+        break;
+      default:
+        break;
+    }
+  }
+
+  for (const [site, siteEvents] of eventsBySite) {
+    const siteConstructs = constructsBySite.get(site) ?? [];
+    if (siteConstructs.length === 0) {
+      reasons.add("unknown-event");
+      continue;
+    }
+    if (siteConstructs.length !== 1 || siteConstructs[0] === undefined) {
+      reasons.add("ambiguous-event");
+      continue;
+    }
+    const construct = siteConstructs[0];
+    const expected = expectedPrivateModuleEventSignatures(construct);
+    if (expected.length === 0 || siteEvents.length !== expected.length) {
+      reasons.add("ambiguous-event");
+      continue;
+    }
+    const actual = siteEvents.map(privateModuleEventSignature).sort();
+    if (actual.some((signature, index) => signature !== expected[index])) {
+      reasons.add("ambiguous-event");
+      continue;
+    }
+    if (construct.kind === "metadata") stats.privateModuleMetadataEvents += actual.length;
+    else if (construct.kind === "typespec") stats.privateModuleTypespecEvents += actual.length;
+    else stats.privateModuleScaffoldingEvents += actual.length;
+  }
+
+  // Real compiler traces always contain the exact defmodule scaffolding event.
+  // Once any module-level event is present, absence is also ambiguous: this
+  // prevents a partial bundle from making an inert-looking source trustworthy.
+  if (requireCompleteBundles) {
+    for (const construct of constructs) {
+      if (expectedPrivateModuleEventSignatures(construct).length === 0) continue;
+      if (!eventsBySite.has(privateModuleSiteKey(owner.file, construct.line))) {
+        reasons.add("ambiguous-event");
+      }
+    }
+  }
+
+  if (reasons.has("use")) stats.privateModuleUseRejections += 1;
+  if (reasons.has("hook")) stats.privateModuleHookRejections += 1;
+  if (reasons.has("generated")) stats.privateModuleGeneratedRejections += 1;
+  if (reasons.has("custom")) stats.privateModuleCustomRejections += 1;
+  if (reasons.has("declaration")) stats.privateModuleDeclarationRejections += 1;
+  if (reasons.has("unknown-event")) stats.privateModuleUnknownEventRejections += 1;
+  if (reasons.has("ambiguous-event")) stats.privateModuleAmbiguousEventRejections += 1;
+  return { safe: reasons.size === 0, reasons };
+}
+
 function buildPrivateFlowIndex(
   traceResult: TraceResult,
   sources: ReadonlyMap<string, SourceIndex>,
@@ -1968,17 +2163,11 @@ function buildPrivateFlowIndex(
   stats: MutableAtomFlowStats,
 ): PrivateFlowIndex {
   const candidates = new Map<string, PrivateFunctionDefinition>();
-  const unsafeExpansionModules = new Set<string>();
-  for (const event of traceResult.events) {
-    if (
-      event.from_mod !== null &&
-      event.from_fun === undefined &&
-      (event.kind === "remote" || event.kind === "imported" || event.kind === "local") &&
-      !isPrivateDefinitionScaffoldingEvent(event)
-    ) {
-      unsafeExpansionModules.add(privateModuleWorldKey(event.from_mod, event.partition));
-    }
-  }
+  const moduleEventsByWorld = groupBy(
+    traceResult.events.filter((event) => event.from_mod !== null && event.from_fun === undefined),
+    (event) => privateModuleWorldKey(event.from_mod ?? "", event.partition),
+  );
+  const moduleSafety = new Map<string, PrivateModuleSafety>();
   const ownersByFileWorld = groupBy(
     traceResult.modules,
     (module) => `${module.file}\0${module.partition}`,
@@ -2002,6 +2191,21 @@ function buildPrivateFlowIndex(
       source.moduleRanges,
       (range) => `${range.module}\0${range.line}`,
     );
+    const constructsByModule = groupBy(
+      source.privateModuleConstructs,
+      (construct) => construct.module,
+    );
+    const eligibleRangesByModuleBody = groupBy(
+      source.functionRanges.filter(
+        (range) =>
+          range.private &&
+          range.exactParameters &&
+          !range.ambiguous &&
+          range.parent === undefined &&
+          range.blockParent !== undefined,
+      ),
+      (range) => String(range.blockParent ?? -1),
+    );
     for (const partition of ["prod", "test"] as const) {
       const directOwners = ownersByFileWorld.get(`${file}\0${partition}`) ?? [];
       const inheritedOwners =
@@ -2011,28 +2215,57 @@ function buildPrivateFlowIndex(
             )
           : [];
       for (const owner of [...directOwners, ...inheritedOwners]) {
-        if (
-          unsafeExpansionModules.has(privateModuleWorldKey(owner.mod, partition)) ||
-          (partition === "test" &&
-            unsafeExpansionModules.has(privateModuleWorldKey(owner.mod, "prod")))
-        ) {
-          continue;
-        }
         const modules = moduleRangesByIdentity.get(`${owner.mod}\0${owner.line}`) ?? [];
         if (modules.length !== 1) continue;
         const moduleRange = modules[0];
         if (moduleRange === undefined) continue;
-        for (const range of source.functionRanges) {
-          if (
-            !range.private ||
-            !range.exactParameters ||
-            range.ambiguous ||
-            range.parent !== undefined ||
-            range.blockParent !== moduleRange.bodyOpen ||
-            range.end > moduleRange.end
-          ) {
-            continue;
-          }
+        const eligibleRanges = (
+          eligibleRangesByModuleBody.get(String(moduleRange.bodyOpen)) ?? []
+        ).filter((range) => range.end <= moduleRange.end);
+        if (eligibleRanges.length === 0) continue;
+        const safetyKey = [owner.mod, owner.file, partition].join("\0");
+        const productionSafetyKey = [owner.mod, owner.file, "prod"].join("\0");
+        const productionOwner = productionOwnerByFileModule.get(`${owner.file}\0${owner.mod}`);
+        const productionSafety =
+          partition === "prod"
+            ? (moduleSafety.get(productionSafetyKey) ??
+              classifyPrivateModuleSafety(
+                { ...owner, partition: "prod" },
+                constructsByModule.get(owner.mod) ?? [],
+                moduleEventsByWorld.get(privateModuleWorldKey(owner.mod, "prod")) ?? [],
+                stats,
+                true,
+              ))
+            : productionOwner === undefined
+              ? undefined
+              : (moduleSafety.get(productionSafetyKey) ??
+                classifyPrivateModuleSafety(
+                  productionOwner,
+                  constructsByModule.get(owner.mod) ?? [],
+                  moduleEventsByWorld.get(privateModuleWorldKey(owner.mod, "prod")) ?? [],
+                  stats,
+                  true,
+                ));
+        if (productionSafety !== undefined) {
+          moduleSafety.set(productionSafetyKey, productionSafety);
+        }
+        const testEvents = moduleEventsByWorld.get(privateModuleWorldKey(owner.mod, "test")) ?? [];
+        const safety =
+          partition === "prod"
+            ? productionSafety
+            : testEvents.length === 0 && productionSafety?.safe === true
+              ? productionSafety
+              : (moduleSafety.get(safetyKey) ??
+                classifyPrivateModuleSafety(
+                  { ...owner, partition: "test" },
+                  constructsByModule.get(owner.mod) ?? [],
+                  testEvents,
+                  stats,
+                  true,
+                ));
+        if (safety !== undefined) moduleSafety.set(safetyKey, safety);
+        if (safety?.safe !== true || productionSafety?.safe === false) continue;
+        for (const range of eligibleRanges) {
           const key = privateFunctionKey(owner.mod, file, partition, range.name, range.arity);
           const definition = { key, module: owner.mod, file, partition, range } as const;
           candidates.set(key, definition);
@@ -2179,16 +2412,6 @@ function buildPrivateFlowIndex(
 
 function privateModuleWorldKey(module: string, partition: "prod" | "test"): string {
   return [module, partition].join("\0");
-}
-
-function isPrivateDefinitionScaffoldingEvent(event: TraceEvent): boolean {
-  return (
-    (event.to_mod === "Kernel" &&
-      (event.name === "def" || event.name === "defp") &&
-      event.arity === 2) ||
-    (event.to_mod === ":elixir_def" && event.name === "store_definition" && event.arity === 3) ||
-    (event.to_mod === ":elixir_utils" && event.name === "noop" && event.arity === 0)
-  );
 }
 
 function privateDefinitionForIdentity(
@@ -3706,6 +3929,8 @@ function indexSource(content: string): SourceIndex {
     const block = containingBlockRange(blockIndex.ranges, rescue.start);
     if (block !== null) append(rescuesByBlockOpen, block.open, rescue.start);
   }
+  const functionRanges = indexFunctionRanges(code, blockIndex, closeByOpen, commasByOpen);
+  const moduleRanges = indexModuleRanges(code, lineStarts, blockIndex.closeByOpen);
   return {
     content,
     code,
@@ -3719,8 +3944,15 @@ function indexSource(content: string): SourceIndex {
     blockRanges: blockIndex.ranges,
     arrowsByBlockOpen: blockIndex.arrowsByOpen,
     rescuesByBlockOpen,
-    functionRanges: indexFunctionRanges(code, blockIndex, closeByOpen, commasByOpen),
-    moduleRanges: indexModuleRanges(code, lineStarts, blockIndex.closeByOpen),
+    functionRanges,
+    moduleRanges,
+    privateModuleConstructs: indexPrivateModuleConstructs(
+      code,
+      lineStarts,
+      blockIndex.ranges,
+      moduleRanges,
+      functionRanges,
+    ),
     usingSignatures,
   };
 }
@@ -3741,6 +3973,125 @@ function indexModuleRanges(
     ranges.push({ module, line: lineAt(lineStarts, start), bodyOpen, end });
   }
   return ranges;
+}
+
+const PRIVATE_INERT_METADATA_ATTRIBUTES = new Set([
+  "deprecated",
+  "doc",
+  "moduledoc",
+  "since",
+  "typedoc",
+]);
+const PRIVATE_INERT_TYPESPEC_ATTRIBUTES = new Set([
+  "callback",
+  "macrocallback",
+  "opaque",
+  "optional_callbacks",
+  "spec",
+  "type",
+  "typep",
+]);
+const PRIVATE_COMPILE_HOOK_ATTRIBUTES = new Set([
+  "after_compile",
+  "before_compile",
+  "compile",
+  "on_definition",
+  "on_load",
+]);
+const PRIVATE_GENERATING_ATTRIBUTES = new Set(["derive"]);
+
+function indexPrivateModuleConstructs(
+  code: string,
+  lineStarts: readonly number[],
+  blockRanges: readonly BlockRange[],
+  moduleRanges: readonly ModuleRange[],
+  functionRanges: readonly FunctionRange[],
+): readonly PrivateModuleConstruct[] {
+  const constructs: PrivateModuleConstruct[] = [];
+  const functionStarts = new Set(functionRanges.map((range) => range.start));
+  const attributeStarts = new Set<number>();
+  const moduleByBodyOpen = new Map(moduleRanges.map((range) => [range.bodyOpen, range] as const));
+  const moduleHeaderStarts = new Set<number>();
+  for (const moduleRange of moduleRanges) {
+    const moduleStart = lineStarts[moduleRange.line - 1] ?? 0;
+    moduleHeaderStarts.add(moduleStart);
+    constructs.push({
+      module: moduleRange.module,
+      line: moduleRange.line,
+      start: moduleStart,
+      kind: "module",
+      name: "defmodule",
+    });
+  }
+  for (const range of functionRanges) {
+    const moduleRange =
+      range.blockParent === undefined ? undefined : moduleByBodyOpen.get(range.blockParent);
+    if (moduleRange === undefined || range.end > moduleRange.end) continue;
+    constructs.push({
+      module: moduleRange.module,
+      line: lineAt(lineStarts, range.start),
+      start: range.start,
+      kind: "definition",
+      name: range.private ? "defp" : "def",
+    });
+  }
+  for (const match of code.matchAll(/^[ \t]*@([a-z_][A-Za-z0-9_]*)\b/gmu)) {
+    const start = match.index ?? 0;
+    const parent = containingBlockRange(blockRanges, start)?.open;
+    const moduleRange = parent === undefined ? undefined : moduleByBodyOpen.get(parent);
+    const name = match[1];
+    if (moduleRange === undefined || name === undefined) continue;
+    attributeStarts.add(start);
+    const kind: PrivateModuleConstructKind = PRIVATE_INERT_METADATA_ATTRIBUTES.has(name)
+      ? "metadata"
+      : PRIVATE_INERT_TYPESPEC_ATTRIBUTES.has(name)
+        ? "typespec"
+        : PRIVATE_COMPILE_HOOK_ATTRIBUTES.has(name)
+          ? "hook"
+          : PRIVATE_GENERATING_ATTRIBUTES.has(name)
+            ? "generated"
+            : "custom";
+    constructs.push({
+      module: moduleRange.module,
+      line: lineAt(lineStarts, start),
+      start,
+      kind,
+      name,
+    });
+  }
+  for (const match of code.matchAll(
+    /^[ \t]*(use|quote|alias|import|require|defmodule|defmacro|defmacrop|defguard|defguardp|[A-Z][A-Za-z0-9_.]*\s*\.\s*[a-z_][A-Za-z0-9_]*[!?]?|[a-z_][A-Za-z0-9_]*[!?]?)\b/gmu,
+  )) {
+    const start = match.index ?? 0;
+    const parent = containingBlockRange(blockRanges, start)?.open;
+    const moduleRange = parent === undefined ? undefined : moduleByBodyOpen.get(parent);
+    if (
+      moduleRange === undefined ||
+      functionStarts.has(start) ||
+      attributeStarts.has(start) ||
+      moduleHeaderStarts.has(start)
+    ) {
+      continue;
+    }
+    const name = match[1];
+    if (name === undefined || name === "def" || name === "defp" || name === "end") continue;
+    const kind: PrivateModuleConstructKind =
+      name === "use"
+        ? "use"
+        : name === "quote" || name.startsWith("def")
+          ? "generated"
+          : name === "alias" || name === "import" || name === "require"
+            ? "declaration"
+            : "custom";
+    constructs.push({
+      module: moduleRange.module,
+      line: lineAt(lineStarts, start),
+      start,
+      kind,
+      name,
+    });
+  }
+  return constructs;
 }
 
 function indexBlockStructure(code: string): BlockIndex {

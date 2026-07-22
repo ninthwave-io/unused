@@ -28,7 +28,7 @@ import { HAZARD_REGISTRY, type HazardClassEntry } from "./hazard-registry.js";
  * wording or the set of globals (a behaviour-affecting change), so a consumer
  * pinning a version can detect it. Independent of the analyzer/tool version.
  */
-export const ASSUMPTION_SET_VERSION = "1.22.0";
+export const ASSUMPTION_SET_VERSION = "1.23.0";
 
 /** One global analysis assumption (independent of any single hazard class). */
 export interface GlobalAssumption {
@@ -120,7 +120,7 @@ export const GLOBAL_ASSUMPTIONS: readonly GlobalAssumption[] = [
     id: "elixir-private-atom-summary-bounds",
     title: "Elixir private computed-value summaries have explicit conservative bounds",
     detail:
-      "ADR 0014 Phase 1B2A summarizes only a direct, unambiguous, variable-parameter `defp` inside one exactly joined literal module body. Any unreviewed callable compiler event at module scope disables all private summaries for that module because a macro or compile-time function may have generated an invisible sibling clause. The only accepted module-level events are the exact Kernel `def`/`defp`, `:elixir_def.store_definition/3`, and `:elixir_utils.noop/0` scaffolding emitted for ordinary definitions. A private identity with more than 64 distinct private callees or more than 64 exact callers is initialized as opaque escape before local transfer solving; this explicit constant bounds dense-hub work while retaining the pre-Phase-1B2A conservative result. Delta queues reevaluate only affected callers or callees inside recursive components. Counters expose opaque identities, member evaluations, and committed outcome bits, and neutral 250/500/1,000-edge chain, cycle, and dense-hub fixtures enforce the bound.",
+      "ADR 0014 Phase 1B2A summarizes only a direct, unambiguous, variable-parameter `defp` inside one exactly joined literal module body. Phase 1B2A.1 classifies module scope from both source and compiler evidence: ordinary `def`/`defp` scaffolding plus reviewed metadata and typespec attributes are accepted only when the complete expected event multiset joins the exact source construct at the same file, line, module, and partition. Safety is never inferred from an inert-looking callee alone. Direct `use`, compile hooks, quoted/generated definitions, custom or DSL macros, source `alias`/`import`/`require`, unreviewed attributes, non-owner event sources, unknown events, and missing, extra, or ambiguous event bundles disable every private summary for the module; production rejection is inherited by tests. An empty test module-event set may inherit only an already-safe production classification after exact duplicate re-emissions are removed, while any surviving test module event requires a complete test bundle. A private identity with more than 64 distinct private callees or more than 64 exact callers is initialized as opaque escape before local transfer solving; this explicit constant bounds dense-hub work while retaining the pre-Phase-1B2A conservative result. Module constructs and events are indexed once, and delta queues reevaluate only affected callers or callees inside recursive components. Counters expose accepted event classes, module rejection reasons, opaque identities, member evaluations, and committed outcome bits. Neutral 250/500/1,000-edge chain, cycle, dense-hub, and metadata-heavy fixtures enforce the bounds.",
   },
   {
     id: "elixir-standalone-script-inventory",

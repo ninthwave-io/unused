@@ -1,7 +1,7 @@
 # 0014 — Typed Elixir computed-value flow and explicit hazard scope
 
 Date: 2026-07-22
-Status: Accepted (phases 1A, 1B1, 1B1.2, and 1B2A implemented; later phases pending)
+Status: Accepted (phases 1A, 1B1, 1B1.2, 1B2A, and 1B2A.1 implemented; later phases pending)
 
 ## Context
 
@@ -374,13 +374,28 @@ multiple clauses, missing or duplicate events, and generated or otherwise
 ambiguous definitions remain escape boundaries.
 
 Identity confirmation alone cannot prove that a macro did not generate an
-additional private clause. Therefore any unreviewed callable compiler event at
-module scope disables private summaries for that module. Only the exact
-`Kernel.def/2`, `Kernel.defp/2`, `:elixir_def.store_definition/3`, and
-`:elixir_utils.noop/0` scaffolding emitted for ordinary definitions is accepted.
-This intentionally conservative boundary retains opaque escape for modules
-using other compile-time expansion until private clause inventory has its own
-compiler/reflection evidence.
+additional private clause. Therefore any unreviewed source construct or
+compiler event at module scope disables private summaries for that module.
+Phase 1B2A.1 replaces the initial callee-only allowlist with an exact source and
+compiler join. Ordinary `def`/`defp` scaffolding, `@moduledoc`/`@doc` metadata,
+and the reviewed typespec attributes are accepted only when the direct module
+body contains that exact construct and the compiler emits the complete expected
+event multiset at the same file, line, module, and partition. The implementation
+does not infer safety from `Module.__put_attribute__/5`,
+`Kernel.Typespec.deftypespec/6`, or another inert-looking callee alone.
+
+Direct `use`, compile hooks, quoted/generated definitions, custom or DSL macro
+calls, and unreviewed attributes remain opaque. Source `alias`, `import`, and
+`require` declarations are tracked as a distinct unreviewed class; compiler
+alias events that are part of an exact metadata or typespec bundle do not make
+the source declaration itself safe. An event attributed to another source
+file, an unknown event, a missing event, an extra event, or ambiguous source
+cardinality rejects the entire module. Production rejection is inherited by
+the test world. When trace merging removes exact test re-emissions, an empty
+test module-event set may inherit only an already-safe production
+classification; any surviving test module event requires its own complete
+bundle. This retains the invisible-sibling boundary while allowing ordinary
+inert documentation and exact typespecs.
 
 Each eligible parameter has a finite data, invocation, escape, delegated-
 invocation, or return effect. Return effects are joined across every exact
@@ -405,6 +420,16 @@ transfer graph is solved. This explicit constant keeps dense hubs bounded while
 retaining the pre-phase conservative result. Generated chains, terminal-bearing
 cyclic SCCs, and dense hubs of 250, 500, and 1,000 private functions or edges
 hold semantic density constant and assert linear counter bounds.
+
+Module constructs and compiler events are indexed once, before private
+functions are visited. Deterministic counters separate accepted scaffolding,
+metadata, and typespec events from module rejections for `use`, hooks,
+generated code, custom calls, declarations, unknown events, and ambiguous
+bundles. A metadata-heavy 250/500/1,000-function series retains every function,
+call edge, and typespec event while asserting the same linear solver bounds.
+The real neutral private-flow fixture includes `@moduledoc false` and one exact
+`@spec`; it must materialize nonzero private summaries and preserve supported
+deletion of its unrelated dead export.
 
 This checkpoint intentionally does not infer public or cross-module summaries,
 does not emit private functions as public claim subjects, and does not change

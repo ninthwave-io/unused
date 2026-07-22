@@ -8,6 +8,7 @@ import { isMixAvailable } from "../../testing/corpus/elixir-corpus.js";
 import { analyzeProjectAutoWithGraph } from "../dispatch.js";
 import { analyzeElixirProjectWithGraph } from "./analyze.js";
 import { runTracer } from "./runner.js";
+import { extractElixirRuntimeConventions } from "./runtime-references.js";
 
 const fixture = (name: string): string =>
   fileURLToPath(new URL(`../../../../../fixtures/elixir/${name}`, import.meta.url));
@@ -650,7 +651,24 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
   }, 60_000);
 
   it("keeps a private computed-atom data flow bounded and deletable", async () => {
-    const analysis = await analyzeElixirProjectWithGraph(fixture("atom-role-private-flow"), {
+    const root = fixture("atom-role-private-flow");
+    const trace = runTracer(root);
+    expect(extractElixirRuntimeConventions(root, trace).atomFlowStats).toMatchObject({
+      privateFunctions: 2,
+      privateSummaries: 3,
+      privateCallEdges: 2,
+      privateModuleScaffoldingEvents: 9,
+      privateModuleMetadataEvents: 3,
+      privateModuleTypespecEvents: 3,
+      privateModuleUseRejections: 0,
+      privateModuleHookRejections: 0,
+      privateModuleGeneratedRejections: 0,
+      privateModuleCustomRejections: 0,
+      privateModuleDeclarationRejections: 0,
+      privateModuleUnknownEventRejections: 0,
+      privateModuleAmbiguousEventRejections: 0,
+    });
+    const analysis = await analyzeElixirProjectWithGraph(root, {
       now: new Date(0),
     });
     expect(
