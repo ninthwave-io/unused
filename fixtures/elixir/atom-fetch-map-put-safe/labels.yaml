@@ -1,0 +1,18 @@
+case: atom-fetch-map-put-safe
+description: >-
+  A request-normalization case matches one exact {:ok, local} result from
+  Map.fetch/2, positively guards that local as binary, and converts it inline
+  as the complete value of a rescued static Map.put/3. The atom remains data
+  and cannot impose a project-wide dynamic-dispatch cap.
+subjects:
+  - kind: export
+    name: NeutralFetchData.Normalizer.normalize/1
+    file: lib/neutral_fetch_data/normalizer.ex
+    expected: alive
+    because: The application invokes the public request-normalization boundary.
+  - kind: export
+    name: NeutralFetchData.Normalizer.genuinely_unused/0
+    file: lib/neutral_fetch_data/normalizer.ex
+    expected: dead
+    minConfidence: high
+    because: Atom-valued request data does not make an unrelated export dynamically callable.

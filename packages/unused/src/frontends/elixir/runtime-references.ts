@@ -79,7 +79,9 @@ const ASSIGNMENT_RE = /([a-z_][A-Za-z0-9_]*)\s*=\s*/uy;
 const LOCAL_IDENTIFIER_RE = /[a-z_][A-Za-z0-9_]*/uy;
 const FUNCTION_DEFINITION_RE = /^([ \t]*)defp?\s+[a-z_][A-Za-z0-9_]*[!?]?\b/gmu;
 const EXACT_BINARY_GUARD_RE = /^when\s+is_binary\s*\(\s*([a-z_][A-Za-z0-9_]*)\s*\)\s+do\s*$/u;
-const CLAUSE_BINDER_RE = /^([a-z_][A-Za-z0-9_]*)\s+when\s+(.+)$/u;
+const CLAUSE_GUARD_RE = /^(.+?)\s+when\s+(.+)$/u;
+const SIMPLE_BINDER_RE = /^[a-z_][A-Za-z0-9_]*$/u;
+const OK_TUPLE_BINDER_RE = /^\{\s*:ok\s*,\s*([a-z_][A-Za-z0-9_]*)\s*\}$/u;
 const LITERAL_ATOM_RE = /^:[a-z_][A-Za-z0-9_]*[!?]?$/u;
 
 interface IdentifierOccurrence {
@@ -924,15 +926,22 @@ function inlineMapPutValueConsumer(
   const headerLine = lineAt(source.lineStarts, arrow);
   const headerStart = source.lineStarts[headerLine - 1] ?? 0;
   const header = source.code.slice(headerStart, arrow).trim();
-  const clause = CLAUSE_BINDER_RE.exec(header);
-  const binder = clause?.[1];
+  const clause = CLAUSE_GUARD_RE.exec(header);
+  const binder = clause?.[1] === undefined ? null : exactClauseBinder(clause[1]);
   const guard = clause?.[2];
-  if (binder === undefined || guard === undefined || binder !== inputName) return null;
+  if (binder === null || guard === undefined || binder !== inputName) return null;
   if (!positiveBinaryConjunct(guard, binder)) return null;
   if (hasIdentifierBetween(source.identifiersByName.get(inputName) ?? [], arrow + 2, inputStart)) {
     return null;
   }
   return { guardLine: headerLine, mapLine: mapCall.line };
+}
+
+function exactClauseBinder(pattern: string): string | null {
+  const candidate = SIMPLE_BINDER_RE.test(pattern)
+    ? pattern
+    : OK_TUPLE_BINDER_RE.exec(pattern)?.[1];
+  return candidate === undefined || candidate === "_" ? null : candidate;
 }
 
 function callArgumentRange(

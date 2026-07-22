@@ -254,8 +254,11 @@ indexed `Enum.map/2` call. A separate inline role accepts the complete third
 (value) argument of literal `Map.put/3` with a literal atom key only when that
 call is the complete payload of a sole `{:ok, payload}` try body. The matching
 `try/rescue` must be directly inside one lexically matched `case`/`with` clause
-whose exact simple binder is positively and conjunctively guarded by
-`is_binary/1`; the binder cannot be read or rebound before the producer. Each
+whose binder pattern is either one exact local or one exact two-element
+`{:ok, local}` success tuple. That same local must be positively and
+conjunctively guarded by `is_binary/1`; it cannot be read or rebound before the
+producer. Wrong-status, extra-element, nested, wildcard, aliasing, pinned, and
+multiple-binder clause patterns remain opaque. Each
 role requires unique matching compiler events on the same carrier. The inline
 role additionally requires one producer in the try and unique guard and
 `Map.put/3` events. Immediate receivers; apply, capture, MFA, dynamic Map

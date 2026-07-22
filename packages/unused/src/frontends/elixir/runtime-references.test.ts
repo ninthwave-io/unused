@@ -524,6 +524,87 @@ describe("extractElixirRuntimeReferences", () => {
         expected: "exact",
       },
       {
+        name: "safe_ok_tuple",
+        clause: "{:ok, raw} when is_binary(raw)",
+        body: ["{:ok, Map.put(params, :kind, String.to_existing_atom(raw))}"],
+        expected: "exact",
+      },
+      {
+        name: "tuple_wrong_status",
+        clause: "{:error, params} when is_binary(params)",
+        body: ["{:ok, Map.put(value, :kind, String.to_existing_atom(params))}"],
+        expected: "opaque",
+      },
+      {
+        name: "tuple_extra_element",
+        clause: "{:ok, params, metadata} when is_binary(params)",
+        body: ["{:ok, Map.put(value, :kind, String.to_existing_atom(params))}"],
+        expected: "opaque",
+      },
+      {
+        name: "tuple_nested_binder",
+        clause: "{:ok, {:wrapped, params}} when is_binary(params)",
+        body: ["{:ok, Map.put(value, :kind, String.to_existing_atom(params))}"],
+        expected: "opaque",
+      },
+      {
+        name: "tuple_wildcard",
+        clause: "{:ok, _} when is_binary(params)",
+        body: ["{:ok, Map.put(value, :kind, String.to_existing_atom(params))}"],
+        expected: "opaque",
+      },
+      {
+        name: "tuple_alias_binder",
+        clause: "{:ok, alias_value = params} when is_binary(params)",
+        body: ["{:ok, Map.put(value, :kind, String.to_existing_atom(params))}"],
+        expected: "opaque",
+      },
+      {
+        name: "tuple_pinned_binder",
+        clause: "{:ok, ^params} when is_binary(params)",
+        body: ["{:ok, Map.put(value, :kind, String.to_existing_atom(params))}"],
+        expected: "opaque",
+      },
+      {
+        name: "tuple_multiple_binders",
+        clause: "{:ok, {left, params}} when is_binary(params)",
+        body: ["{:ok, Map.put(value, :kind, String.to_existing_atom(params))}"],
+        expected: "opaque",
+      },
+      {
+        name: "tuple_unguarded",
+        clause: "{:ok, params}",
+        body: ["{:ok, Map.put(value, :kind, String.to_existing_atom(params))}"],
+        expected: "opaque",
+      },
+      {
+        name: "tuple_mismatched_guard",
+        clause: "{:ok, raw} when is_binary(params)",
+        body: ["{:ok, Map.put(value, :kind, String.to_existing_atom(raw))}"],
+        expected: "opaque",
+      },
+      {
+        name: "tuple_duplicate_atom_event",
+        clause: "{:ok, raw} when is_binary(raw)",
+        body: ["{:ok, Map.put(params, :kind, String.to_existing_atom(raw))}"],
+        atomEventCopies: 2,
+        expected: "opaque",
+      },
+      {
+        name: "tuple_duplicate_guard_event",
+        clause: "{:ok, raw} when is_binary(raw)",
+        body: ["{:ok, Map.put(params, :kind, String.to_existing_atom(raw))}"],
+        guardEvents: 2,
+        expected: "opaque",
+      },
+      {
+        name: "tuple_duplicate_map_event",
+        clause: "{:ok, raw} when is_binary(raw)",
+        body: ["{:ok, Map.put(params, :kind, String.to_existing_atom(raw))}"],
+        mapEvents: 2,
+        expected: "opaque",
+      },
+      {
         name: "missing_guard_event",
         clause: "raw when is_binary(raw)",
         body: ["{:ok, Map.put(params, :kind, String.to_existing_atom(raw))}"],
@@ -733,6 +814,7 @@ describe("extractElixirRuntimeReferences", () => {
       readonly atomLines: readonly number[];
       readonly guardLine: number;
       readonly mapLine?: number;
+      readonly atomEventCopies: number;
       readonly guardEvents: number;
       readonly mapEvents: number;
       readonly expected: string;
@@ -765,6 +847,7 @@ describe("extractElixirRuntimeReferences", () => {
         atomLines,
         guardLine,
         ...(relativeMap < 0 ? {} : { mapLine: bodyStart + relativeMap }),
+        atomEventCopies: "atomEventCopies" in role ? role.atomEventCopies : 1,
         guardEvents:
           "guardEvents" in role ? role.guardEvents : role.clause.includes("is_binary") ? 1 : 0,
         mapEvents:
@@ -780,19 +863,21 @@ describe("extractElixirRuntimeReferences", () => {
     const events: TraceEvent[] = [];
     for (const role of metadata) {
       for (const atomLine of role.atomLines) {
-        events.push({
-          k: "event",
-          kind: "remote",
-          file,
-          line: atomLine,
-          from_mod: "NeutralInline.Roles",
-          from_fun: `${role.name}/2`,
-          to_mod: "String",
-          name: "to_existing_atom",
-          arity: 1,
-          dyn: true,
-          partition: "prod",
-        });
+        for (let copy = 0; copy < role.atomEventCopies; copy += 1) {
+          events.push({
+            k: "event",
+            kind: "remote",
+            file,
+            line: atomLine,
+            from_mod: "NeutralInline.Roles",
+            from_fun: `${role.name}/2`,
+            to_mod: "String",
+            name: "to_existing_atom",
+            arity: 1,
+            dyn: true,
+            partition: "prod",
+          });
+        }
       }
       for (let index = 0; index < role.guardEvents; index += 1) {
         events.push({
@@ -841,10 +926,12 @@ describe("extractElixirRuntimeReferences", () => {
         (dispatch) => ({ fromFun: dispatch.fromFun, kind: dispatch.kind }),
       );
       const expected = metadata.flatMap((role) =>
-        role.atomLines.map(() => ({
-          fromFun: `${role.name}/2`,
-          kind: role.expected,
-        })),
+        role.atomLines.flatMap(() =>
+          Array.from({ length: role.atomEventCopies }, () => ({
+            fromFun: `${role.name}/2`,
+            kind: role.expected,
+          })),
+        ),
       );
       expect(actual).toEqual(expected);
     } finally {
@@ -1210,7 +1297,7 @@ describe("extractElixirRuntimeReferences", () => {
         [
           `  def normalize_${index}(value_${index}, params) do\n`,
           `    case value_${index} do\n`,
-          `      raw_${index} when is_binary(raw_${index}) ->\n`,
+          `      {:ok, raw_${index}} when is_binary(raw_${index}) ->\n`,
           "        try do\n",
           `          {:ok, Map.put(params, :kind, String.to_existing_atom(raw_${index}))}\n`,
           "        rescue\n",

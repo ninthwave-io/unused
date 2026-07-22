@@ -326,6 +326,67 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
     ).toMatchObject({ supported: true });
   }, 60_000);
 
+  it("keeps exact Map.fetch success-tuple binders in rescued Map.put values as data", async () => {
+    const root = fixture("atom-fetch-map-put-safe");
+    const trace = runTracer(root);
+    expect(
+      trace.events.filter(
+        (event) =>
+          event.dyn &&
+          event.from_fun === "normalize_params/1" &&
+          event.to_mod === "String" &&
+          event.name === "to_existing_atom" &&
+          event.arity === 1,
+      ),
+    ).toHaveLength(1);
+    expect(
+      trace.functions.some(
+        (candidate) =>
+          candidate.mod === "NeutralFetchData.Normalizer" && candidate.name === "normalize_params",
+      ),
+    ).toBe(false);
+
+    const analysis = await analyzeElixirProjectWithGraph(root, { now: new Date(0) });
+    expect(
+      analysis.graph.hazards().filter((hazard) => hazard.hazardClass === "elixir-dynamic-dispatch"),
+    ).toEqual([]);
+    const alive = whyAlive({
+      graph: analysis.graph,
+      reachability: analysis.reachability,
+      claims: analysis.result.claims,
+      query: "NeutralFetchData.Normalizer.normalize/1",
+      hazardEvaluations: [analysis.hazardEvaluation],
+    });
+    expect(alive).toMatchObject({ outcome: "alive", entrypointKind: "production" });
+    if (alive.outcome !== "alive")
+      throw new Error("expected fetched request normalizer to be alive");
+    expect(
+      computeDeletionPlan({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        subject: alive.subject,
+        hazardEvaluations: [analysis.hazardEvaluation],
+      }),
+    ).toMatchObject({ supported: false });
+    const dead = whyAlive({
+      graph: analysis.graph,
+      reachability: analysis.reachability,
+      claims: analysis.result.claims,
+      query: "NeutralFetchData.Normalizer.genuinely_unused/0",
+      hazardEvaluations: [analysis.hazardEvaluation],
+    });
+    expect(dead).toMatchObject({ outcome: "dead", confidence: "high" });
+    if (dead.outcome !== "dead") throw new Error("expected unrelated dead fetched export");
+    expect(
+      computeDeletionPlan({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        subject: dead.subject,
+        hazardEvaluations: [analysis.hazardEvaluation],
+      }),
+    ).toMatchObject({ supported: true });
+  }, 60_000);
+
   it("keeps invocation-sink, tuple, intervening, and mixed atom flows opaque", async () => {
     const analysis = await analyzeElixirProjectWithGraph(fixture("atom-dynamic-receiver"), {
       now: new Date(0),
@@ -373,6 +434,7 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
     "atom-map-key-safe",
     "atom-assigned-data-safe",
     "atom-inline-map-put-safe",
+    "atom-fetch-map-put-safe",
     "atom-dynamic-receiver",
   ])(
     "preserves Elixir claims after mixed-plugin composition: %s",
