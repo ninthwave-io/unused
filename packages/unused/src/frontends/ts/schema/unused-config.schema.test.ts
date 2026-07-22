@@ -74,6 +74,53 @@ describe("unused-config.schema.json", () => {
     expect(validate({ entry: [""] })).toBe(false);
   });
 
+  it("validates strict repository and workspace exact symbol roots", () => {
+    const validate = compileSchema();
+    expect(
+      validate({
+        entrySymbols: [{ language: "ts", file: "src/api.ts", name: "run", reason: "public API" }],
+        workspaces: {
+          backend: {
+            entrySymbols: [
+              {
+                language: "ex",
+                file: "lib/worker.ex",
+                name: "Neutral.Worker.perform/1",
+                reason: "runtime callback",
+              },
+            ],
+          },
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects malformed, non-canonical, and extensibly unsupported symbol roots", () => {
+    const validate = compileSchema();
+    expect(validate({ entrySymbols: [{ language: "ts", file: "src/api.ts", name: "run" }] })).toBe(
+      false,
+    );
+    expect(
+      validate({
+        entrySymbols: [{ language: "go", file: "src/api.ts", name: "run", reason: "public API" }],
+      }),
+    ).toBe(false);
+    for (const file of ["/src/api.ts", "src\\api.ts", "src/../api.ts", "src/*.ts"] as const) {
+      expect(
+        validate({
+          entrySymbols: [{ language: "ts", file, name: "run", reason: "public API" }],
+        }),
+      ).toBe(false);
+    }
+    expect(
+      validate({
+        entrySymbols: [
+          { language: "ts", file: "src/api.ts", name: "run", reason: "public API", extra: true },
+        ],
+      }),
+    ).toBe(false);
+  });
+
   it("rejects an unknown workspace-override field", () => {
     const validate = compileSchema();
     expect(validate({ workspaces: { "packages/api": { bogus: [] } } })).toBe(false);

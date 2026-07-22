@@ -7,6 +7,7 @@ import {
   applyConfigSuppressions,
   ConfigError,
   collectConfigEntrypoints,
+  computeConfigHash,
   EMPTY_CONFIG,
   filterFilesByConfig,
   findConfigFile,
@@ -137,7 +138,12 @@ describe("validateConfig", () => {
     ]);
     expect(config.ignoreDependencies).toEqual(["@types/node"]);
     expect(config.workspaces).toEqual({
-      "packages/api": { entry: ["src/server.ts"], project: [], suppressions: [] },
+      "packages/api": {
+        entry: ["src/server.ts"],
+        entrySymbols: [],
+        project: [],
+        suppressions: [],
+      },
     });
     expect(config.gate).toEqual({ threshold: "medium" });
     expect(config.presets).toBeUndefined();
@@ -166,6 +172,109 @@ describe("validateConfig", () => {
   it("rejects an entry array element that is not a non-empty string", () => {
     expect(() => validateConfig({ entry: [""] }, "c.jsonc")).toThrow(/entry\[0\]/);
     expect(() => validateConfig({ entry: [42] }, "c.jsonc")).toThrow(/entry\[0\]/);
+  });
+
+  it("accepts strict exact symbol roots at repository and workspace scope", () => {
+    const config = validateConfig(
+      {
+        entrySymbols: [
+          { language: "ts", file: "src/api.ts", name: "run", reason: "public operation" },
+        ],
+        workspaces: {
+          "services/backend": {
+            entrySymbols: [
+              {
+                language: "ex",
+                file: "lib/worker.ex",
+                name: "Neutral.Worker.perform/1",
+                reason: "runtime callback",
+              },
+            ],
+          },
+        },
+      },
+      "c.jsonc",
+    );
+    expect(config.entrySymbols).toEqual([
+      { language: "ts", file: "src/api.ts", name: "run", reason: "public operation" },
+    ]);
+    expect(config.workspaces["services/backend"]?.entrySymbols).toEqual([
+      {
+        language: "ex",
+        file: "lib/worker.ex",
+        name: "Neutral.Worker.perform/1",
+        reason: "runtime callback",
+      },
+    ]);
+  });
+
+  it.each([
+    [{ entrySymbols: {} }, /entrySymbols.*must be an array/],
+    [{ entrySymbols: ["src/api.ts"] }, /entrySymbols\[0\].*must be an object/],
+    [
+      { entrySymbols: [{ language: "ts", file: "src/api.ts", name: "run" }] },
+      /entrySymbols\[0\]\.reason.*required/,
+    ],
+    [
+      {
+        entrySymbols: [{ language: "go", file: "src/api.ts", name: "run", reason: "public" }],
+      },
+      /entrySymbols\[0\]\.language/,
+    ],
+    [
+      {
+        entrySymbols: [{ language: "ts", file: "src/*.ts", name: "run", reason: "public" }],
+      },
+      /entrySymbols\[0\]\.file/,
+    ],
+    [
+      {
+        entrySymbols: [{ language: "ts", file: "../src/api.ts", name: "run", reason: "public" }],
+      },
+      /entrySymbols\[0\]\.file/,
+    ],
+    [
+      {
+        entrySymbols: [{ language: "ts", file: "src\\api.ts", name: "run", reason: "public" }],
+      },
+      /entrySymbols\[0\]\.file/,
+    ],
+    [
+      {
+        entrySymbols: [{ language: "ts", file: "src/api.ts", name: " ", reason: "public" }],
+      },
+      /entrySymbols\[0\]\.name/,
+    ],
+    [
+      {
+        entrySymbols: [{ language: "ts", file: "src/api.ts", name: "run", reason: " " }],
+      },
+      /entrySymbols\[0\]\.reason/,
+    ],
+    [
+      {
+        entrySymbols: [
+          { language: "ts", file: "src/api.ts", name: "run", reason: "public", extra: true },
+        ],
+      },
+      /entrySymbols\[0\]\.extra/,
+    ],
+  ])("rejects malformed exact symbol roots", (input, pattern) => {
+    expect(() => validateConfig(input, "c.jsonc")).toThrow(pattern);
+  });
+
+  it("rejects duplicate exact selectors even when their reasons differ", () => {
+    expect(() =>
+      validateConfig(
+        {
+          entrySymbols: [
+            { language: "ts", file: "src/api.ts", name: "run", reason: "one" },
+            { language: "ts", file: "src/api.ts", name: "run", reason: "two" },
+          ],
+        },
+        "c.jsonc",
+      ),
+    ).toThrow(/duplicates an earlier entrySymbols selector/);
   });
 
   it("rejects workspaces that is not an object", () => {
@@ -275,6 +384,26 @@ describe("validateConfig", () => {
     expect(() =>
       validateConfig({ ciSecondsPerTestFile: Number.POSITIVE_INFINITY }, "c.jsonc"),
     ).toThrow(/ciSecondsPerTestFile/);
+  });
+});
+
+describe("computeConfigHash", () => {
+  it("preserves the historical empty-config hash when entrySymbols is empty", () => {
+    expect(computeConfigHash(EMPTY_CONFIG)).toBe("291ed68f9f14");
+  });
+
+  it("includes ordered full entrySymbols rules, including rationale", () => {
+    const base = {
+      ...EMPTY_CONFIG,
+      entrySymbols: [{ language: "ts", file: "src/api.ts", name: "run", reason: "public API" }],
+    } as const;
+    expect(computeConfigHash(base)).not.toBe(computeConfigHash(EMPTY_CONFIG));
+    expect(computeConfigHash(base)).not.toBe(
+      computeConfigHash({
+        ...base,
+        entrySymbols: [{ ...base.entrySymbols[0], reason: "runtime hook" }],
+      }),
+    );
   });
 });
 

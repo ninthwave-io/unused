@@ -74,8 +74,20 @@ export type GateThreshold = "high" | "medium" | "low";
  */
 export type PresetName = "vite" | "next" | "storybook" | "cdk";
 
+/** Language ids accepted by exact configured symbol entrypoints. */
+export type EntrySymbolLanguage = "ts" | "ex" | "rs";
+
+/** An exact, auditable public operation rooted by configuration. */
+export interface EntrySymbolRule {
+  readonly language: EntrySymbolLanguage;
+  readonly file: string;
+  readonly name: string;
+  readonly reason: string;
+}
+
 export interface WorkspaceConfigOverride {
   readonly entry: readonly string[];
+  readonly entrySymbols?: readonly EntrySymbolRule[];
   readonly project: readonly string[];
   readonly suppressions: readonly SuppressionRule[];
 }
@@ -95,6 +107,7 @@ export interface GateConfig {
 
 export interface UnusedConfig {
   readonly entry: readonly string[];
+  readonly entrySymbols: readonly EntrySymbolRule[];
   readonly project: readonly string[];
   readonly suppressions: readonly SuppressionRule[];
   readonly ignoreDependencies: readonly string[];
@@ -114,6 +127,7 @@ export interface UnusedConfig {
 /** The zero-config default — every function in this module is a no-op against it (T4.3 regression contract). */
 export const EMPTY_CONFIG: UnusedConfig = {
   entry: [],
+  entrySymbols: [],
   project: [],
   suppressions: [],
   ignoreDependencies: [],
@@ -158,6 +172,9 @@ function canonicalConfigForHash(config: UnusedConfig): unknown {
   const workspaceKeys = Object.keys(config.workspaces).sort();
   return {
     entry: [...config.entry],
+    ...(config.entrySymbols.length === 0
+      ? {}
+      : { entrySymbols: config.entrySymbols.map(canonicalEntrySymbol) }),
     project: [...config.project],
     suppressions: config.suppressions.map(canonicalSuppression),
     ignoreDependencies: [...config.ignoreDependencies],
@@ -166,6 +183,9 @@ function canonicalConfigForHash(config: UnusedConfig): unknown {
       return {
         key,
         entry: [...override.entry],
+        ...((override.entrySymbols?.length ?? 0) === 0
+          ? {}
+          : { entrySymbols: override.entrySymbols?.map(canonicalEntrySymbol) }),
         project: [...override.project],
         suppressions: override.suppressions.map(canonicalSuppression),
       };
@@ -174,6 +194,10 @@ function canonicalConfigForHash(config: UnusedConfig): unknown {
     presets: config.presets === undefined ? null : [...config.presets],
     ciSecondsPerTestFile: config.ciSecondsPerTestFile ?? null,
   };
+}
+
+function canonicalEntrySymbol(rule: EntrySymbolRule): unknown {
+  return { language: rule.language, file: rule.file, name: rule.name, reason: rule.reason };
 }
 
 function canonicalSuppression(rule: SuppressionRule): unknown {
@@ -263,6 +287,7 @@ export async function loadConfig(root: string, explicitPath?: string): Promise<U
 
 const ALLOWED_TOP_LEVEL = new Set([
   "entry",
+  "entrySymbols",
   "project",
   "suppressions",
   "ignoreDependencies",
@@ -271,7 +296,14 @@ const ALLOWED_TOP_LEVEL = new Set([
   "presets",
   "ciSecondsPerTestFile",
 ]);
-const ALLOWED_WORKSPACE_OVERRIDE_KEYS = new Set(["entry", "project", "suppressions"]);
+const ALLOWED_WORKSPACE_OVERRIDE_KEYS = new Set([
+  "entry",
+  "entrySymbols",
+  "project",
+  "suppressions",
+]);
+const ALLOWED_ENTRY_SYMBOL_KEYS = new Set(["language", "file", "name", "reason"]);
+const ENTRY_SYMBOL_LANGUAGES: readonly EntrySymbolLanguage[] = ["ts", "ex", "rs"];
 const ALLOWED_GATE_KEYS = new Set(["threshold"]);
 const GATE_THRESHOLDS: readonly GateThreshold[] = ["high", "medium", "low"];
 const PRESET_NAMES: readonly PresetName[] = ["vite", "next", "storybook", "cdk"];
@@ -302,6 +334,7 @@ export function validateConfig(parsed: unknown, displayPath: string): UnusedConf
   }
 
   const entry = readGlobArray(obj, "entry", fail);
+  const entrySymbols = readEntrySymbols(obj, "entrySymbols", fail);
   const project = readGlobArray(obj, "project", fail);
   const suppressions = readSuppressions(obj, "suppressions", fail);
   const ignoreDependencies = readGlobArray(obj, "ignoreDependencies", fail);
@@ -312,6 +345,7 @@ export function validateConfig(parsed: unknown, displayPath: string): UnusedConf
 
   return {
     entry,
+    entrySymbols,
     project,
     suppressions,
     ignoreDependencies,
@@ -372,6 +406,9 @@ function readWorkspaces(
     }
     out[pkgKey] = {
       entry: readGlobArray(pkgObj, "entry", (f, p, x) => fail(`workspaces.${pkgKey}.${f}`, p, x)),
+      entrySymbols: readEntrySymbols(pkgObj, "entrySymbols", (f, p, x) =>
+        fail(`workspaces.${pkgKey}.${f}`, p, x),
+      ),
       project: readGlobArray(pkgObj, "project", (f, p, x) =>
         fail(`workspaces.${pkgKey}.${f}`, p, x),
       ),
@@ -381,6 +418,96 @@ function readWorkspaces(
     };
   }
   return out;
+}
+
+function readEntrySymbols(
+  obj: Record<string, unknown>,
+  key: string,
+  fail: Fail,
+): readonly EntrySymbolRule[] {
+  const value = obj[key];
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    return fail(
+      key,
+      "must be an array of exact symbol entrypoints",
+      `use e.g. "${key}": [{ "language": "ts", "file": "src/api.ts", "name": "run", "reason": "public API" }]`,
+    );
+  }
+
+  const seen = new Set<string>();
+  return value.map((item, index) => {
+    const field = `${key}[${index}]`;
+    if (item === null || typeof item !== "object" || Array.isArray(item)) {
+      return fail(field, "must be an object", "provide language, file, name, and reason fields");
+    }
+    const rule = item as Record<string, unknown>;
+    for (const nestedKey of Object.keys(rule)) {
+      if (!ALLOWED_ENTRY_SYMBOL_KEYS.has(nestedKey)) {
+        fail(
+          `${field}.${nestedKey}`,
+          "is not recognised",
+          "valid fields are language, file, name, reason",
+        );
+      }
+    }
+    for (const required of ALLOWED_ENTRY_SYMBOL_KEYS) {
+      if (!(required in rule)) {
+        fail(`${field}.${required}`, "is required", `add the ${required} field`);
+      }
+    }
+    const language = rule["language"];
+    if (
+      typeof language !== "string" ||
+      !ENTRY_SYMBOL_LANGUAGES.includes(language as EntrySymbolLanguage)
+    ) {
+      fail(
+        `${field}.language`,
+        `must be one of ${ENTRY_SYMBOL_LANGUAGES.join(", ")}`,
+        'use "ts", "ex", or "rs"',
+      );
+    }
+    const file = rule["file"];
+    if (typeof file !== "string" || !isCanonicalRelativeFile(file)) {
+      fail(
+        `${field}.file`,
+        "must be an exact canonical POSIX relative file path without globs",
+        'use e.g. "src/api.ts" (no leading slash, backslashes, . or .. segments, or glob syntax)',
+      );
+    }
+    const name = rule["name"];
+    if (typeof name !== "string" || name.trim() === "") {
+      fail(`${field}.name`, "must be a non-blank exact exported symbol name", 'use e.g. "run"');
+    }
+    const reason = rule["reason"];
+    if (typeof reason !== "string" || reason.trim() === "") {
+      fail(`${field}.reason`, "must be a non-blank explanation", "say why this symbol is public");
+    }
+    const selector = `${language}\0${file}\0${name}`;
+    if (seen.has(selector)) {
+      fail(
+        field,
+        "duplicates an earlier entrySymbols selector",
+        "keep exactly one rule for each language, file, and name",
+      );
+    }
+    seen.add(selector);
+    return {
+      language: language as EntrySymbolLanguage,
+      file: file as string,
+      name: name as string,
+      reason: reason as string,
+    };
+  });
+}
+
+function isCanonicalRelativeFile(file: string): boolean {
+  if (file === "" || file.trim() === "" || file.includes("\\") || file.includes("\0")) {
+    return false;
+  }
+  if (file.startsWith("/") || /^[A-Za-z]:/.test(file) || /[*?{}[\]]/.test(file)) return false;
+  const segments = file.split("/");
+  return !segments.some((segment) => segment === "" || segment === "." || segment === "..");
 }
 
 function readSuppressions(

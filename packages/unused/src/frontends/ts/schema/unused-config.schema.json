@@ -10,6 +10,11 @@
       "$ref": "#/$defs/globArray",
       "description": "Glob patterns seeding ADDITIONAL production entrypoints, on top of zero-config auto-detection."
     },
+    "entrySymbols": {
+      "type": "array",
+      "description": "Exact language-aware exported symbols seeded as production entrypoints without making sibling exports live.",
+      "items": { "$ref": "#/$defs/entrySymbolRule" }
+    },
     "project": {
       "$ref": "#/$defs/globArray",
       "description": "Ordered glob patterns narrowing claimability while preserving graph visibility. A leading ! excludes a prior match; a later positive can re-include it. Absent = every discovered file is claimable."
@@ -50,11 +55,30 @@
       "additionalProperties": false,
       "properties": {
         "entry": { "$ref": "#/$defs/globArray" },
+        "entrySymbols": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/entrySymbolRule" }
+        },
         "project": { "$ref": "#/$defs/globArray" },
         "suppressions": {
           "type": "array",
           "items": { "$ref": "#/$defs/suppressionRule" }
         }
+      }
+    },
+    "entrySymbolRule": {
+      "type": "object",
+      "required": ["language", "file", "name", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "language": { "type": "string", "enum": ["ts", "ex", "rs"] },
+        "file": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[*?{}\\[\\]])[^/]+(?:/[^/]+)*$"
+        },
+        "name": { "type": "string", "minLength": 1, "pattern": "\\S" },
+        "reason": { "type": "string", "minLength": 1, "pattern": "\\S" }
       }
     },
     "suppressionRule": {
