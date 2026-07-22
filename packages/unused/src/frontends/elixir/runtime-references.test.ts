@@ -917,6 +917,483 @@ describe("extractElixirRuntimeReferences", () => {
     }
   });
 
+  it("summarizes exact same-module public parameters without summarizing public results", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-public-atom-flow-"));
+    const file = "public_atom_flow.ex";
+    const moduleName = "NeutralPublic.Flow";
+    const lines = [
+      `defmodule ${moduleName} do`,
+      "  def safe(map, raw), do: consume(map, String.to_atom(raw))",
+      "  def pass(map, raw), do: Map.has_key?(map, identity(String.to_atom(raw)))",
+      "  def invoke(raw), do: dispatch(String.to_atom(raw))",
+      "  def escaped(raw), do: identity(String.to_atom(raw))",
+      "  def produced(raw), do: make(raw)",
+      "  def consume(map, key), do: Map.has_key?(map, key)",
+      "  def identity(value), do: value",
+      "  def dispatch(key), do: apply(NeutralPublic.Target, key, [])",
+      "  def make(raw), do: String.to_atom(raw)",
+      "end",
+      "",
+    ];
+    const event = (
+      line: number,
+      fromFun: string,
+      toMod: string,
+      name: string,
+      arity: number,
+      options: { readonly dyn?: boolean; readonly kind?: "local" | "remote" } = {},
+    ): TraceEvent => ({
+      k: "event",
+      kind: options.kind ?? "remote",
+      file,
+      line,
+      from_mod: moduleName,
+      from_fun: fromFun,
+      to_mod: toMod,
+      name,
+      arity,
+      dyn: options.dyn ?? false,
+      partition: "prod",
+    });
+    const local = (line: number, fromFun: string, name: string, arity: number): TraceEvent =>
+      event(line, fromFun, moduleName, name, arity, { kind: "local" });
+    const atom = (line: number, fromFun: string): TraceEvent =>
+      event(line, fromFun, "String", "to_atom", 1, { dyn: true });
+    const functions = lines.flatMap((line, index) => {
+      const match = /^\s*def\s+([a-z_][A-Za-z0-9_]*[!?]?)\(([^)]*)\)/u.exec(line);
+      if (match?.[1] === undefined || match[2] === undefined) return [];
+      const arity = match[2].trim() === "" ? 0 : match[2].split(",").length;
+      return [
+        {
+          k: "function" as const,
+          mod: moduleName,
+          name: match[1],
+          arity,
+          file,
+          line: index + 1,
+          partition: "prod" as const,
+        },
+      ];
+    });
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod(moduleName, file)],
+      functions,
+      events: [
+        atom(2, "safe/2"),
+        local(2, "safe/2", "consume", 2),
+        atom(3, "pass/2"),
+        event(3, "pass/2", "Map", "has_key?", 2),
+        local(3, "pass/2", "identity", 1),
+        atom(4, "invoke/1"),
+        local(4, "invoke/1", "dispatch", 1),
+        atom(5, "escaped/1"),
+        local(5, "escaped/1", "identity", 1),
+        local(6, "produced/1", "make", 1),
+        event(7, "consume/2", "Map", "has_key?", 2),
+        event(9, "dispatch/1", "Kernel", "apply", 3, { dyn: true }),
+        atom(10, "make/1"),
+      ],
+    };
+
+    try {
+      writeFileSync(join(root, file), lines.join("\n"));
+      const extraction = extractElixirRuntimeConventions(
+        root,
+        withExactPrivateModuleScaffolding(root, trace),
+      );
+      expect(
+        extraction.dynamicDispatches
+          .filter((fact) => fact.factKind === "computed-atom")
+          .map((fact) => ({ fromFun: fact.fromFun, flow: fact.flow })),
+      ).toEqual([
+        { fromFun: "safe/2", flow: "data" },
+        { fromFun: "pass/2", flow: "data" },
+        { fromFun: "invoke/1", flow: "delegated-invocation" },
+        { fromFun: "escaped/1", flow: "escape" },
+        { fromFun: "make/1", flow: "escape" },
+      ]);
+      expect(extraction.atomFlowStats).toMatchObject({
+        privateFunctions: 0,
+        privateSummaries: 0,
+        privateCallEdges: 0,
+        publicSummaryFunctions: 9,
+        publicSummaries: 12,
+        publicCallEdges: 5,
+        publicSummaryMatches: 4,
+        publicOpaqueFunctions: 0,
+        joinedProducerOutcomes: 5,
+        dataSinks: 2,
+        invocationSinks: 1,
+        escapes: 2,
+      });
+      expect(extraction.atomFlowStats.publicSccIterations).toBeGreaterThan(0);
+      expect(extraction.atomFlowStats.publicSummaryUpdates).toBeGreaterThan(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["guard", "def helper(value) when is_atom(value), do: Atom.to_string(value)"],
+    ["default", "def helper(value \\\\ :fallback), do: Atom.to_string(value)"],
+    ["pattern", "def helper({:ok, value}), do: Atom.to_string(value)"],
+    [
+      "multiple-clause",
+      "def helper(value), do: Atom.to_string(value)\n  def helper(value), do: value.run()",
+    ],
+  ])("keeps a public %s definition outside parameter summaries", (_label, definition) => {
+    const root = mkdtempSync(join(tmpdir(), "unused-public-atom-unsupported-"));
+    const file = "public_atom_unsupported.ex";
+    const moduleName = "NeutralPublic.Unsupported";
+    const lines = [
+      `defmodule ${moduleName} do`,
+      "  def run(raw), do: helper(String.to_atom(raw))",
+      `  ${definition}`,
+      "end",
+      "",
+    ];
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod(moduleName, file)],
+      functions: [
+        { ...fn(moduleName, "run", 1, file), line: 2 },
+        { ...fn(moduleName, "helper", 1, file), line: 3 },
+      ],
+      events: [
+        {
+          k: "event",
+          kind: "remote",
+          file,
+          line: 2,
+          from_mod: moduleName,
+          from_fun: "run/1",
+          to_mod: "String",
+          name: "to_atom",
+          arity: 1,
+          dyn: true,
+          partition: "prod",
+        },
+        {
+          k: "event",
+          kind: "local",
+          file,
+          line: 2,
+          from_mod: moduleName,
+          from_fun: "run/1",
+          to_mod: moduleName,
+          name: "helper",
+          arity: 1,
+          dyn: false,
+          partition: "prod",
+        },
+        {
+          k: "event",
+          kind: "remote",
+          file,
+          line: 3,
+          from_mod: moduleName,
+          from_fun: "helper/1",
+          to_mod: "Atom",
+          name: "to_string",
+          arity: 1,
+          dyn: false,
+          partition: "prod",
+        },
+      ],
+    };
+    try {
+      writeFileSync(join(root, file), lines.join("\n"));
+      const extraction = extractElixirRuntimeConventions(
+        root,
+        withExactPrivateModuleScaffolding(root, trace),
+      );
+      expect(
+        extraction.dynamicDispatches.find((fact) => fact.factKind === "computed-atom"),
+      ).toMatchObject({ fromFun: "run/1", flow: "escape" });
+      expect(extraction.atomFlowStats).toMatchObject({
+        publicSummaryFunctions: 1,
+        publicCallEdges: 0,
+        publicSummaryMatches: 0,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("requires one exact reflected public definition at the source line", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-public-atom-reflection-"));
+    const file = "public_atom_reflection.ex";
+    const moduleName = "NeutralPublic.Reflection";
+    const lines = [
+      `defmodule ${moduleName} do`,
+      "  def run(raw), do: helper(String.to_atom(raw))",
+      "  def helper(value), do: Atom.to_string(value)",
+      "end",
+      "",
+    ];
+    const runFunction = { ...fn(moduleName, "run", 1, file), line: 2 };
+    const helperFunction = { ...fn(moduleName, "helper", 1, file), line: 3 };
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod(moduleName, file)],
+      functions: [runFunction, helperFunction],
+      events: [
+        {
+          k: "event",
+          kind: "remote",
+          file,
+          line: 2,
+          from_mod: moduleName,
+          from_fun: "run/1",
+          to_mod: "String",
+          name: "to_atom",
+          arity: 1,
+          dyn: true,
+          partition: "prod",
+        },
+        {
+          k: "event",
+          kind: "local",
+          file,
+          line: 2,
+          from_mod: moduleName,
+          from_fun: "run/1",
+          to_mod: moduleName,
+          name: "helper",
+          arity: 1,
+          dyn: false,
+          partition: "prod",
+        },
+        {
+          k: "event",
+          kind: "remote",
+          file,
+          line: 3,
+          from_mod: moduleName,
+          from_fun: "helper/1",
+          to_mod: "Atom",
+          name: "to_string",
+          arity: 1,
+          dyn: false,
+          partition: "prod",
+        },
+      ],
+    };
+    try {
+      writeFileSync(join(root, file), lines.join("\n"));
+      const exact = extractElixirRuntimeConventions(
+        root,
+        withExactPrivateModuleScaffolding(root, trace),
+      );
+      expect(
+        exact.dynamicDispatches.find((fact) => fact.factKind === "computed-atom"),
+      ).toMatchObject({ flow: "data" });
+      expect(exact.atomFlowStats.publicSummaryFunctions).toBe(2);
+
+      for (const functions of [
+        [runFunction],
+        [runFunction, { ...helperFunction, line: 4 }],
+        [runFunction, helperFunction, { ...helperFunction }],
+      ]) {
+        const rejected = extractElixirRuntimeConventions(
+          root,
+          withExactPrivateModuleScaffolding(root, { ...trace, functions }),
+        );
+        expect(
+          rejected.dynamicDispatches.find((fact) => fact.factKind === "computed-atom"),
+        ).toMatchObject({ flow: "escape" });
+        expect(rejected.atomFlowStats).toMatchObject({
+          publicSummaryFunctions: 1,
+          publicCallEdges: 0,
+          publicSummaryMatches: 0,
+        });
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an otherwise exact public summary target across modules", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-public-atom-cross-module-"));
+    const callerFile = "public_atom_cross_module.ex";
+    const targetFile = "public_atom_cross_target.ex";
+    const callerModule = "NeutralPublic.CrossModule";
+    const targetModule = "NeutralPublic.CrossTarget";
+    const callerLines = [
+      `defmodule ${callerModule} do`,
+      `  def run(raw), do: ${targetModule}.helper(String.to_atom(raw))`,
+      "end",
+      "",
+    ];
+    const targetLines = [
+      `defmodule ${targetModule} do`,
+      "  def helper(value), do: Atom.to_string(value)",
+      "end",
+      "",
+    ];
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod(callerModule, callerFile), mod(targetModule, targetFile)],
+      functions: [
+        { ...fn(callerModule, "run", 1, callerFile), line: 2 },
+        { ...fn(targetModule, "helper", 1, targetFile), line: 2 },
+      ],
+      events: [
+        {
+          k: "event",
+          kind: "remote",
+          file: callerFile,
+          line: 2,
+          from_mod: callerModule,
+          from_fun: "run/1",
+          to_mod: "String",
+          name: "to_atom",
+          arity: 1,
+          dyn: true,
+          partition: "prod",
+        },
+        {
+          k: "event",
+          kind: "remote",
+          file: callerFile,
+          line: 2,
+          from_mod: callerModule,
+          from_fun: "run/1",
+          to_mod: targetModule,
+          name: "helper",
+          arity: 1,
+          dyn: false,
+          partition: "prod",
+        },
+        {
+          k: "event",
+          kind: "remote",
+          file: targetFile,
+          line: 2,
+          from_mod: targetModule,
+          from_fun: "helper/1",
+          to_mod: "Atom",
+          name: "to_string",
+          arity: 1,
+          dyn: false,
+          partition: "prod",
+        },
+      ],
+    };
+    try {
+      writeFileSync(join(root, callerFile), callerLines.join("\n"));
+      writeFileSync(join(root, targetFile), targetLines.join("\n"));
+      const extraction = extractElixirRuntimeConventions(
+        root,
+        withExactPrivateModuleScaffolding(root, trace),
+      );
+      expect(
+        extraction.dynamicDispatches.find((fact) => fact.factKind === "computed-atom"),
+      ).toMatchObject({ fromFun: "run/1", flow: "escape" });
+      expect(extraction.atomFlowStats).toMatchObject({
+        publicSummaryFunctions: 2,
+        publicCallEdges: 0,
+        publicSummaryMatches: 0,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a same-module public summary call across partitions", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-public-atom-call-world-"));
+    const file = "public_atom_call_world.ex";
+    const moduleName = "NeutralPublic.CallWorld";
+    const lines = [
+      `defmodule ${moduleName} do`,
+      "  def run(raw), do: helper(String.to_atom(raw))",
+      "  def helper(value), do: Atom.to_string(value)",
+      "end",
+      "",
+    ];
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod(moduleName, file)],
+      functions: [
+        { ...fn(moduleName, "run", 1, file), line: 2 },
+        { ...fn(moduleName, "helper", 1, file), line: 3 },
+      ],
+      events: [
+        {
+          k: "event",
+          kind: "remote",
+          file,
+          line: 2,
+          from_mod: moduleName,
+          from_fun: "run/1",
+          to_mod: "String",
+          name: "to_atom",
+          arity: 1,
+          dyn: true,
+          partition: "prod",
+        },
+        {
+          k: "event",
+          kind: "local",
+          file,
+          line: 2,
+          from_mod: moduleName,
+          from_fun: "run/1",
+          to_mod: moduleName,
+          name: "helper",
+          arity: 1,
+          dyn: false,
+          partition: "test",
+        },
+        {
+          k: "event",
+          kind: "remote",
+          file,
+          line: 3,
+          from_mod: moduleName,
+          from_fun: "helper/1",
+          to_mod: "Atom",
+          name: "to_string",
+          arity: 1,
+          dyn: false,
+          partition: "prod",
+        },
+      ],
+    };
+    try {
+      writeFileSync(join(root, file), lines.join("\n"));
+      const extraction = extractElixirRuntimeConventions(
+        root,
+        withExactPrivateModuleScaffolding(root, trace),
+      );
+      expect(
+        extraction.dynamicDispatches.find((fact) => fact.factKind === "computed-atom"),
+      ).toMatchObject({ fromFun: "run/1", flow: "escape" });
+      expect(extraction.atomFlowStats).toMatchObject({
+        publicCallEdges: 0,
+        publicSummaryMatches: 0,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps private summaries argument-sensitive and fails closed at unsafe boundaries", () => {
     const root = mkdtempSync(join(tmpdir(), "unused-private-atom-boundaries-"));
     const file = "private_atom_boundaries.ex";
@@ -1794,6 +2271,240 @@ describe("extractElixirRuntimeReferences", () => {
     }
   });
 
+  it("keeps same-module public summary work linear from 250 through 1,000 functions", () => {
+    const run = (count: number) => {
+      const root = mkdtempSync(join(tmpdir(), `unused-public-atom-scale-${count}-`));
+      const file = "public_atom_scale.ex";
+      const moduleName = "NeutralPublic.Scale";
+      const lines = [
+        `defmodule ${moduleName} do`,
+        "  def safe(map, raw), do: Map.has_key?(map, step_0(String.to_atom(raw)))",
+      ];
+      const functions: FunctionRecord[] = [{ ...fn(moduleName, "safe", 2, file), line: 2 }];
+      const events: TraceEvent[] = [
+        {
+          k: "event",
+          kind: "remote",
+          file,
+          line: 2,
+          from_mod: moduleName,
+          from_fun: "safe/2",
+          to_mod: "String",
+          name: "to_atom",
+          arity: 1,
+          dyn: true,
+          partition: "prod",
+        },
+        {
+          k: "event",
+          kind: "local",
+          file,
+          line: 2,
+          from_mod: moduleName,
+          from_fun: "safe/2",
+          to_mod: moduleName,
+          name: "step_0",
+          arity: 1,
+          dyn: false,
+          partition: "prod",
+        },
+        {
+          k: "event",
+          kind: "remote",
+          file,
+          line: 2,
+          from_mod: moduleName,
+          from_fun: "safe/2",
+          to_mod: "Map",
+          name: "has_key?",
+          arity: 2,
+          dyn: false,
+          partition: "prod",
+        },
+      ];
+      for (let index = 0; index < count; index += 1) {
+        const line = index + 3;
+        const name = `step_${index}`;
+        functions.push({ ...fn(moduleName, name, 1, file), line });
+        if (index + 1 === count) {
+          lines.push(`  def ${name}(value), do: value`);
+          continue;
+        }
+        const target = `step_${index + 1}`;
+        lines.push(`  def ${name}(value), do: ${target}(value)`);
+        events.push({
+          k: "event",
+          kind: "local",
+          file,
+          line,
+          from_mod: moduleName,
+          from_fun: `${name}/1`,
+          to_mod: moduleName,
+          name: target,
+          arity: 1,
+          dyn: false,
+          partition: "prod",
+        });
+      }
+      lines.push("end", "");
+      const trace: TraceResult = {
+        appMod: null,
+        deps: [],
+        compileOk: true,
+        testPartition: "complete",
+        modules: [mod(moduleName, file)],
+        functions,
+        events,
+      };
+      try {
+        writeFileSync(join(root, file), lines.join("\n"));
+        return extractElixirRuntimeConventions(
+          root,
+          withExactPrivateModuleScaffolding(root, trace),
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    };
+
+    for (const count of [250, 500, 1_000]) {
+      const extraction = run(count);
+      expect(
+        extraction.dynamicDispatches.find((fact) => fact.factKind === "computed-atom"),
+      ).toMatchObject({ fromFun: "safe/2", flow: "data" });
+      expect(extraction.atomFlowStats).toMatchObject({
+        privateFunctions: 0,
+        privateSummaries: 0,
+        privateCallEdges: 0,
+        publicSummaryFunctions: count + 1,
+        publicSummaries: count + 2,
+        publicCallEdges: count,
+        publicSummaryMatches: 1,
+        publicOpaqueFunctions: 0,
+        joinedProducerOutcomes: 1,
+        dataSinks: 1,
+        escapes: 0,
+      });
+      expect(extraction.atomFlowStats.publicSccIterations).toBeLessThanOrEqual((count + 1) * 4);
+      expect(extraction.atomFlowStats.publicSummaryUpdates).toBeLessThanOrEqual((count + 2) * 3);
+      expect(extraction.atomFlowStats.roleEdges).toBeLessThanOrEqual(count * 7 + 20);
+      expect(extraction.atomFlowStats.queueVisits).toBeLessThanOrEqual(count * 18 + 30);
+    }
+  });
+
+  it("fails closed when a public summary exceeds the 64-callee bound", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-public-atom-bound-"));
+    const file = "public_atom_bound.ex";
+    const moduleName = "NeutralPublic.Bound";
+    const leafCount = 65;
+    const leafCalls = Array.from({ length: leafCount }, (_, index) => `leaf_${index}(value)`);
+    const lines = [
+      `defmodule ${moduleName} do`,
+      "  def run(raw), do: hub(String.to_atom(raw))",
+      `  def hub(value), do: {${leafCalls.join(", ")}}`,
+      ...Array.from(
+        { length: leafCount },
+        (_, index) => `  def leaf_${index}(value), do: Atom.to_string(value)`,
+      ),
+      "end",
+      "",
+    ];
+    const functions: FunctionRecord[] = [
+      { ...fn(moduleName, "run", 1, file), line: 2 },
+      { ...fn(moduleName, "hub", 1, file), line: 3 },
+      ...Array.from({ length: leafCount }, (_, index) => ({
+        ...fn(moduleName, `leaf_${index}`, 1, file),
+        line: index + 4,
+      })),
+    ];
+    const events: TraceEvent[] = [
+      {
+        k: "event",
+        kind: "remote",
+        file,
+        line: 2,
+        from_mod: moduleName,
+        from_fun: "run/1",
+        to_mod: "String",
+        name: "to_atom",
+        arity: 1,
+        dyn: true,
+        partition: "prod",
+      },
+      {
+        k: "event",
+        kind: "local",
+        file,
+        line: 2,
+        from_mod: moduleName,
+        from_fun: "run/1",
+        to_mod: moduleName,
+        name: "hub",
+        arity: 1,
+        dyn: false,
+        partition: "prod",
+      },
+      ...Array.from({ length: leafCount }, (_, index) => ({
+        k: "event" as const,
+        kind: "local" as const,
+        file,
+        line: 3,
+        from_mod: moduleName,
+        from_fun: "hub/1",
+        to_mod: moduleName,
+        name: `leaf_${index}`,
+        arity: 1,
+        dyn: false,
+        partition: "prod" as const,
+      })),
+      ...Array.from({ length: leafCount }, (_, index) => ({
+        k: "event" as const,
+        kind: "remote" as const,
+        file,
+        line: index + 4,
+        from_mod: moduleName,
+        from_fun: `leaf_${index}/1`,
+        to_mod: "Atom",
+        name: "to_string",
+        arity: 1,
+        dyn: false,
+        partition: "prod" as const,
+      })),
+    ];
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod(moduleName, file)],
+      functions,
+      events,
+    };
+    try {
+      writeFileSync(join(root, file), lines.join("\n"));
+      const extraction = extractElixirRuntimeConventions(
+        root,
+        withExactPrivateModuleScaffolding(root, trace),
+      );
+      expect(
+        extraction.dynamicDispatches.find((fact) => fact.factKind === "computed-atom"),
+      ).toMatchObject({
+        fromFun: "run/1",
+        flow: "escape",
+        escapeReason: "function-summary-bound",
+      });
+      expect(extraction.atomFlowStats).toMatchObject({
+        publicSummaryFunctions: leafCount + 2,
+        publicSummaries: leafCount + 2,
+        publicCallEdges: leafCount + 1,
+        publicSummaryMatches: 1,
+        publicOpaqueFunctions: 1,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps exact inert module-scope classification linear from 250 through 1,000 functions", () => {
     const run = (count: number) => {
       const root = mkdtempSync(join(tmpdir(), `unused-private-metadata-scale-${count}-`));
@@ -2184,7 +2895,7 @@ describe("extractElixirRuntimeReferences", () => {
       ).toMatchObject({
         fromFun: "run/1",
         flow: "escape",
-        escapeReason: "private-summary-bound",
+        escapeReason: "function-summary-bound",
       });
       expect(extraction.atomFlowStats).toMatchObject({
         privateFunctions: count + 1,

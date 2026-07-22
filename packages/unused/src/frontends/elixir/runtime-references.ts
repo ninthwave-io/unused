@@ -55,7 +55,7 @@ export interface ElixirComputedAtomFact extends ElixirDynamicFactBase {
   readonly factKind: "computed-atom";
   readonly flow: "data" | "delegated-invocation" | "escape";
   readonly kind: "exact" | "opaque";
-  readonly escapeReason?: "private-summary-bound";
+  readonly escapeReason?: "function-summary-bound";
 }
 
 /** A runtime operation that actually selects executable code. */
@@ -99,6 +99,20 @@ export interface ElixirAtomFlowStats {
   readonly privateSummaryUpdates: number;
   /** Private identities made opaque by the bounded call-degree contract. */
   readonly privateOpaqueFunctions: number;
+  /** Exact world-specific public definitions eligible for same-module parameter summaries. */
+  readonly publicSummaryFunctions: number;
+  /** Argument-sensitive public parameter summaries materialized by the SCC solver. */
+  readonly publicSummaries: number;
+  /** Exact compiler-confirmed same-module calls targeting summarized public definitions. */
+  readonly publicCallEdges: number;
+  /** Public summaries reached by a computed-atom producer flow. */
+  readonly publicSummaryMatches: number;
+  /** Monotone SCC member evaluations performed for public parameter summaries. */
+  readonly publicSccIterations: number;
+  /** New outcome bits committed to public parameter summaries. */
+  readonly publicSummaryUpdates: number;
+  /** Public identities made opaque by the bounded call-degree contract. */
+  readonly publicOpaqueFunctions: number;
   /** Compiler module-level events accepted as exact inert module scaffolding. */
   readonly privateModuleScaffoldingEvents: number;
   /** Compiler module-level events accepted as exact inert metadata attributes. */
@@ -296,6 +310,13 @@ export function extractElixirRuntimeConventions(
     privateSccIterations: 0,
     privateSummaryUpdates: 0,
     privateOpaqueFunctions: 0,
+    publicSummaryFunctions: 0,
+    publicSummaries: 0,
+    publicCallEdges: 0,
+    publicSummaryMatches: 0,
+    publicSccIterations: 0,
+    publicSummaryUpdates: 0,
+    publicOpaqueFunctions: 0,
     privateModuleScaffoldingEvents: 0,
     privateModuleMetadataEvents: 0,
     privateModuleTypespecEvents: 0,
@@ -919,7 +940,7 @@ function extractDynamicDispatches(
               factKind: "computed-atom" as const,
               flow: "escape" as const,
               ...(boundedAtomEscapeEvents.has(event)
-                ? { escapeReason: "private-summary-bound" as const }
+                ? { escapeReason: "function-summary-bound" as const }
                 : {}),
             }
           : { factKind: "dynamic-invocation" as const }),
@@ -1022,7 +1043,7 @@ interface AtomFlowResult {
   readonly requiredCalls: readonly IndexedRoleCall[];
   /** A compiler-confirmed dynamic call will emit the invocation hazard itself. */
   readonly delegatedInvocation?: true;
-  readonly escapeReason?: "private-summary-bound";
+  readonly escapeReason?: "function-summary-bound";
 }
 
 interface AtomRoleIndex {
@@ -1038,9 +1059,9 @@ interface AtomFlowContext {
   readonly stats: MutableAtomFlowStats;
   /** Reviewed migration adapter for legacy exact terminal proofs only. */
   readonly legacyTerminal: boolean;
-  readonly privateFlow?: PrivateFlowIndex;
-  readonly privateMode?: "parameter-summary" | "result-summary" | "producer";
-  readonly currentPrivateFunction?: string;
+  readonly functionFlow?: FunctionFlowIndex;
+  readonly summaryMode?: "parameter-summary" | "result-summary" | "producer";
+  readonly currentSummaryFunction?: string;
 }
 
 const ATOM_FLOW_DATA = 1 << 0;
@@ -1074,7 +1095,7 @@ interface AtomFlowGraph {
   readonly stats: MutableAtomFlowStats;
 }
 
-interface PrivateFunctionDefinition {
+interface FunctionSummaryDefinition {
   readonly key: string;
   readonly module: string;
   readonly file: string;
@@ -1082,19 +1103,20 @@ interface PrivateFunctionDefinition {
   readonly range: FunctionRange;
 }
 
-interface PrivateCallSite {
+interface FunctionSummaryCallSite {
   readonly call: IndexedRoleCall;
   readonly event: TraceEvent;
-  readonly target: PrivateFunctionDefinition;
+  readonly target: FunctionSummaryDefinition;
+  readonly callerFunction?: string;
   readonly callerPrivateFunction?: string;
 }
 
-interface PrivateFlowIndex {
-  readonly definitions: ReadonlyMap<string, PrivateFunctionDefinition>;
-  readonly targetByIdentity: ReadonlyMap<string, PrivateFunctionDefinition>;
-  readonly callsByTarget: ReadonlyMap<string, readonly PrivateCallSite[]>;
+interface FunctionFlowIndex {
+  readonly definitions: ReadonlyMap<string, FunctionSummaryDefinition>;
+  readonly targetByIdentity: ReadonlyMap<string, FunctionSummaryDefinition>;
+  readonly callsByTarget: ReadonlyMap<string, readonly FunctionSummaryCallSite[]>;
   readonly dependenciesByCaller: ReadonlyMap<string, ReadonlySet<string>>;
-  readonly callByEvent: ReadonlyMap<string, PrivateCallSite>;
+  readonly callByEvent: ReadonlyMap<string, FunctionSummaryCallSite>;
   readonly unsafeResultTargets: ReadonlySet<string>;
   readonly opaqueFunctions: ReadonlySet<string>;
   readonly summaries: Map<string, number[]>;
@@ -1328,7 +1350,7 @@ function expandAtomAssignmentNode(graph: AtomFlowGraph, node: AtomFlowNode): voi
   }
   if (uses === 0) {
     node.terminal |=
-      node.context.privateMode === "parameter-summary" ? ATOM_FLOW_DATA : ATOM_FLOW_ESCAPE;
+      node.context.summaryMode === "parameter-summary" ? ATOM_FLOW_DATA : ATOM_FLOW_ESCAPE;
   }
 }
 
@@ -1388,18 +1410,21 @@ function expandAtomValueNode(graph: AtomFlowGraph, node: AtomFlowNode): void {
   const range = containingFunctionRange(source.functionRanges, node.start);
   if (range !== null && isExactFunctionReturn(source, range, node.start, node.end)) {
     if (
+      range.exactParameters &&
+      !range.ambiguous &&
+      node.context.currentSummaryFunction !== undefined &&
+      node.context.summaryMode === "parameter-summary"
+    ) {
+      node.terminal |= ATOM_FLOW_RETURN;
+    } else if (
       range.private &&
       range.exactParameters &&
       !range.ambiguous &&
-      node.context.currentPrivateFunction !== undefined
+      node.context.currentSummaryFunction !== undefined
     ) {
-      if (node.context.privateMode === "parameter-summary") {
-        node.terminal |= ATOM_FLOW_RETURN;
-      } else {
-        node.terminal |=
-          node.context.privateFlow?.resultSummaries.get(node.context.currentPrivateFunction) ??
-          ATOM_FLOW_ESCAPE;
-      }
+      node.terminal |=
+        node.context.functionFlow?.resultSummaries.get(node.context.currentSummaryFunction) ??
+        ATOM_FLOW_ESCAPE;
     } else {
       node.terminal |= ATOM_FLOW_ESCAPE;
     }
@@ -1439,9 +1464,12 @@ function expandAtomCallRole(
     node.terminal |= invocation.dyn ? ATOM_FLOW_DELEGATED_INVOCATION : ATOM_FLOW_INVOCATION;
     return;
   }
-  const privateCall = resolvePrivateCall(call, node.context);
-  if (privateCall !== undefined) {
-    const effect = node.context.privateFlow?.summaries.get(privateCall.target.key)?.[argument];
+  const summaryCall = resolveFunctionSummaryCall(call, node.context);
+  if (summaryCall !== undefined) {
+    if (!summaryCall.target.range.private && node.context.summaryMode === "producer") {
+      graph.stats.publicSummaryMatches += 1;
+    }
+    const effect = node.context.functionFlow?.summaries.get(summaryCall.target.key)?.[argument];
     if (effect === undefined) {
       node.terminal |= ATOM_FLOW_ESCAPE;
       return;
@@ -1543,7 +1571,7 @@ function atomFlowResult(graph: AtomFlowGraph, rootKey: string): AtomFlowResult {
     return {
       disposition: "escape",
       requiredCalls: [],
-      escapeReason: "private-summary-bound",
+      escapeReason: "function-summary-bound",
     };
   }
   if ((outcome & ATOM_FLOW_DELEGATED_INVOCATION) !== 0) {
@@ -1645,13 +1673,13 @@ function resolveRoleSummary(
   return summary;
 }
 
-function resolvePrivateCall(
+function resolveFunctionSummaryCall(
   call: IndexedRoleCall,
   context: AtomFlowContext,
-): PrivateCallSite | undefined {
+): FunctionSummaryCallSite | undefined {
   const event = resolveSourceCallEvent(call, context);
-  if (event === undefined || context.privateFlow === undefined) return undefined;
-  const site = context.privateFlow.callByEvent.get(privateCallEventKey(event));
+  if (event === undefined || context.functionFlow === undefined) return undefined;
+  const site = context.functionFlow.callByEvent.get(functionSummaryCallEventKey(event));
   return site?.call.start === call.start ? site : undefined;
 }
 
@@ -1806,9 +1834,9 @@ function classifyAtomProducerEvents(
   const rolesByFile = new Map(
     [...sources].map(([file, source]) => [file, indexAtomRoles(source)] as const),
   );
-  const privateFlow = buildPrivateFlowIndex(traceResult, sources, rolesByFile, stats);
-  solvePrivateFlowSummaries(
-    privateFlow,
+  const functionFlow = buildFunctionFlowIndex(traceResult, sources, rolesByFile, stats);
+  solveFunctionFlowSummaries(
+    functionFlow,
     sources,
     rolesByFile,
     eventsBySourceCall,
@@ -1917,7 +1945,7 @@ function classifyAtomProducerEvents(
       if (carrierEvents.length !== 1) continue;
       const event = carrierEvents[0];
       if (event === undefined) continue;
-      const privateCarrier = privateDefinitionForCarrier(privateFlow, event);
+      const summaryCarrier = functionSummaryDefinitionForCarrier(functionFlow, event);
       const context: AtomFlowContext = {
         producerEvent: event,
         eventsBySourceCall,
@@ -1925,9 +1953,9 @@ function classifyAtomProducerEvents(
         projectModules,
         stats,
         legacyTerminal: legacyExactTerminal(fact, event, eventsBySourceCall, summaryLookup),
-        privateFlow,
-        privateMode: "producer",
-        ...(privateCarrier === undefined ? {} : { currentPrivateFunction: privateCarrier.key }),
+        functionFlow,
+        summaryMode: "producer",
+        ...(summaryCarrier === undefined ? {} : { currentSummaryFunction: summaryCarrier.key }),
       };
       const rootKey = ensureAtomValueNode(
         graph,
@@ -1975,7 +2003,7 @@ function classifyAtomProducerEvents(
       continue;
     }
     stats.escapes += 1;
-    if (flow.escapeReason === "private-summary-bound") boundedEscape.add(event);
+    if (flow.escapeReason === "function-summary-bound") boundedEscape.add(event);
   }
   return { data: safe, invocation, delegatedInvocation, boundedEscape };
 }
@@ -1995,7 +2023,7 @@ function indexRoleEvents(
   return index;
 }
 
-function privateFunctionKey(
+function functionSummaryKey(
   module: string,
   file: string,
   partition: "prod" | "test",
@@ -2005,7 +2033,7 @@ function privateFunctionKey(
   return [module, file, partition, name, arity].join("\0");
 }
 
-function privateCallEventKey(event: TraceEvent): string {
+function functionSummaryCallEventKey(event: TraceEvent): string {
   return [
     event.file,
     event.line,
@@ -2017,10 +2045,10 @@ function privateCallEventKey(event: TraceEvent): string {
   ].join("\0");
 }
 
-function privateDefinitionForCarrier(
-  index: PrivateFlowIndex,
+function functionSummaryDefinitionForCarrier(
+  index: FunctionFlowIndex,
   event: TraceEvent,
-): PrivateFunctionDefinition | undefined {
+): FunctionSummaryDefinition | undefined {
   if (event.from_mod === null || event.from_fun === undefined) return undefined;
   const slash = event.from_fun.lastIndexOf("/");
   if (slash <= 0) return undefined;
@@ -2028,7 +2056,7 @@ function privateDefinitionForCarrier(
   const arity = Number(event.from_fun.slice(slash + 1));
   if (!Number.isInteger(arity) || arity < 0) return undefined;
   return index.targetByIdentity.get(
-    privateFunctionKey(event.from_mod, event.file, event.partition, name, arity),
+    functionSummaryKey(event.from_mod, event.file, event.partition, name, arity),
   );
 }
 
@@ -2212,13 +2240,16 @@ function classifyPrivateModuleSafety(
   return { safe: reasons.size === 0, reasons };
 }
 
-function buildPrivateFlowIndex(
+function buildFunctionFlowIndex(
   traceResult: TraceResult,
   sources: ReadonlyMap<string, SourceIndex>,
   rolesByFile: ReadonlyMap<string, AtomRoleIndex>,
   stats: MutableAtomFlowStats,
-): PrivateFlowIndex {
-  const candidates = new Map<string, PrivateFunctionDefinition>();
+): FunctionFlowIndex {
+  const candidates = new Map<string, FunctionSummaryDefinition>();
+  const publicFunctionsByIdentity = groupBy(traceResult.functions, (fn) =>
+    functionSummaryKey(fn.mod, fn.file, fn.partition, fn.name, fn.arity),
+  );
   const moduleEventsByWorld = groupBy(
     traceResult.events.filter((event) => event.from_mod !== null && event.from_fun === undefined),
     (event) => privateModuleWorldKey(event.from_mod ?? "", event.partition),
@@ -2254,7 +2285,6 @@ function buildPrivateFlowIndex(
     const eligibleRangesByModuleBody = groupBy(
       source.functionRanges.filter(
         (range) =>
-          range.private &&
           range.exactParameters &&
           !range.ambiguous &&
           range.parent === undefined &&
@@ -2322,7 +2352,12 @@ function buildPrivateFlowIndex(
         if (safety !== undefined) moduleSafety.set(safetyKey, safety);
         if (safety?.safe !== true || productionSafety?.safe === false) continue;
         for (const range of eligibleRanges) {
-          const key = privateFunctionKey(owner.mod, file, partition, range.name, range.arity);
+          const key = functionSummaryKey(owner.mod, file, partition, range.name, range.arity);
+          if (!range.private) {
+            const reflected = publicFunctionsByIdentity.get(key) ?? [];
+            const sourceLine = lineAt(source.lineStarts, range.start);
+            if (reflected.length !== 1 || reflected[0]?.line !== sourceLine) continue;
+          }
           const definition = { key, module: owner.mod, file, partition, range } as const;
           candidates.set(key, definition);
         }
@@ -2330,24 +2365,35 @@ function buildPrivateFlowIndex(
     }
   }
 
-  const confirmed = new Set<string>();
+  const confirmed = new Set(
+    [...candidates.values()]
+      .filter((definition) => !definition.range.private)
+      .map((definition) => definition.key),
+  );
   for (const event of traceResult.events) {
-    const carrier = privateDefinitionForIdentity(candidates, event, true);
+    const carrier = functionSummaryDefinitionForIdentity(candidates, event, true);
     if (carrier !== undefined) confirmed.add(carrier.key);
-    const target = privateDefinitionForIdentity(candidates, event, false);
+    const target = functionSummaryDefinitionForIdentity(candidates, event, false);
     if (target !== undefined && isSameModuleLocalEvent(event)) {
       confirmed.add(target.key);
     }
   }
   const definitions = new Map([...candidates].filter(([key]) => confirmed.has(key)));
   const targetByIdentity = new Map(definitions);
+  const privateDefinitions = [...definitions.values()].filter(
+    (definition) => definition.range.private,
+  );
+  const publicDefinitions = [...definitions.values()].filter(
+    (definition) => !definition.range.private,
+  );
   const sourcePrivateStarts = new Set(
-    [...definitions.values()].map((definition) => `${definition.file}\0${definition.range.start}`),
+    privateDefinitions.map((definition) => `${definition.file}\0${definition.range.start}`),
   );
   stats.privateFunctions = sourcePrivateStarts.size;
+  stats.publicSummaryFunctions = publicDefinitions.length;
 
-  const callByEvent = new Map<string, PrivateCallSite>();
-  const callsByTarget = new Map<string, PrivateCallSite[]>();
+  const callByEvent = new Map<string, FunctionSummaryCallSite>();
+  const callsByTarget = new Map<string, FunctionSummaryCallSite[]>();
   const dependenciesByCaller = new Map<string, Set<string>>();
   const unsafeResultTargets = new Set<string>();
   const targetEvents = new Map<string, TraceEvent[]>();
@@ -2361,7 +2407,7 @@ function buildPrivateFlowIndex(
       [event.file, event.line, event.from_fun, event.name, event.arity].join("\0"),
       event,
     );
-    const target = privateDefinitionForIdentity(targetByIdentity, event, false);
+    const target = functionSummaryDefinitionForIdentity(targetByIdentity, event, false);
     if (target !== undefined && isSameModuleLocalEvent(event)) {
       append(targetEvents, target.key, event);
     }
@@ -2382,7 +2428,7 @@ function buildPrivateFlowIndex(
           continue;
         }
         const target = targetByIdentity.get(
-          privateFunctionKey(
+          functionSummaryKey(
             event.from_mod,
             file,
             event.partition,
@@ -2391,18 +2437,21 @@ function buildPrivateFlowIndex(
           ),
         );
         if (target === undefined) continue;
-        const callerPrivateFunction = caller.private
-          ? targetByIdentity.get(
-              privateFunctionKey(event.from_mod, file, event.partition, caller.name, caller.arity),
-            )?.key
+        const callerDefinition = targetByIdentity.get(
+          functionSummaryKey(event.from_mod, file, event.partition, caller.name, caller.arity),
+        );
+        const callerFunction = callerDefinition?.key;
+        const callerPrivateFunction = callerDefinition?.range.private
+          ? callerDefinition.key
           : undefined;
-        const site: PrivateCallSite = {
+        const site: FunctionSummaryCallSite = {
           call,
           event,
           target,
+          ...(callerFunction === undefined ? {} : { callerFunction }),
           ...(callerPrivateFunction === undefined ? {} : { callerPrivateFunction }),
         };
-        const eventKey = privateCallEventKey(event);
+        const eventKey = functionSummaryCallEventKey(event);
         if (callByEvent.has(eventKey)) {
           unsafeResultTargets.add(target.key);
           continue;
@@ -2410,10 +2459,10 @@ function buildPrivateFlowIndex(
         callByEvent.set(eventKey, site);
         joinedEvents.add(event);
         append(callsByTarget, target.key, site);
-        if (callerPrivateFunction !== undefined) {
-          const dependencies = dependenciesByCaller.get(callerPrivateFunction) ?? new Set<string>();
+        if (callerFunction !== undefined) {
+          const dependencies = dependenciesByCaller.get(callerFunction) ?? new Set<string>();
           dependencies.add(target.key);
-          dependenciesByCaller.set(callerPrivateFunction, dependencies);
+          dependenciesByCaller.set(callerFunction, dependencies);
         }
       }
     }
@@ -2421,7 +2470,12 @@ function buildPrivateFlowIndex(
   for (const [key, targetCalls] of targetEvents) {
     if (targetCalls.some((event) => !joinedEvents.has(event))) unsafeResultTargets.add(key);
   }
-  stats.privateCallEdges = callByEvent.size;
+  stats.privateCallEdges = [...callByEvent.values()].filter(
+    (site) => site.target.range.private,
+  ).length;
+  stats.publicCallEdges = [...callByEvent.values()].filter(
+    (site) => !site.target.range.private,
+  ).length;
   const opaqueFunctions = new Set<string>();
   for (const definition of definitions.values()) {
     if (
@@ -2431,12 +2485,21 @@ function buildPrivateFlowIndex(
       opaqueFunctions.add(definition.key);
     }
   }
-  stats.privateOpaqueFunctions = opaqueFunctions.size;
+  stats.publicOpaqueFunctions = [...opaqueFunctions].filter(
+    (key) => definitions.get(key)?.range.private === false,
+  ).length;
+  stats.privateOpaqueFunctions = [...opaqueFunctions].filter(
+    (key) => definitions.get(key)?.range.private === true,
+  ).length;
   const summaries = new Map<string, number[]>();
   const resultSummaries = new Map<string, number>();
   for (const definition of definitions.values()) {
     if (opaqueFunctions.has(definition.key)) {
-      stats.privateSummaryUpdates += definition.range.parameters.length + 1;
+      if (definition.range.private) {
+        stats.privateSummaryUpdates += definition.range.parameters.length + 1;
+      } else {
+        stats.publicSummaryUpdates += definition.range.parameters.length;
+      }
     }
     summaries.set(
       definition.key,
@@ -2444,12 +2507,18 @@ function buildPrivateFlowIndex(
         opaqueFunctions.has(definition.key) ? ATOM_FLOW_BOUNDED_ESCAPE : 0,
       ),
     );
-    resultSummaries.set(
-      definition.key,
-      opaqueFunctions.has(definition.key) ? ATOM_FLOW_BOUNDED_ESCAPE : 0,
-    );
+    if (definition.range.private) {
+      resultSummaries.set(
+        definition.key,
+        opaqueFunctions.has(definition.key) ? ATOM_FLOW_BOUNDED_ESCAPE : 0,
+      );
+    }
   }
-  stats.privateSummaries = [...definitions.values()].reduce(
+  stats.privateSummaries = privateDefinitions.reduce(
+    (total, definition) => total + definition.range.parameters.length,
+    0,
+  );
+  stats.publicSummaries = publicDefinitions.reduce(
     (total, definition) => total + definition.range.parameters.length,
     0,
   );
@@ -2470,11 +2539,11 @@ function privateModuleWorldKey(module: string, partition: "prod" | "test"): stri
   return [module, partition].join("\0");
 }
 
-function privateDefinitionForIdentity(
-  definitions: ReadonlyMap<string, PrivateFunctionDefinition>,
+function functionSummaryDefinitionForIdentity(
+  definitions: ReadonlyMap<string, FunctionSummaryDefinition>,
   event: TraceEvent,
   carrier: boolean,
-): PrivateFunctionDefinition | undefined {
+): FunctionSummaryDefinition | undefined {
   const module = carrier ? event.from_mod : event.to_mod;
   const identity = carrier ? event.from_fun : undefined;
   const slash = identity?.lastIndexOf("/") ?? -1;
@@ -2490,7 +2559,7 @@ function privateDefinitionForIdentity(
     return undefined;
   }
   return definitions.get(
-    privateFunctionKey(module, event.file, event.partition, name, arity ?? -1),
+    functionSummaryKey(module, event.file, event.partition, name, arity ?? -1),
   );
 }
 
@@ -2498,11 +2567,11 @@ function isSameModuleLocalEvent(event: TraceEvent): boolean {
   return event.kind === "local" && event.from_mod !== null && event.to_mod === event.from_mod;
 }
 
-function privateDependencies(index: PrivateFlowIndex, key: string): readonly string[] {
+function functionSummaryDependencies(index: FunctionFlowIndex, key: string): readonly string[] {
   return [...(index.dependenciesByCaller.get(key) ?? [])];
 }
 
-function privateFunctionSccs(index: PrivateFlowIndex): readonly (readonly string[])[] {
+function functionSummarySccs(index: FunctionFlowIndex): readonly (readonly string[])[] {
   let nextIndex = 0;
   const indexes = new Map<string, number>();
   const lowLinks = new Map<string, number>();
@@ -2515,7 +2584,7 @@ function privateFunctionSccs(index: PrivateFlowIndex): readonly (readonly string
     nextIndex += 1;
     stack.push(key);
     onStack.add(key);
-    for (const dependency of privateDependencies(index, key)) {
+    for (const dependency of functionSummaryDependencies(index, key)) {
       if (!indexes.has(dependency)) {
         visit(dependency);
         lowLinks.set(key, Math.min(lowLinks.get(key) ?? 0, lowLinks.get(dependency) ?? 0));
@@ -2538,13 +2607,13 @@ function privateFunctionSccs(index: PrivateFlowIndex): readonly (readonly string
   return components;
 }
 
-function privateSummaryContext(
-  definition: PrivateFunctionDefinition,
+function functionSummaryContext(
+  definition: FunctionSummaryDefinition,
   eventsBySourceCall: ReadonlyMap<string, readonly TraceEvent[]>,
   summaryLookup: ElixirAtomRoleSummaryLookup,
   projectModules: ReadonlySet<string>,
   stats: MutableAtomFlowStats,
-  privateFlow: PrivateFlowIndex,
+  functionFlow: FunctionFlowIndex,
 ): AtomFlowContext {
   return {
     producerEvent: {
@@ -2565,14 +2634,14 @@ function privateSummaryContext(
     projectModules,
     stats,
     legacyTerminal: false,
-    privateFlow,
-    privateMode: "parameter-summary",
-    currentPrivateFunction: definition.key,
+    functionFlow,
+    summaryMode: "parameter-summary",
+    currentSummaryFunction: definition.key,
   };
 }
 
-function evaluatePrivateParameter(
-  definition: PrivateFunctionDefinition,
+function evaluateFunctionParameter(
+  definition: FunctionSummaryDefinition,
   parameter: FunctionRange["parameters"][number],
   source: SourceIndex,
   roles: AtomRoleIndex,
@@ -2580,7 +2649,7 @@ function evaluatePrivateParameter(
   summaryLookup: ElixirAtomRoleSummaryLookup,
   projectModules: ReadonlySet<string>,
   stats: MutableAtomFlowStats,
-  privateFlow: PrivateFlowIndex,
+  functionFlow: FunctionFlowIndex,
 ): number {
   const graph: AtomFlowGraph = {
     source,
@@ -2589,13 +2658,13 @@ function evaluatePrivateParameter(
     pending: [],
     stats,
   };
-  const context = privateSummaryContext(
+  const context = functionSummaryContext(
     definition,
     eventsBySourceCall,
     summaryLookup,
     projectModules,
     stats,
-    privateFlow,
+    functionFlow,
   );
   const rootKey = ensureAtomAssignmentNode(
     graph,
@@ -2607,17 +2676,17 @@ function evaluatePrivateParameter(
 }
 
 function evaluatePrivateResult(
-  definition: PrivateFunctionDefinition,
+  definition: FunctionSummaryDefinition,
   source: SourceIndex,
   roles: AtomRoleIndex,
   eventsBySourceCall: ReadonlyMap<string, readonly TraceEvent[]>,
   summaryLookup: ElixirAtomRoleSummaryLookup,
   projectModules: ReadonlySet<string>,
   stats: MutableAtomFlowStats,
-  privateFlow: PrivateFlowIndex,
+  functionFlow: FunctionFlowIndex,
 ): number {
-  const sites = privateFlow.callsByTarget.get(definition.key) ?? [];
-  if (sites.length === 0 || privateFlow.unsafeResultTargets.has(definition.key)) {
+  const sites = functionFlow.callsByTarget.get(definition.key) ?? [];
+  if (sites.length === 0 || functionFlow.unsafeResultTargets.has(definition.key)) {
     return ATOM_FLOW_ESCAPE;
   }
   const graph: AtomFlowGraph = {
@@ -2636,11 +2705,11 @@ function evaluatePrivateResult(
       projectModules,
       stats,
       legacyTerminal: false,
-      privateFlow,
-      privateMode: "result-summary",
+      functionFlow,
+      summaryMode: "result-summary",
       ...(site.callerPrivateFunction === undefined
         ? {}
-        : { currentPrivateFunction: site.callerPrivateFunction }),
+        : { currentSummaryFunction: site.callerPrivateFunction }),
     };
     roots.push(
       ensureAtomValueNode(
@@ -2656,8 +2725,8 @@ function evaluatePrivateResult(
   return roots.reduce((outcome, key) => outcome | (graph.nodes.get(key)?.outcome ?? 0), 0);
 }
 
-function solvePrivateFlowSummaries(
-  privateFlow: PrivateFlowIndex,
+function solveFunctionFlowSummaries(
+  functionFlow: FunctionFlowIndex,
   sources: ReadonlyMap<string, SourceIndex>,
   rolesByFile: ReadonlyMap<string, AtomRoleIndex>,
   eventsBySourceCall: ReadonlyMap<string, readonly TraceEvent[]>,
@@ -2665,14 +2734,14 @@ function solvePrivateFlowSummaries(
   projectModules: ReadonlySet<string>,
   stats: MutableAtomFlowStats,
 ): void {
-  const components = privateFunctionSccs(privateFlow);
+  const components = functionSummarySccs(functionFlow);
   for (const component of components) {
     const members = new Set(component);
     const queue = [...component];
     const scheduled = new Set(component);
     const enqueueCallers = (key: string): void => {
-      for (const site of privateFlow.callsByTarget.get(key) ?? []) {
-        const caller = site.callerPrivateFunction;
+      for (const site of functionFlow.callsByTarget.get(key) ?? []) {
+        const caller = site.callerFunction;
         if (caller === undefined || !members.has(caller) || scheduled.has(caller)) continue;
         scheduled.add(caller);
         queue.push(caller);
@@ -2685,12 +2754,14 @@ function solvePrivateFlowSummaries(
         index += 1;
         if (key === undefined) continue;
         scheduled.delete(key);
-        stats.privateSccIterations += 1;
-        if (privateFlow.opaqueFunctions.has(key)) continue;
-        const definition = privateFlow.definitions.get(key);
+        const definition = functionFlow.definitions.get(key);
+        if (definition === undefined) continue;
+        if (definition.range.private) stats.privateSccIterations += 1;
+        else stats.publicSccIterations += 1;
+        if (functionFlow.opaqueFunctions.has(key)) continue;
         const source = definition === undefined ? undefined : sources.get(definition.file);
         const roles = definition === undefined ? undefined : rolesByFile.get(definition.file);
-        const current = privateFlow.summaries.get(key);
+        const current = functionFlow.summaries.get(key);
         if (
           definition === undefined ||
           source === undefined ||
@@ -2704,7 +2775,7 @@ function solvePrivateFlowSummaries(
           const prior = current[parameter.index] ?? 0;
           const next =
             prior |
-            evaluatePrivateParameter(
+            evaluateFunctionParameter(
               definition,
               parameter,
               source,
@@ -2713,11 +2784,12 @@ function solvePrivateFlowSummaries(
               summaryLookup,
               projectModules,
               stats,
-              privateFlow,
+              functionFlow,
             );
           if (next === prior) continue;
           current[parameter.index] = next;
-          stats.privateSummaryUpdates += bitCount(next ^ prior);
+          if (definition.range.private) stats.privateSummaryUpdates += bitCount(next ^ prior);
+          else stats.publicSummaryUpdates += bitCount(next ^ prior);
           changed = true;
         }
         if (changed) enqueueCallers(key);
@@ -2726,13 +2798,15 @@ function solvePrivateFlowSummaries(
     };
     drain();
     for (const key of component) {
-      const current = privateFlow.summaries.get(key);
+      const current = functionFlow.summaries.get(key);
+      const definition = functionFlow.definitions.get(key);
       if (current === undefined) continue;
       let changed = false;
       for (let index = 0; index < current.length; index += 1) {
         if (current[index] === 0) {
           current[index] = ATOM_FLOW_ESCAPE;
-          stats.privateSummaryUpdates += 1;
+          if (definition?.range.private === false) stats.publicSummaryUpdates += 1;
+          else stats.privateSummaryUpdates += 1;
           changed = true;
         }
       }
@@ -2748,7 +2822,7 @@ function solvePrivateFlowSummaries(
     const queue = [...component];
     const scheduled = new Set(component);
     const enqueueCallees = (key: string): void => {
-      for (const callee of privateFlow.dependenciesByCaller.get(key) ?? []) {
+      for (const callee of functionFlow.dependenciesByCaller.get(key) ?? []) {
         if (!members.has(callee) || scheduled.has(callee)) continue;
         scheduled.add(callee);
         queue.push(callee);
@@ -2761,13 +2835,14 @@ function solvePrivateFlowSummaries(
         index += 1;
         if (key === undefined) continue;
         scheduled.delete(key);
+        const definition = functionFlow.definitions.get(key);
+        if (definition?.range.private !== true) continue;
         stats.privateSccIterations += 1;
-        if (privateFlow.opaqueFunctions.has(key)) continue;
-        const definition = privateFlow.definitions.get(key);
+        if (functionFlow.opaqueFunctions.has(key)) continue;
         const source = definition === undefined ? undefined : sources.get(definition.file);
         const roles = definition === undefined ? undefined : rolesByFile.get(definition.file);
         if (definition === undefined || source === undefined || roles === undefined) continue;
-        const current = privateFlow.resultSummaries.get(key) ?? 0;
+        const current = functionFlow.resultSummaries.get(key) ?? 0;
         const next =
           current |
           evaluatePrivateResult(
@@ -2778,10 +2853,10 @@ function solvePrivateFlowSummaries(
             summaryLookup,
             projectModules,
             stats,
-            privateFlow,
+            functionFlow,
           );
         if (next === current) continue;
-        privateFlow.resultSummaries.set(key, next);
+        functionFlow.resultSummaries.set(key, next);
         stats.privateSummaryUpdates += bitCount(next ^ current);
         enqueueCallees(key);
       }
@@ -2789,8 +2864,9 @@ function solvePrivateFlowSummaries(
     };
     drain();
     for (const key of component) {
-      if ((privateFlow.resultSummaries.get(key) ?? 0) !== 0) continue;
-      privateFlow.resultSummaries.set(key, ATOM_FLOW_ESCAPE);
+      if (functionFlow.definitions.get(key)?.range.private !== true) continue;
+      if ((functionFlow.resultSummaries.get(key) ?? 0) !== 0) continue;
+      functionFlow.resultSummaries.set(key, ATOM_FLOW_ESCAPE);
       stats.privateSummaryUpdates += 1;
       enqueueCallees(key);
     }

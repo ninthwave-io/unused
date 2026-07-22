@@ -657,13 +657,13 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
       privateFunctions: 2,
       privateSummaries: 3,
       privateCallEdges: 2,
-      privateModuleScaffoldingEvents: 9,
+      privateModuleScaffoldingEvents: 12,
       privateModuleMetadataEvents: 3,
       privateModuleTypespecEvents: 3,
       privateModuleDeclarationConstructs: 3,
       privateModuleLiteralAttributeConstructs: 1,
       privateModuleSigilAttributeConstructs: 8,
-      privateModuleUseRejections: 0,
+      privateModuleUseRejections: 1,
       privateModuleHookRejections: 0,
       privateModuleGeneratedRejections: 0,
       privateModuleCustomRejections: 0,
@@ -671,7 +671,7 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
       privateModuleAttributeRejections: 0,
       privateModuleSigilRejections: 0,
       privateModuleUnknownEventRejections: 0,
-      privateModuleAmbiguousEventRejections: 0,
+      privateModuleAmbiguousEventRejections: 1,
     });
     const analysis = await analyzeElixirProjectWithGraph(root, {
       now: new Date(0),
@@ -736,6 +736,114 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
     ).toMatchObject({ supported: false, stages: [] });
   }, 60_000);
 
+  it("keeps exact same-module public parameter flows bounded and deletable", async () => {
+    const root = fixture("atom-role-public-flow");
+    const trace = runTracer(root);
+    expect(extractElixirRuntimeConventions(root, trace).atomFlowStats).toMatchObject({
+      privateFunctions: 0,
+      privateSummaries: 0,
+      privateCallEdges: 0,
+      publicSummaryFunctions: 4,
+      publicSummaries: 7,
+      publicCallEdges: 2,
+      publicSummaryMatches: 2,
+      publicOpaqueFunctions: 0,
+      joinedProducerOutcomes: 2,
+      dataSinks: 2,
+      invocationSinks: 0,
+      escapes: 0,
+    });
+    const analysis = await analyzeElixirProjectWithGraph(root, { now: new Date(0) });
+    expect(
+      analysis.graph
+        .hazards()
+        .filter((hazard) => hazard.file.includes("neutral_public_flow/safe.ex")),
+    ).toEqual([]);
+
+    const direct = whyAlive({
+      graph: analysis.graph,
+      reachability: analysis.reachability,
+      claims: analysis.result.claims,
+      query: "NeutralPublicFlow.Safe.direct?/2",
+      hazardEvaluations: [analysis.hazardEvaluation],
+    });
+    expect(direct).toMatchObject({ outcome: "alive" });
+
+    const unrelated = whyAlive({
+      graph: analysis.graph,
+      reachability: analysis.reachability,
+      claims: analysis.result.claims,
+      query: "NeutralPublicFlow.Safe.genuinely_unused/0",
+      hazardEvaluations: [analysis.hazardEvaluation],
+    });
+    expect(unrelated).toMatchObject({ outcome: "dead", confidence: "high", hazards: [] });
+    if (unrelated.outcome !== "dead") throw new Error("expected public-flow dead control");
+    expect(
+      computeDeletionPlan({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        subject: unrelated.subject,
+        hazardEvaluations: [analysis.hazardEvaluation],
+      }),
+    ).toMatchObject({ supported: true });
+  }, 60_000);
+
+  it("explains and refuses public invocation, result, and ambiguous boundaries", async () => {
+    const root = fixture("atom-role-public-unsafe");
+    const trace = runTracer(root);
+    expect(extractElixirRuntimeConventions(root, trace).atomFlowStats).toMatchObject({
+      privateFunctions: 0,
+      privateSummaries: 0,
+      privateCallEdges: 0,
+      publicSummaryFunctions: 5,
+      publicSummaries: 5,
+      publicCallEdges: 2,
+      publicSummaryMatches: 1,
+      publicOpaqueFunctions: 0,
+      joinedProducerOutcomes: 3,
+      dataSinks: 0,
+      invocationSinks: 1,
+      escapes: 2,
+    });
+    const analysis = await analyzeElixirProjectWithGraph(root, { now: new Date(0) });
+    const risky = whyAlive({
+      graph: analysis.graph,
+      reachability: analysis.reachability,
+      claims: analysis.result.claims,
+      query: "NeutralPublicUnsafe.Flow.risky_unused/0",
+      hazardEvaluations: [analysis.hazardEvaluation],
+    });
+    expect(risky).toMatchObject({ outcome: "dead", confidence: "medium" });
+    if (risky.outcome !== "dead") throw new Error("expected public-boundary dead control");
+    expect(risky.hazards).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          hazardClass: "elixir-computed-atom-escape",
+          site: "lib/neutral_public_unsafe/flow.ex:4",
+          worlds: ["production"],
+        }),
+        expect.objectContaining({
+          hazardClass: "elixir-computed-atom-escape",
+          site: "lib/neutral_public_unsafe/flow.ex:8",
+          worlds: ["production"],
+        }),
+        expect.objectContaining({
+          hazardClass: "elixir-dynamic-dispatch",
+          site: "lib/neutral_public_unsafe/flow.ex:7",
+          worlds: ["production"],
+        }),
+      ]),
+    );
+    expect(
+      computeDeletionPlan({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        subject: risky.subject,
+        hazardEvaluations: [analysis.hazardEvaluation],
+      }),
+    ).toMatchObject({ supported: false, stages: [] });
+  }, 60_000);
+
   it.each([
     "dynamic-use-helpers",
     "dynamic-local-dispatch",
@@ -750,6 +858,8 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
     "atom-role-escape",
     "atom-role-private-flow",
     "atom-role-private-unsafe",
+    "atom-role-public-flow",
+    "atom-role-public-unsafe",
   ])(
     "preserves Elixir claims after mixed-plugin composition: %s",
     async (name) => {

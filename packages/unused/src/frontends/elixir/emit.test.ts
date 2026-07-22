@@ -480,7 +480,7 @@ describe("emitElixirIR — dynamic dispatch", () => {
           line: atomEvent.line,
           factKind: "computed-atom",
           flow: "escape",
-          escapeReason: "private-summary-bound",
+          escapeReason: "function-summary-bound",
           kind: "opaque",
           world: "production",
           eventKey: dynamicEventKey(atomEvent),

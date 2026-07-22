@@ -516,8 +516,8 @@ function emitDynamicDispatchHazards(
           ...(carrierSymbol === undefined ? {} : { carrierSymbol }),
           hazardClass: "elixir-computed-atom-escape",
           detail:
-            "escapeReason" in firstEscape && firstEscape.escapeReason === "private-summary-bound"
-              ? `computed atom in \`${mod.mod}\` crosses a private summary whose call degree exceeds the reviewed bound`
+            "escapeReason" in firstEscape && firstEscape.escapeReason === "function-summary-bound"
+              ? `computed atom in \`${mod.mod}\` crosses a function summary whose call degree exceeds the reviewed bound`
               : `computed atom in \`${mod.mod}\` escapes before its consumer can be classified`,
           site: siteAt(firstEscape.file, firstEscape.line),
           effect: { scope: { kind: "unit" }, worlds: [world] },

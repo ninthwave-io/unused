@@ -1,0 +1,22 @@
+case: atom-role-public-flow
+description: >-
+  Exact same-module public parameter summaries distinguish a direct data sink
+  from a value propagated back to its caller. Both computed atoms end at map-key
+  data use without contaminating an unrelated dead export.
+subjects:
+  - kind: export
+    name: NeutralPublicFlow.Safe.direct?/2
+    file: lib/neutral_public_flow/safe.ex
+    expected: alive
+    because: The application calls the public argument flow ending at a map-key data sink.
+  - kind: export
+    name: NeutralPublicFlow.Safe.passed?/2
+    file: lib/neutral_public_flow/safe.ex
+    expected: alive
+    because: The application calls the public pass-through whose result reaches a map-key data sink.
+  - kind: export
+    name: NeutralPublicFlow.Safe.genuinely_unused/0
+    file: lib/neutral_public_flow/safe.ex
+    expected: dead
+    minConfidence: high
+    because: The proven public parameter flows do not contaminate this unrelated dead export.

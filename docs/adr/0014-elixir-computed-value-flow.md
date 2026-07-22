@@ -1,7 +1,7 @@
 # 0014 — Typed Elixir computed-value flow and explicit hazard scope
 
 Date: 2026-07-22
-Status: Accepted (phases 1A, 1B1, 1B1.2, 1B2A, and 1B2A.1 implemented; later phases pending)
+Status: Accepted (through phase 1B2A.3; later phases pending)
 
 ## Context
 
@@ -461,6 +461,41 @@ the JSON schema. Neutral real-compiler coverage proves a private producer and
 consumer can end at a data sink without contaminating an unrelated high-
 confidence deletion. Public returns and private invocation helpers retain the
 existing escape or invocation hazards and deletion refusal.
+
+### Phase 1B2A.3 same-module public parameter checkpoint
+
+The next bounded slice extends parameter summaries, but not result summaries,
+to exact same-module public `def` functions. Elixir private functions cannot be
+called across modules, so this checkpoint first proves the public-definition
+identity and safety boundary without adding cross-file resolution. A candidate
+must be one direct top-level `def`, have one parenthesized list of distinct
+variable parameters, and have exactly one reflected public-function record at
+the same canonical module, file, source line, arity, partition, and compiler-
+validated owner. Guards, defaults, patterns, multiple clauses, delegates,
+macros, generated siblings, missing or duplicate reflection, and every module-
+scope rejection from Phase 1B2A.2 remain opaque.
+
+Only exact compiler `local` calls in the same module and partition may use a
+public parameter summary. A parameter may terminate as data, invocation, or
+escape, or propagate to the call result so the caller's already-indexed sink
+decides the outcome. This is sound independently of unknown callers because it
+describes the complete single-clause body for an input, not the disposition of
+values created by the callee. A computed atom produced inside a public function
+and returned from it therefore remains an escape. Result summaries remain
+private-only, and no cross-module, dependency, sibling-boundary, or repository-
+merge inference is added.
+
+Private and public parameter nodes share the same pre-indexed call adjacency,
+Tarjan components, monotone bitmasks, delta queues, and 64-caller/callee bound.
+Counters distinguish exact public definitions, parameter slots, local call
+edges, producer-flow matches, SCC member evaluations, bit updates, and opaque
+public identities from private and standard-library/plugin summary counters. A
+250/500/1,000-function public chain retains every definition and edge while
+asserting linear counter bounds; a 65-callee hub proves the explicit bounded-
+escape fallback. Neutral real-compiler fixtures prove direct data consumption,
+caller-side pass-through consumption, invocation, public-origin return escape,
+multiple-clause ambiguity, accurate explanation, deletion refusal for active
+uncertainty, and supported deletion of an unrelated high-confidence export.
 
 ## Acceptance
 

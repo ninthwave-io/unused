@@ -1,0 +1,27 @@
+case: atom-role-public-unsafe
+description: >-
+  Exact public parameter summaries retain invocation, public-origin return, and
+  ambiguous-clause boundaries as conservative hazards. They do not make an
+  uncertain deletion safe.
+subjects:
+  - kind: export
+    name: NeutralPublicUnsafe.Flow.invoke/1
+    file: lib/neutral_public_unsafe/flow.ex
+    expected: alive
+    because: The application calls a public parameter flow ending at dynamic invocation.
+  - kind: export
+    name: NeutralPublicUnsafe.Flow.public_origin/1
+    file: lib/neutral_public_unsafe/flow.ex
+    expected: alive
+    because: The application calls a public function whose public callee produces and returns an atom.
+  - kind: export
+    name: NeutralPublicUnsafe.Flow.ambiguous/1
+    file: lib/neutral_public_unsafe/flow.ex
+    expected: alive
+    because: The application calls a public helper with multiple source clauses, which remains ambiguous.
+  - kind: export
+    name: NeutralPublicUnsafe.Flow.risky_unused/0
+    file: lib/neutral_public_unsafe/flow.ex
+    expected: dead
+    minConfidence: medium
+    because: Active invocation and escape hazards prevent a high-confidence deletion.
