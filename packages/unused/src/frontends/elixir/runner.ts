@@ -30,6 +30,12 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  type CargoExecutionContext,
+  cargoExecutionEnvironment,
+  createCargoExecutionContext,
+  disposeCargoExecutionContext,
+} from "../rust/runner.js";
 import { ElixirCompileError, ElixirToolchainError } from "./errors.js";
 import type {
   AppModRecord,
@@ -44,6 +50,7 @@ import type {
   TraceResult,
 } from "./events.js";
 import {
+  discoverRustlerLoaders,
   discoverTestFiles,
   inspectMixLayout,
   type MixLayout,
@@ -79,6 +86,8 @@ export interface RunTracerOptions {
    * (`ENOENT`) refusal path deterministically without touching `PATH`.
    */
   readonly command?: string;
+  /** Test-only parent for the analyzer-owned Cargo target used by Mix children. */
+  readonly cargoTargetParentDir?: string;
 }
 
 const DEFAULT_TIMEOUT_MS = 300_000;
@@ -98,7 +107,12 @@ export function runTracer(projectDir: string, options: RunTracerOptions = {}): T
   const productionBuildPath = join(workDir, "production-build");
   writeFileSync(scriptPath, TRACER_SCRIPT, "utf8");
 
+  let cargo: CargoExecutionContext | undefined;
+  let primaryFailure: unknown;
+  let trace: TraceResult | undefined;
   try {
+    cargo = createMixCargoExecutionContext(projectDir, options.cargoTargetParentDir ?? workDir);
+    const cargoEnvironment = cargoExecutionEnvironment(projectDir, cargo);
     const command = options.command ?? "mix";
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const productionLayout = inspectMixLayout(
@@ -106,6 +120,14 @@ export function runTracer(projectDir: string, options: RunTracerOptions = {}): T
       projectDir,
       join(workDir, "production-layout-build"),
       timeoutMs,
+      undefined,
+      cargoEnvironment,
+    );
+    const productionRustlerPath = join(workDir, "production-rustler-loaders.json");
+    writeFileSync(
+      productionRustlerPath,
+      JSON.stringify(discoverRustlerLoaders(projectDir, productionLayout.sourcePaths)),
+      "utf8",
     );
     try {
       prepareIsolatedBuild(productionLayout, productionBuildPath, projectDir);
@@ -126,9 +148,10 @@ export function runTracer(projectDir: string, options: RunTracerOptions = {}): T
         timeout: timeoutMs,
         maxBuffer: MAX_BUFFER,
         env: {
-          ...process.env,
+          ...cargoEnvironment,
           UNUSED_OUT: productionOutPath,
           UNUSED_PHASE: "production",
+          UNUSED_RUSTLER_LOADERS: productionRustlerPath,
           MIX_BUILD_PATH: productionBuildPath,
           MIX_QUIET: "1",
         },
@@ -183,24 +206,53 @@ export function runTracer(projectDir: string, options: RunTracerOptions = {}): T
     try {
       testFiles = discoverTestFiles(projectDir);
     } catch {
-      return mergeTraceResults(production, incompleteTestTrace("layout"));
+      trace = mergeTraceResults(production, incompleteTestTrace("layout"));
+      testFiles = [];
     }
-    if (testFiles.length === 0) return stableTraceResult(production);
-
-    const test = runTestTrace({
-      command,
-      projectDir,
-      workDir,
-      scriptPath,
-      timeoutMs,
-      production,
-      productionLayout,
-      testFiles,
-    });
-    return mergeTraceResults(production, test);
-  } finally {
-    rmSync(workDir, { recursive: true, force: true });
+    if (trace === undefined) {
+      if (testFiles.length === 0) {
+        trace = stableTraceResult(production);
+      } else {
+        const test = runTestTrace({
+          command,
+          projectDir,
+          workDir,
+          scriptPath,
+          timeoutMs,
+          production,
+          productionLayout,
+          testFiles,
+          cargoEnvironment,
+        });
+        trace = mergeTraceResults(production, test);
+      }
+    }
+  } catch (error) {
+    primaryFailure = error;
   }
+
+  let cleanupFailure: unknown;
+  try {
+    if (cargo !== undefined) disposeCargoExecutionContext(cargo, primaryFailure);
+  } catch (error) {
+    cleanupFailure = error;
+  }
+  try {
+    rmSync(workDir, { recursive: true, force: true });
+  } catch (error) {
+    cleanupFailure ??= error;
+  }
+
+  if (primaryFailure !== undefined) throw primaryFailure;
+  if (cleanupFailure !== undefined) {
+    throw new ElixirCompileError(
+      "cannot analyze Elixir project: failed to remove isolated build output.",
+    );
+  }
+  if (trace === undefined) {
+    throw new ElixirCompileError("cannot analyze Elixir project: analysis did not complete.");
+  }
+  return trace;
 }
 
 function runTestTrace(input: {
@@ -212,6 +264,7 @@ function runTestTrace(input: {
   readonly production: TraceResult;
   readonly productionLayout: MixLayout;
   readonly testFiles: readonly string[];
+  readonly cargoEnvironment: NodeJS.ProcessEnv;
 }): TestTraceResult {
   let testLayout: MixLayout;
   try {
@@ -221,6 +274,7 @@ function runTestTrace(input: {
       join(input.workDir, "test-layout-build"),
       input.timeoutMs,
       "test",
+      input.cargoEnvironment,
     );
   } catch {
     return incompleteTestTrace("layout");
@@ -233,7 +287,13 @@ function runTestTrace(input: {
   if (testOnlyRoots === null) return incompleteTestTrace("ownership");
 
   const testBuildPath = join(input.workDir, "test-build");
+  const rustlerInventoryPath = join(input.workDir, "test-rustler-loaders.json");
   try {
+    writeFileSync(
+      rustlerInventoryPath,
+      JSON.stringify(discoverRustlerLoaders(input.projectDir, testLayout.sourcePaths)),
+      "utf8",
+    );
     prepareIsolatedBuild(testLayout, testBuildPath, input.projectDir);
   } catch {
     return incompleteTestTrace("artifacts");
@@ -264,13 +324,14 @@ function runTestTrace(input: {
       timeout: input.timeoutMs,
       maxBuffer: MAX_BUFFER,
       env: {
-        ...process.env,
+        ...input.cargoEnvironment,
         MIX_ENV: "test",
         MIX_BUILD_PATH: testBuildPath,
         MIX_QUIET: "1",
         UNUSED_OUT: outPath,
         UNUSED_PHASE: "test",
         UNUSED_INVENTORY: inventoryPath,
+        UNUSED_RUSTLER_LOADERS: rustlerInventoryPath,
       },
     },
   );
@@ -289,6 +350,19 @@ function runTestTrace(input: {
     );
   } catch {
     return incompleteTestTrace("output");
+  }
+}
+
+function createMixCargoExecutionContext(
+  projectDir: string,
+  targetParentDir: string,
+): CargoExecutionContext {
+  try {
+    return createCargoExecutionContext(projectDir, targetParentDir);
+  } catch {
+    throw new ElixirCompileError(
+      "cannot analyze Elixir project: Cargo isolation requires an external temporary target and Cargo home.",
+    );
   }
 }
 

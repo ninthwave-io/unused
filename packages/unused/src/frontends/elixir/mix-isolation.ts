@@ -1,9 +1,20 @@
 /** Same-environment Mix discovery and read-only isolated build preparation. */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  statSync,
+  symlinkSync,
+} from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { ElixirCompileError, ElixirToolchainError } from "./errors.js";
+import { extractElixirRustlerSource } from "./rustler.js";
 import { bytewiseCompare } from "./trace-protocol.js";
 
 const MAX_BUFFER = 256 * 1024 * 1024;
@@ -28,6 +39,59 @@ export interface TestInventory {
   readonly productionFiles: readonly string[];
   readonly testOnlyRoots: readonly string[];
   readonly testFiles: readonly string[];
+}
+
+export interface RustlerLoaderIdentity {
+  readonly module: string;
+  readonly otpApp: string;
+}
+
+/**
+ * Inventory exact Rustler loader identities before executing the compiler.
+ * Any unresolved loader refuses instead of allowing its macro to invoke Cargo
+ * or copy a NIF into the consumer tree.
+ */
+export function discoverRustlerLoaders(
+  projectDir: string,
+  sourcePaths: readonly string[],
+): readonly RustlerLoaderIdentity[] {
+  const files = new Set<string>();
+  const walk = (dir: string): void => {
+    if (!existsSync(dir)) return;
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
+      bytewiseCompare(a.name, b.name),
+    )) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.isFile() && entry.name.endsWith(".ex")) files.add(path);
+    }
+  };
+  for (const sourcePath of sourcePaths) walk(resolve(projectDir, sourcePath));
+
+  const loaders: RustlerLoaderIdentity[] = [];
+  let ambiguous = false;
+  for (const path of [...files].sort(bytewiseCompare)) {
+    const file = projectRelativePath(projectDir, path);
+    const extraction = extractElixirRustlerSource(file, readFileSync(path, "utf8"));
+    if (extraction.ambiguousSites.length > 0) ambiguous = true;
+    for (const loader of extraction.modules) {
+      if (loader.otpApp === undefined) {
+        ambiguous = true;
+        continue;
+      }
+      loaders.push({ module: loader.module, otpApp: loader.otpApp });
+    }
+  }
+  const keys = new Set(loaders.map((loader) => loader.module));
+  if (ambiguous || keys.size !== loaders.length) {
+    throw new ElixirCompileError(
+      "cannot analyze Elixir project: a Rustler loader has unresolved or conflicting compile configuration.",
+    );
+  }
+  return loaders.sort((a, b) => {
+    const appOrder = bytewiseCompare(a.otpApp, b.otpApp);
+    return appOrder === 0 ? bytewiseCompare(a.module, b.module) : appOrder;
+  });
 }
 
 export function discoverTestFiles(projectDir: string): readonly string[] {
@@ -78,6 +142,7 @@ export function inspectMixLayout(
   inspectionBuildPath: string,
   timeoutMs: number,
   mixEnv?: string,
+  baseEnvironment: NodeJS.ProcessEnv = process.env,
 ): MixLayout {
   const expression =
     "config = Mix.Project.config(); " +
@@ -111,7 +176,7 @@ export function inspectMixLayout(
       encoding: "utf8",
       timeout: timeoutMs,
       maxBuffer: MAX_BUFFER,
-      env: mixInspectionEnvironment(mixEnv, inspectionBuildPath),
+      env: mixInspectionEnvironment(mixEnv, inspectionBuildPath, baseEnvironment),
     },
   );
 
@@ -197,13 +262,14 @@ function isMixDependencyArtifact(value: unknown): value is MixDependencyArtifact
 function mixInspectionEnvironment(
   mixEnv: string | undefined,
   inspectionBuildPath: string,
+  baseEnvironment: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
   const {
     MIX_BUILD_PATH: sourceBuildPath,
     MIX_ENV: sourceMixEnv,
     UNUSED_SOURCE_MIX_BUILD_PATH: _sourceBuildPath,
     ...environment
-  } = process.env;
+  } = baseEnvironment;
   return {
     ...environment,
     ...(mixEnv === undefined
@@ -242,7 +308,7 @@ export function prepareIsolatedBuild(
   if (existsSync(sourcePriv)) {
     const isolatedApp = join(isolatedLib, layout.app);
     mkdirSync(isolatedApp, { recursive: true });
-    symlinkSync(sourcePriv, join(isolatedApp, "priv"), "dir");
+    mirrorPrivTree(sourcePriv, join(isolatedApp, "priv"));
   }
 
   for (const dependency of layout.dependencyArtifacts) {
@@ -255,6 +321,52 @@ export function prepareIsolatedBuild(
     }
     symlinkSync(dependency.buildPath, join(isolatedLib, dependency.app), "dir");
   }
+}
+
+/**
+ * Copy application resources into analyzer-owned storage without retaining a
+ * write-through path to the consumer. Internal symlinks are rebased into the
+ * mirror; links outside `priv` refuse because a compiler could otherwise write
+ * through them while analysis is running.
+ */
+function mirrorPrivTree(sourceRoot: string, destinationRoot: string): void {
+  if (!lstatSync(sourceRoot).isDirectory()) {
+    throw new Error("application priv path is not a directory");
+  }
+
+  const copyEntry = (source: string, destination: string): void => {
+    const metadata = lstatSync(source);
+    if (metadata.isDirectory()) {
+      mkdirSync(destination, { recursive: true, mode: metadata.mode });
+      for (const entry of readdirSync(source).sort(bytewiseCompare)) {
+        copyEntry(join(source, entry), join(destination, entry));
+      }
+      return;
+    }
+    if (metadata.isFile()) {
+      cpSync(source, destination, { preserveTimestamps: true });
+      return;
+    }
+    if (metadata.isSymbolicLink()) {
+      const link = readlinkSync(source);
+      const sourceTarget = resolve(dirname(source), link);
+      const targetRelative = relative(sourceRoot, sourceTarget);
+      if (
+        targetRelative === ".." ||
+        targetRelative.startsWith(`..${sep}`) ||
+        isAbsolute(targetRelative)
+      ) {
+        throw new Error("application priv contains an external symbolic link");
+      }
+      const destinationTarget = join(destinationRoot, targetRelative);
+      const rebasedLink = relative(dirname(destination), destinationTarget) || ".";
+      symlinkSync(rebasedLink, destination);
+      return;
+    }
+    throw new Error("application priv contains an unsupported filesystem entry");
+  };
+
+  copyEntry(sourceRoot, destinationRoot);
 }
 
 export function readBoundedTrace(path: string): string {

@@ -140,8 +140,7 @@ export function runCargo(
   cargoCommand = "cargo",
   operation: "metadata" | "compile" = "metadata",
 ): CargoCommandResult {
-  const paths = validateCargoExecutionContext(projectDir, execution, operation);
-  const environment = cargoEnvironment(paths);
+  const environment = cargoExecutionEnvironment(projectDir, execution, operation);
   const result = spawnSync(cargoCommand, [...args], {
     cwd: projectDir,
     encoding: "utf8",
@@ -173,6 +172,15 @@ export function runCargo(
     );
   }
   return { stdout: result.stdout, stderr: result.stderr };
+}
+
+/** Validated Cargo environment for a trusted compiler child such as Mix/Rustler. */
+export function cargoExecutionEnvironment(
+  projectDir: string,
+  execution: CargoExecutionContext,
+  operation: "metadata" | "compile" = "compile",
+): NodeJS.ProcessEnv {
+  return cargoEnvironment(validateCargoExecutionContext(projectDir, execution, operation));
 }
 
 interface ValidatedCargoExecutionPaths {

@@ -13,6 +13,7 @@ export interface ElixirRustlerStub {
 export interface ElixirRustlerModule {
   readonly file: string;
   readonly module: string;
+  readonly otpApp?: string;
   readonly crate?: string;
   readonly site: Site;
   readonly stubs: readonly ElixirRustlerStub[];
@@ -50,11 +51,16 @@ export function extractElixirRustlerSource(file: string, source: string): Elixir
     const moduleEnd = nextModule ?? code.length;
     const optionsEnd = nextDeclarationOffset(code, use.index + use[0].length, moduleEnd);
     const options = code.slice(use.index + use[0].length, optionsEnd);
+    const otpApps = [...options.matchAll(/\botp_app:\s*:([a-z][a-z0-9_]*)/gu)].flatMap((match) =>
+      match[1] === undefined ? [] : [match[1]],
+    );
     const crateMatch = /\bcrate:\s*(?::([a-z][a-z0-9_]*)|"([A-Za-z0-9_-]+)")/u.exec(options);
     const stubs = extractStubs(file, owner.module, source, code, use.index, moduleEnd);
+    if (otpApps.length !== 1) ambiguousSites.push(siteAt(file, source, use.index));
     modules.push({
       file,
       module: owner.module,
+      ...(otpApps[0] === undefined ? {} : { otpApp: otpApps[0] }),
       ...(crateMatch?.[1] === undefined && crateMatch?.[2] === undefined
         ? {}
         : { crate: crateMatch[1] ?? crateMatch[2] }),

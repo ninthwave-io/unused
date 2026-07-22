@@ -25,6 +25,7 @@ end
     expect(result.modules).toMatchObject([
       {
         module: "Neutral.Native",
+        otpApp: "neutral",
         crate: "neutral_native",
         site: { span: { startLine: 2 } },
         stubs: [
@@ -34,6 +35,21 @@ end
       },
     ]);
     expect(result.ambiguousSites).toEqual([]);
+  });
+
+  it("marks a loader without one literal OTP application as ambiguous", () => {
+    const result = extractElixirRustlerSource(
+      "lib/neutral.ex",
+      `defmodule Neutral.Native do
+  use Rustler, otp_app: configured_app()
+  def call(), do: :erlang.nif_error(:nif_not_loaded)
+end
+`,
+    );
+
+    expect(result.modules).toMatchObject([{ module: "Neutral.Native" }]);
+    expect(result.modules[0]).not.toHaveProperty("otpApp");
+    expect(result.ambiguousSites).toMatchObject([{ span: { startLine: 2 } }]);
   });
 
   it("does not treat comments or ordinary functions as Rustler stubs", () => {

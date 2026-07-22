@@ -255,6 +255,56 @@ defmodule Unused.Output do
   end
 end
 
+defmodule Unused.RustlerIsolation do
+  @moduledoc false
+
+  def with_overrides(path, fun) when is_function(fun, 0) do
+    identities =
+      path
+      |> File.read!()
+      |> :json.decode()
+      |> decode_identities()
+
+    previous =
+      Enum.map(identities, fn {app, module} ->
+        value = Application.fetch_env(app, module)
+        config = case value do {:ok, found} -> found; :error -> [] end
+        unless Keyword.keyword?(config), do: raise("invalid Rustler application configuration")
+        {app, module, value, Keyword.put(config, :skip_compilation?, true)}
+      end)
+
+    Enum.each(previous, fn {app, module, _value, config} ->
+      Application.put_env(app, module, config, persistent: false)
+    end)
+
+    try do
+      fun.()
+    after
+      Enum.each(previous, fn
+        {app, module, {:ok, value}, _config} ->
+          Application.put_env(app, module, value, persistent: false)
+        {app, module, :error, _config} ->
+          Application.delete_env(app, module, persistent: false)
+      end)
+    end
+  end
+
+  defp decode_identities(values) when is_list(values) do
+    Enum.map(values, fn
+      %{"module" => module, "otpApp" => app}
+          when is_binary(module) and is_binary(app) ->
+        unless Regex.match?(~r/^[A-Z][A-Za-z0-9_.]*$/, module) and
+                 Regex.match?(~r/^[a-z][a-z0-9_]*$/, app) do
+          raise "invalid Rustler loader identity"
+        end
+        {String.to_atom(app), Module.concat(String.split(module, "."))}
+      _ ->
+        raise "invalid Rustler loader inventory"
+    end)
+  end
+  defp decode_identities(_), do: raise("invalid Rustler loader inventory")
+end
+
 # --- output sink -----------------------------------------------------------
 out = System.get_env("UNUSED_OUT")
 {:ok, io} = File.open(out, [:write, :utf8])
@@ -269,14 +319,17 @@ Code.put_compiler_option(:tracers, [Unused.Tracer])
 
 case phase do
   "production" ->
-    compile_ok =
-      case Mix.Task.rerun("compile.elixir", ["--force", "--return-errors"]) do
-        {:error, diagnostics} when is_list(diagnostics) and diagnostics != [] ->
-          emit.(%{"k" => "compile_error", "count" => length(diagnostics),
-                  "details" => Enum.map(diagnostics, &inspect/1)})
-          false
-        _ -> true
-      end
+    compile_ok = Unused.RustlerIsolation.with_overrides(
+      System.fetch_env!("UNUSED_RUSTLER_LOADERS"),
+      fn ->
+        case Mix.Task.rerun("compile.elixir", ["--force", "--return-errors"]) do
+          {:error, diagnostics} when is_list(diagnostics) and diagnostics != [] ->
+            emit.(%{"k" => "compile_error", "count" => length(diagnostics),
+                    "details" => Enum.map(diagnostics, &inspect/1)})
+            false
+          _ -> true
+        end
+      end)
 
     # Generate the isolated .app resource for compiler-backed callback lookup.
     if compile_ok, do: Mix.Task.rerun("compile.app", ["--force"])
@@ -328,38 +381,43 @@ case phase do
       |> :json.decode()
     test_files = Map.fetch!(inventory, "testFiles") |> Enum.sort()
 
-    support_ok =
-      case Mix.Task.rerun("compile.elixir", ["--force", "--return-errors"]) do
-        {:error, _diagnostics} -> false
-        _ -> true
-      end
+    {support_ok, _test_mods, tests_ok} = Unused.RustlerIsolation.with_overrides(
+      System.fetch_env!("UNUSED_RUSTLER_LOADERS"),
+      fn ->
+        support_ok =
+          case Mix.Task.rerun("compile.elixir", ["--force", "--return-errors"]) do
+            {:error, _diagnostics} -> false
+            _ -> true
+          end
 
-    {_test_mods, tests_ok} =
-      if support_ok do
-        parent = self()
-        {pid, ref} =
-          spawn_monitor(fn ->
-            try do
-              Application.ensure_all_started(:ex_unit)
-              ExUnit.start(autorun: false)
-              result = Kernel.ParallelCompiler.compile_to_path(
-                test_files, Mix.Project.compile_path(), tracers: [Unused.Tracer])
-              send(parent, {:test_result, result})
-            catch
-              _kind, _reason -> send(parent, {:test_result, :error})
+        {test_mods, tests_ok} =
+          if support_ok do
+            parent = self()
+            {pid, ref} =
+              spawn_monitor(fn ->
+                try do
+                  Application.ensure_all_started(:ex_unit)
+                  ExUnit.start(autorun: false)
+                  result = Kernel.ParallelCompiler.compile_to_path(
+                    test_files, Mix.Project.compile_path(), tracers: [Unused.Tracer])
+                  send(parent, {:test_result, result})
+                catch
+                  _kind, _reason -> send(parent, {:test_result, :error})
+                end
+              end)
+
+            receive do
+              {:test_result, {:ok, modules, _warnings}} -> {modules, true}
+              {:test_result, _} -> {[], false}
+              {:DOWN, ^ref, :process, ^pid, _reason} -> {[], false}
+            after
+              120_000 -> {[], false}
             end
-          end)
-
-        receive do
-          {:test_result, {:ok, modules, _warnings}} -> {modules, true}
-          {:test_result, _} -> {[], false}
-          {:DOWN, ^ref, :process, ^pid, _reason} -> {[], false}
-        after
-          120_000 -> {[], false}
-        end
-      else
-        {[], false}
-      end
+          else
+            {[], false}
+          end
+        {support_ok, test_mods, tests_ok}
+      end)
 
     compile_complete = support_ok and tests_ok
     reflection_ok =
