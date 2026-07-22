@@ -52,6 +52,7 @@ const ELIXIR_FIXTURE = join(REPO_ROOT, "fixtures/elixir/basic-dead-function");
 const ELIXIR_MFA_FIXTURE = join(REPO_ROOT, "fixtures/elixir/runtime-mfa-callback");
 const ELIXIR_USE_FIXTURE = join(REPO_ROOT, "fixtures/elixir/dynamic-use-helpers");
 const ELIXIR_DEAD_INBOUND_FIXTURE = join(REPO_ROOT, "fixtures/elixir/dead-inbound-cohort");
+const ELIXIR_SCRIPT_FIXTURE = join(REPO_ROOT, "fixtures/elixir/standalone-script-references");
 const ELIXIR_INCOMPLETE_TEST_FIXTURE = join(REPO_ROOT, "fixtures/elixir/incomplete-test-partition");
 
 function readSchema(): object {
@@ -2120,6 +2121,49 @@ describe("unused CLI — why (T8.2, cli-ux §4)", () => {
   );
 
   it.skipIf(!MIX_AVAILABLE)(
+    "refuses a dead Elixir target referenced only by an unrooted tracked script",
+    () => {
+      const canonical = runCli(["--json", "--cwd", ELIXIR_SCRIPT_FIXTURE]);
+      expect(canonical.status).toBe(0);
+      expect(canonical.stderr).toBe("");
+      expect(
+        (
+          JSON.parse(canonical.stdout) as { claims: Array<{ subject: { loc: { file: string } } }> }
+        ).claims
+          .map((claim) => claim.subject.loc.file)
+          .sort(),
+      ).toEqual([
+        "lib/neutral_script/target.ex",
+        "scripts/module_caller.exs",
+        "scripts/module_surface.exs",
+        "scripts/neutral_bench.exs",
+        "scripts/opaque.exs",
+      ]);
+
+      const deletion = runCli([
+        "why",
+        "--delete",
+        "--json",
+        "lib/neutral_script/target.ex",
+        "--cwd",
+        ELIXIR_SCRIPT_FIXTURE,
+      ]);
+      expect(deletion.status).toBe(0);
+      expect(deletion.stderr).toBe("");
+      expect(JSON.parse(deletion.stdout)).toMatchObject({
+        schemaVersion: "1.4.0",
+        selected: { kind: "file", file: "lib/neutral_script/target.ex" },
+        supported: false,
+        unsupportedReason:
+          "non-re-export inbound reference remains at scripts/neutral_bench.exs:1; coordinated caller edits or deletion cohort are not modeled",
+        reExportEdits: [],
+        stages: [],
+      });
+    },
+    30_000,
+  );
+
+  it.skipIf(!MIX_AVAILABLE)(
     "refuses dead Elixir targets with dead compiler-visible callers while the full cohort compiles",
     async () => {
       for (const [target, line] of [
@@ -2282,17 +2326,21 @@ describe("unused report (T9.3, docs/design/report-and-badge.md §1)", () => {
     });
   });
 
-  it.skipIf(!MIX_AVAILABLE)("includes modeled consequences for Elixir claims", async () => {
-    await withTempFixtureCopy(ELIXIR_FIXTURE, async (dir) => {
-      const result = runCli(["report", "--cwd", dir]);
-      expect(result.status).toBe(0);
-      expect(result.stderr).toBe("");
-      const content = await readFile(join(dir, ".unused/report.md"), "utf8");
-      expect(content).toContain("BasicDead.Core.unused_helper/1");
-      expect(content).toContain("## Deletion consequences");
-      expect(content).not.toContain("BasicDead.Core.unused_helper/1`: not modeled");
-    });
-  });
+  it.skipIf(!MIX_AVAILABLE)(
+    "includes modeled consequences for Elixir claims",
+    async () => {
+      await withTempFixtureCopy(ELIXIR_FIXTURE, async (dir) => {
+        const result = runCli(["report", "--cwd", dir]);
+        expect(result.status).toBe(0);
+        expect(result.stderr).toBe("");
+        const content = await readFile(join(dir, ".unused/report.md"), "utf8");
+        expect(content).toContain("BasicDead.Core.unused_helper/1");
+        expect(content).toContain("## Deletion consequences");
+        expect(content).not.toContain("BasicDead.Core.unused_helper/1`: not modeled");
+      });
+    },
+    30_000,
+  );
 
   it("--html writes .unused/report.html — self-contained, no external assets", async () => {
     await withTempFixtureCopy(DEAD_FIXTURE, async (dir) => {

@@ -37,6 +37,7 @@ const ALL_CLASSES: readonly HazardClass[] = [
   "elixir-behaviour-callback",
   "elixir-dynamic-dispatch",
   "elixir-phoenix-runtime",
+  "elixir-script-opaque",
   "rustler-ambiguous-registration",
 ];
 
@@ -143,6 +144,14 @@ describe("HAZARD_REGISTRY — scope/cap per class group (T3.1a)", () => {
       }
       expect(entry.activation, cls).toBe("always");
     }
+  });
+
+  it("standalone script uncertainty is scoped to that file at medium", () => {
+    expectEntry("elixir-script-opaque", {
+      scope: "file",
+      cap: "medium",
+      activation: "always",
+    });
   });
 });
 

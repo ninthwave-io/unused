@@ -1,0 +1,46 @@
+case: standalone-script-references
+description: >-
+  A tracked standalone script is not loaded by Mix compilation and is not an
+  application root. It and its target remain valid dead-file claims, while its
+  literal alias, remote calls, and MFA tuples block deleting only the target.
+subjects:
+  - kind: file
+    name: scripts/neutral_bench.exs
+    file: scripts/neutral_bench.exs
+    expected: dead
+    minConfidence: high
+    because: >-
+      The visible script is neither compiler-traced nor explicitly invoked by a
+      tracked carrier, so it remains an honest high-confidence dead-file claim.
+  - kind: file
+    name: lib/neutral_script/target.ex
+    file: lib/neutral_script/target.ex
+    expected: dead
+    minConfidence: high
+    because: >-
+      References from an unreachable script do not make the target live, but
+      they remain deletion prerequisites with exact source provenance.
+  - kind: file
+    name: scripts/module_surface.exs
+    file: scripts/module_surface.exs
+    expected: dead
+    minConfidence: medium
+    because: >-
+      The unrooted script is dead, but defining a module outside compiler
+      tracing caps the file claim at medium rather than asserting high confidence.
+  - kind: file
+    name: scripts/module_caller.exs
+    file: scripts/module_caller.exs
+    expected: dead
+    minConfidence: high
+    because: >-
+      The literal call into another unrooted script is represented without
+      making either side live.
+  - kind: file
+    name: scripts/opaque.exs
+    file: scripts/opaque.exs
+    expected: dead
+    minConfidence: medium
+    because: >-
+      A dynamic script load that cannot be resolved exactly caps only this
+      script file at medium and does not suppress unrelated findings.

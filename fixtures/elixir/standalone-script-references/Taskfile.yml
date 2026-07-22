@@ -1,0 +1,4 @@
+tasks:
+  audit:
+    cmds:
+      - mix run scripts/invoked.exs

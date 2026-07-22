@@ -106,6 +106,7 @@ function repository(rootDir: string, project: string): RepositoryAnalysisContext
       packageJsonDirs: [project],
       mixExsDirs: [],
       cargoTomlDirs: [],
+      elixirSourceFiles: [],
       rustSourceFiles: [],
     },
     now: new Date(0),

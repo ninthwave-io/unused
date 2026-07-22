@@ -13,6 +13,9 @@ const mfaFixture = fileURLToPath(
 const behaviourFixture = fileURLToPath(
   new URL("../../../../../fixtures/elixir/behaviour-callback", import.meta.url),
 );
+const scriptFixture = fileURLToPath(
+  new URL("../../../../../fixtures/elixir/standalone-script-references", import.meta.url),
+);
 const temporaryRoots: string[] = [];
 
 afterEach(async () => {
@@ -31,6 +34,7 @@ describe.skipIf(!isMixAvailable())("Elixir convention plugin integration", () =>
     await Promise.all([
       copyFixture(mfaFixture, join(root, "apps/mfa")),
       copyFixture(behaviourFixture, join(root, "apps/beh")),
+      copyFixture(scriptFixture, join(root, "apps/script")),
     ]);
 
     const analysis = await analyzeProjectAutoWithGraph(root, { now: new Date(0) });
@@ -65,6 +69,21 @@ describe.skipIf(!isMixAvailable())("Elixir convention plugin integration", () =>
           claim.subject.name === "Beh.EmailHandler.handle/1",
       ),
     ).toBe(false);
+    expect(
+      analysis.result.claims.some(
+        (claim) => claim.subject.loc.file === "apps/script/scripts/neutral_bench.exs",
+      ),
+    ).toBe(true);
+    expect(
+      analysis.graph
+        .edges()
+        .some(
+          (edge) =>
+            edge.referenceKind === "runtime-resolved" &&
+            edge.site.file === "apps/script/scripts/neutral_bench.exs" &&
+            edge.name === "NeutralScript.Target.zero/0",
+        ),
+    ).toBe(true);
   });
 });
 

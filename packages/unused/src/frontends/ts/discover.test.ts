@@ -132,7 +132,11 @@ describe("discover", () => {
     await mkdir(join(root, "cdk.out"), { recursive: true });
     await mkdir(join(root, "apps", "backend"), { recursive: true });
     await mkdir(join(root, "native", "bridge"), { recursive: true });
-    await writeFile(join(root, ".gitignore"), "generated/\n");
+    await mkdir(join(root, "scripts"), { recursive: true });
+    await mkdir(join(root, "lib"), { recursive: true });
+    await writeFile(join(root, ".gitignore"), "generated/\n.iex.exs\n");
+    await writeFile(join(root, ".formatter.exs"), "[]\n");
+    await writeFile(join(root, ".iex.exs"), "IO.puts(:iex)\n");
     await writeFile(join(root, "package.json"), "{}\n");
     await writeFile(join(root, "src", "config.json"), "{}\n");
     await writeFile(join(root, "generated", "member", "package.json"), "{}\n");
@@ -141,6 +145,9 @@ describe("discover", () => {
     await writeFile(join(root, "apps", "backend", "mix.exs"), "# neutral\n");
     await writeFile(join(root, "native", "bridge", "Cargo.toml"), "[package]\nname='bridge'\n");
     await writeFile(join(root, "native", "bridge", "lib.rs"), "pub fn bridge() {}\n");
+    await writeFile(join(root, "scripts", "audit.exs"), "IO.puts(:ok)\n");
+    await writeFile(join(root, "lib", "subject.ex"), "defmodule Subject do\nend\n");
+    await writeFile(join(root, "generated", "ignored.exs"), "IO.puts(:ignored)\n");
 
     const inventory = await discoverProjectInventory(root);
     expect(inventory.jsonFiles.map((path) => relative(root, path).split(sep).join("/"))).toEqual([
@@ -153,6 +160,12 @@ describe("discover", () => {
     expect(inventory.mixProjectDirs).toEqual([join(root, "apps", "backend")]);
     expect(inventory.cargoProjectDirs).toEqual([join(root, "native", "bridge")]);
     expect(inventory.rustSourceFiles).toEqual([join(root, "native", "bridge", "lib.rs")]);
+    expect(inventory.elixirSourceFiles).toEqual([
+      join(root, ".formatter.exs"),
+      join(root, "apps", "backend", "mix.exs"),
+      join(root, "lib", "subject.ex"),
+      join(root, "scripts", "audit.exs"),
+    ]);
 
     const audit = await discoverProjectInventory(root, { gitignore: false });
     expect(audit.jsonFiles.map((path) => relative(root, path).split(sep).join("/"))).toEqual([
@@ -163,6 +176,16 @@ describe("discover", () => {
     expect(audit.packageRootDirs.map((path) => relative(root, path).split(sep).join("/"))).toEqual([
       "",
       "generated/member",
+    ]);
+    expect(
+      audit.elixirSourceFiles.map((path) => relative(root, path).split(sep).join("/")),
+    ).toEqual([
+      ".formatter.exs",
+      ".iex.exs",
+      "apps/backend/mix.exs",
+      "generated/ignored.exs",
+      "lib/subject.ex",
+      "scripts/audit.exs",
     ]);
   });
 

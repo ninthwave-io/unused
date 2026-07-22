@@ -46,6 +46,7 @@ export interface DiscoverOptions {
  */
 export interface ProjectInventory {
   readonly sourceFiles: readonly string[];
+  readonly elixirSourceFiles: readonly string[];
   readonly rustSourceFiles: readonly string[];
   readonly jsonFiles: readonly string[];
   readonly packageRootDirs: readonly string[];
@@ -69,6 +70,7 @@ export async function discoverProjectInventory(
   options: DiscoverOptions = {},
 ): Promise<ProjectInventory> {
   const sourceFiles: string[] = [];
+  const elixirSourceFiles: string[] = [];
   const rustSourceFiles: string[] = [];
   const jsonFiles: string[] = [];
   const packageRootDirs = new Set<string>();
@@ -79,6 +81,7 @@ export async function discoverProjectInventory(
   await walk(
     rootDir,
     sourceFiles,
+    elixirSourceFiles,
     rustSourceFiles,
     jsonFiles,
     packageRootDirs,
@@ -88,10 +91,12 @@ export async function discoverProjectInventory(
     useGitignore,
   );
   sourceFiles.sort();
+  elixirSourceFiles.sort();
   rustSourceFiles.sort();
   jsonFiles.sort();
   return {
     sourceFiles,
+    elixirSourceFiles,
     rustSourceFiles,
     jsonFiles,
     packageRootDirs: [...packageRootDirs].sort(),
@@ -229,6 +234,7 @@ async function enclosingGitRoot(start: string): Promise<string | null> {
 async function walk(
   dir: string,
   sourceFiles: string[],
+  elixirSourceFiles: string[],
   rustSourceFiles: string[],
   jsonFiles: string[],
   packageRootDirs: Set<string>,
@@ -247,11 +253,12 @@ async function walk(
     });
   }
   for (const entry of entries) {
-    // Hidden entries (dot-prefixed) — dirs and files — are skipped, EXCEPT the
-    // `.storybook` config directory (see the module doc): its config files
-    // reference real app code and carry the `stories` glob, so the tree is
-    // descended and `analyze.ts` roots the config files.
-    if (entry.name.startsWith(".") && entry.name !== ".storybook") continue;
+    // Hidden entries are skipped except exact, executable tool configuration:
+    // Storybook's directory plus Elixir's formatter/IEx config scripts.
+    const visibleHiddenEntry =
+      entry.name === ".storybook" ||
+      (entry.isFile() && (entry.name === ".formatter.exs" || entry.name === ".iex.exs"));
+    if (entry.name.startsWith(".") && !visibleHiddenEntry) continue;
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
       if (EXCLUDED_DIRS.has(entry.name)) continue;
@@ -259,6 +266,7 @@ async function walk(
       await walk(
         full,
         sourceFiles,
+        elixirSourceFiles,
         rustSourceFiles,
         jsonFiles,
         packageRootDirs,
@@ -270,6 +278,9 @@ async function walk(
     } else if (entry.isFile()) {
       if (useGitignore && isGitIgnored(full, false, contexts)) continue;
       if (hasSourceExtension(entry.name)) sourceFiles.push(full);
+      if (entry.name.endsWith(".ex") || entry.name.endsWith(".exs")) {
+        elixirSourceFiles.push(full);
+      }
       if (entry.name.endsWith(".rs")) rustSourceFiles.push(full);
       if (entry.name.toLowerCase().endsWith(".json")) jsonFiles.push(full);
       if (entry.name === "package.json") packageRootDirs.add(dir);

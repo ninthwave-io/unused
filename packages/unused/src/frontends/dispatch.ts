@@ -77,6 +77,7 @@ export async function analyzeProjectAutoWithGraph(
       packageJsonDirs: inventory.packageRootDirs,
       mixExsDirs: inventory.mixProjectDirs,
       cargoTomlDirs: inventory.cargoProjectDirs,
+      elixirSourceFiles: inventory.elixirSourceFiles,
       rustSourceFiles: inventory.rustSourceFiles,
     },
     now: options.now ?? new Date(),
@@ -130,7 +131,9 @@ export async function analyzeProjectAutoWithGraph(
   ) {
     const selected = discovered[0];
     const analysis = await (selected.plugin.language === "ex"
-      ? analyzeElixirProjectWithGraph(root, options)
+      ? analyzeElixirProjectWithGraph(root, options, {
+          elixirSourceFiles: inventory.elixirSourceFiles,
+        })
       : analyzeProjectWithGraph(root, options));
     const boundaries: readonly BoundaryRunMetadata[] = [
       deriveDirectBoundaryMetadata({

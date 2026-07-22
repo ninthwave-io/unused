@@ -258,6 +258,14 @@ export const HAZARD_REGISTRY: Readonly<Record<HazardClass, HazardClassEntry>> = 
     rationale:
       "When its carrier file is reachable from a production, config, test, or already-active dynamic-hazard scope, a file that performs dynamic dispatch — `apply/3`, `Kernel.apply/3`, `:erlang.apply/3`, or a `Module.concat`/atom-computed module target — can invoke at runtime a module and function that no static reference names. The resolved target is structurally invisible to the compiler tracer and to `mix xref` alike (confirmed in the ADR 0011 research). When source arguments bound the candidate set, the annotation names the exact affected symbols and only those symbols (plus their whole-file deletion claims) are capped at medium; a literal exact target is emitted as a runtime edge instead. When the module/function identity remains opaque, the annotation omits targets and the whole workspace unit that owns the dispatching file remains capped at medium. An unreachable carrier does not activate either form.",
   },
+  "elixir-script-opaque": {
+    hazardClass: "elixir-script-opaque",
+    scope: "file",
+    activation: "always",
+    cap: "medium",
+    rationale:
+      "A visible standalone Elixir script defines modules or contains dynamic evaluation/loading that the bounded literal script extractor cannot fully model. The script file itself is capped at medium rather than confidently claimed dead. Literal references and exact script-to-script loads are still represented; arbitrary scripts are not blanket-rooted, and this file-scoped cap does not hide unrelated project claims.",
+  },
   "elixir-phoenix-runtime": {
     hazardClass: "elixir-phoenix-runtime",
     scope: "symbol-set",

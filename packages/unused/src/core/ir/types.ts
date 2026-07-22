@@ -92,6 +92,7 @@ export type HazardClass =
   // as for the TS classes above.
   | "elixir-behaviour-callback"
   | "elixir-dynamic-dispatch"
+  | "elixir-script-opaque"
   | "elixir-phoenix-runtime"
   | "rustler-ambiguous-registration";
 

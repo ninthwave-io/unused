@@ -33,6 +33,7 @@ describe("built-in language plugins", () => {
     const registry = new PluginRegistry(BUILT_IN_PLUGINS);
     expect(registry.conventionPlugins().map((plugin) => plugin.id)).toEqual([
       "convention:elixir-runtime",
+      "convention:elixir-scripts",
       "convention:rustler-elixir",
       "convention:rustler-rust",
       "convention:typescript-config-carriers",
@@ -58,6 +59,7 @@ describe("built-in language plugins", () => {
         packageJsonDirs: [project],
         mixExsDirs: [],
         cargoTomlDirs: [],
+        elixirSourceFiles: [],
         rustSourceFiles: [],
       },
       now: new Date(0),

@@ -26,6 +26,9 @@ const testSupportFixture = fileURLToPath(
 const onLoadFixture = fileURLToPath(
   new URL("../../../../../fixtures/elixir/on-load-beam-reflection", import.meta.url),
 );
+const scriptFixture = fileURLToPath(
+  new URL("../../../../../fixtures/elixir/standalone-script-references", import.meta.url),
+);
 const temporaryProjects: string[] = [];
 const MIX_AVAILABLE = isMixAvailable();
 
@@ -58,6 +61,119 @@ describe("Elixir analysis policy", () => {
 
     await expect(analyzeElixirProject(root)).rejects.toBeInstanceOf(ConfigError);
   });
+
+  it.skipIf(!MIX_AVAILABLE)(
+    "keeps standalone scripts dead while retaining their literal deletion prerequisites",
+    async () => {
+      const root = await copyFixtureFrom(scriptFixture);
+      const analysis = await analyzeElixirProjectWithGraph(root, { now: new Date(0) });
+      expect(
+        analysis.result.claims
+          .filter((claim) => claim.subject.kind === "file")
+          .map((claim) => ({ file: claim.subject.loc.file, confidence: claim.confidence }))
+          .sort((a, b) => a.file.localeCompare(b.file)),
+      ).toEqual([
+        { file: "lib/neutral_script/target.ex", confidence: "high" },
+        { file: "scripts/module_caller.exs", confidence: "high" },
+        { file: "scripts/module_surface.exs", confidence: "medium" },
+        { file: "scripts/neutral_bench.exs", confidence: "high" },
+        { file: "scripts/opaque.exs", confidence: "medium" },
+      ]);
+      expect(
+        analysis.result.claims.some(
+          (claim) => claim.subject.loc.file === "lib/mix/tasks/neutral.audit.ex",
+        ),
+      ).toBe(false);
+      expect(analysis.graph.getNode("file:ignored/hidden.exs")).toBeUndefined();
+      expect(
+        analysis.reachability.production.reachableFiles.has("file:scripts/neutral_bench.exs"),
+      ).toBe(false);
+      expect(
+        analysis.graph
+          .entrypoints()
+          .some(
+            (entrypoint) =>
+              entrypoint.file === "scripts/invoked.exs" &&
+              entrypoint.reason === "config:taskfile:cmd",
+          ),
+      ).toBe(true);
+      expect(
+        analysis.graph
+          .entrypoints()
+          .filter((entrypoint) => entrypoint.file.startsWith("."))
+          .map((entrypoint) => ({ file: entrypoint.file, reason: entrypoint.reason }))
+          .sort((a, b) => a.file.localeCompare(b.file)),
+      ).toEqual([
+        { file: ".formatter.exs", reason: "elixir:formatter-config" },
+        { file: ".iex.exs", reason: "elixir:iex-config" },
+      ]);
+
+      const scriptEdges = analysis.graph
+        .edges()
+        .filter(
+          (edge) => edge.kind === "references" && edge.site.file === "scripts/neutral_bench.exs",
+        );
+      expect(scriptEdges.some((edge) => edge.site.span.startLine === 1)).toBe(true);
+      expect(
+        scriptEdges.some(
+          (edge) => edge.referenceKind === "static" && edge.name === "NeutralScript.Target.zero/0",
+        ),
+      ).toBe(true);
+      expect(
+        scriptEdges.some(
+          (edge) =>
+            edge.referenceKind === "runtime-resolved" && edge.name === "NeutralScript.Target.one/1",
+        ),
+      ).toBe(true);
+
+      expect(
+        computeDeletionPlan({
+          graph: analysis.graph,
+          reachability: analysis.reachability,
+          subject: { kind: "file", file: "lib/neutral_script/target.ex" },
+        }),
+      ).toMatchObject({
+        supported: false,
+        unsupportedReason:
+          "non-re-export inbound reference remains at scripts/neutral_bench.exs:1; coordinated caller edits or deletion cohort are not modeled",
+        reExportEdits: [],
+        stages: [],
+      });
+      expect(
+        computeDeletionPlan({
+          graph: analysis.graph,
+          reachability: analysis.reachability,
+          subject: { kind: "file", file: "scripts/module_surface.exs" },
+        }),
+      ).toMatchObject({
+        supported: false,
+        unsupportedReason:
+          "non-re-export inbound reference remains at scripts/module_caller.exs:1; coordinated caller edits or deletion cohort are not modeled",
+      });
+
+      const runnable = spawnSync("mix", ["run", "scripts/neutral_bench.exs"], {
+        cwd: root,
+        encoding: "utf8",
+      });
+      expect(runnable.status, runnable.stderr + runnable.stdout).toBe(0);
+
+      await unlink(join(root, "lib/neutral_script/target.ex"));
+      const dangling = spawnSync("mix", ["run", "scripts/neutral_bench.exs"], {
+        cwd: root,
+        encoding: "utf8",
+      });
+      expect(dangling.status).not.toBe(0);
+      expect(dangling.stderr + dangling.stdout).toContain("NeutralScript.Target.zero/0");
+
+      await unlink(join(root, "scripts/neutral_bench.exs"));
+      const cohort = spawnSync("mix", ["compile", "--warnings-as-errors"], {
+        cwd: root,
+        encoding: "utf8",
+      });
+      expect(cohort.status, cohort.stderr + cohort.stdout).toBe(0);
+    },
+    60_000,
+  );
 
   it.skipIf(!MIX_AVAILABLE)(
     "reflects failing-on-load modules from BEAM paths without executing their hooks",

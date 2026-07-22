@@ -41,11 +41,12 @@ import {
   loadConfig,
   warnOnEmptyConfigMatches,
 } from "../ts/config.js";
-import { filterGitignoredRelativePaths } from "../ts/discover.js";
+import { discoverProjectInventory, filterGitignoredRelativePaths } from "../ts/discover.js";
 import { detectElixirProject } from "./detect.js";
 import { emitElixirIR } from "./emit.js";
 import { ElixirFrontendError, runTracer } from "./runner.js";
 import { extractElixirRuntimeConventions } from "./runtime-references.js";
+import { extractElixirScriptCommandRoots, extractElixirScriptFacts } from "./script-references.js";
 
 /** Analyzer name stamped into provenance (distinct from the TS `ts-reference-graph`). */
 const ANALYZER_NAME = "elixir-reference-graph";
@@ -65,6 +66,7 @@ export interface AnalyzeElixirWithGraph {
 }
 
 const ELIXIR_RUNTIME_PLUGIN_ID = "convention:elixir-runtime";
+const ELIXIR_SCRIPTS_PLUGIN_ID = "convention:elixir-scripts";
 const ELIXIR_RUNTIME_HAZARDS = new Set([
   "elixir-behaviour-callback",
   "elixir-dynamic-dispatch",
@@ -103,6 +105,18 @@ export async function analyzeElixirProjectWithGraph(
     performance?.finish("workspace-config-detection", workspaceStarted);
   }
 
+  const inventoryStarted = performance?.now();
+  const visibleElixirSourceFiles =
+    internal.elixirSourceFiles ??
+    (
+      await discoverProjectInventory(project.projectDir, {
+        ...(options.gitignore === undefined ? {} : { gitignore: options.gitignore }),
+      })
+    ).elixirSourceFiles;
+  if (inventoryStarted !== undefined) {
+    performance?.finish("discovery-gitignore", inventoryStarted);
+  }
+
   // The one place user code runs (disclosed). Throws on every refusal path.
   const parsingStarted = performance?.now();
   const traceResult = runTracer(project.projectDir);
@@ -117,28 +131,55 @@ export async function analyzeElixirProjectWithGraph(
   const configReferencedModules = scanConfigModuleReferences(project.projectDir, projectModules);
 
   const runtimeConventions = extractElixirRuntimeConventions(project.projectDir, traceResult);
+  const scriptFacts = extractElixirScriptFacts(
+    project.projectDir,
+    visibleElixirSourceFiles,
+    traceResult,
+  );
+  const scriptsDeferred = internal.deferredConventions?.includes("elixir-scripts") === true;
+  const scriptContribution = mergeGraphContributions(
+    scriptFacts.contribution,
+    scriptsDeferred
+      ? {}
+      : await extractElixirScriptCommandRoots(
+          project.projectDir,
+          new Set(scriptFacts.files),
+          options.gitignore !== false,
+        ),
+  );
+  performance?.increment("resolutionAttempts", scriptFacts.resolutionAttempts);
   if (conventionStarted !== undefined) {
     performance?.finish("convention-config-roots", conventionStarted);
   }
 
   const graphStarted = performance?.now();
-  const emittedGraph = emitElixirIR({
+  let graph = emitElixirIR({
     traceResult,
     configReferencedModules,
     runtimeReferences: runtimeConventions.references,
     dynamicDispatches: runtimeConventions.dynamicDispatches,
   });
-  const deferred = internal.deferredConventions?.includes("elixir-runtime") === true;
-  const { graph, contribution } = deferred
-    ? deferElixirRuntimeContribution(emittedGraph)
-    : { graph: emittedGraph, contribution: undefined };
+  const deferredContributions = new Map<string, GraphContribution>();
+  if (internal.deferredConventions?.includes("elixir-runtime") === true) {
+    const deferred = deferElixirRuntimeContribution(graph);
+    graph = deferred.graph;
+    deferredContributions.set(ELIXIR_RUNTIME_PLUGIN_ID, deferred.contribution);
+  }
+  if (scriptsDeferred) {
+    if ((scriptContribution.nodes?.length ?? 0) > 0) {
+      deferredContributions.set(ELIXIR_SCRIPTS_PLUGIN_ID, scriptContribution);
+    }
+  } else {
+    addGraphContribution(graph, scriptContribution);
+  }
   if (graphStarted !== undefined) performance?.finish("graph-construction", graphStarted);
 
   // Per-file line counts for `file`-claim spans (core does no file I/O).
-  const fileLineCounts = new Map<string, number>();
+  const fileLineCounts = new Map<string, number>(scriptFacts.fileLineCounts);
   const distinctFiles = new Set<string>();
   for (const mod of traceResult.modules) distinctFiles.add(mod.file);
   for (const fn of traceResult.functions) distinctFiles.add(fn.file);
+  for (const file of scriptFacts.files) distinctFiles.add(file);
   const discoveryStarted = performance?.now();
   const analyzedFiles =
     options.gitignore === false
@@ -162,6 +203,7 @@ export async function analyzeElixirProjectWithGraph(
     performance?.finish("convention-config-roots", configRootsStarted);
   }
   for (const rel of distinctFiles) {
+    if (fileLineCounts.has(fileId(rel))) continue;
     try {
       const content = readFileSync(join(project.projectDir, rel), "utf8");
       fileLineCounts.set(fileId(rel), countLines(content));
@@ -256,9 +298,25 @@ export async function analyzeElixirProjectWithGraph(
     reachability,
     claimInputs,
     provenance,
-    ...(contribution === undefined
-      ? {}
-      : { deferredContributions: new Map([[ELIXIR_RUNTIME_PLUGIN_ID, contribution]]) }),
+    ...(deferredContributions.size === 0 ? {} : { deferredContributions }),
+  };
+}
+
+function addGraphContribution(graph: IRGraph, contribution: GraphContribution): void {
+  for (const node of contribution.nodes ?? []) graph.addNode(node);
+  for (const edge of contribution.edges ?? []) graph.addEdge(edge);
+  for (const hazard of contribution.hazards ?? []) graph.addHazard(hazard);
+}
+
+function mergeGraphContributions(
+  first: GraphContribution,
+  second: GraphContribution,
+): GraphContribution {
+  return {
+    nodes: [...(first.nodes ?? []), ...(second.nodes ?? [])],
+    edges: [...(first.edges ?? []), ...(second.edges ?? [])],
+    hazards: [...(first.hazards ?? []), ...(second.hazards ?? [])],
+    diagnostics: [...(first.diagnostics ?? []), ...(second.diagnostics ?? [])],
   };
 }
 

@@ -1,0 +1,6 @@
+/_build/
+/deps/
+/ignored/
+/.elixir_ls/
+erl_crash.dump
+*.beam

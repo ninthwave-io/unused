@@ -1,7 +1,7 @@
 <!-- GENERATED FILE — do not edit by hand. Regenerate with `pnpm run assumptions`.
      Source: packages/unused/src/core/analysis/assumption-set.ts + hazard-registry.ts. -->
 
-# Analysis assumption set (v1.12.0)
+# Analysis assumption set (v1.13.0)
 
 `unused`'s `high`-confidence verdicts hold under the assumptions enumerated
 here (PRD §4): `high` means "safe to act without re-deriving the reference
@@ -54,6 +54,10 @@ The Elixir frontend (experimental in v0.1.0) is the one place `unused` executes 
 ### Elixir entrypoints, and runtime dispatch is kept alive (experimental)
 
 The Elixir reachability roots are the OTP application callback module (`mix.exs` `application/0` `mod:`, read from the compiled `.app` resource), everything its supervision tree references (child modules appear as ordinary alias/call references in the tracer, so supervised children are reached transitively), `Phoenix.Endpoint`/`Phoenix.Router` modules when Phoenix is a dependency, and `Mix.Task` modules (`lib/mix/tasks/**`, invoked by CLI name) — all production roots. `config/*.exs` module references are config roots (a module named in config is kept alive). `test/` + ExUnit is the test partition. A public function is a symbol named `Mod.fun/arity` (kind `export` in v1); a module is a symbol named `Mod`; a `.ex`/`.exs` file is a `file` subject. Reflectively-dispatched CALLBACK FUNCTIONS are kept alive, never flagged — but only relative to a module that is itself reachable: a behaviour/OTP module (`@behaviour`/`use GenServer`), a Phoenix runtime module or protocol implementation (`defimpl`), or a plain OTP-supervisable module (one defining `child_spec/1`) has its callback claims suppressed when it is supervised, aliased, or config-named. A module reachable by NOTHING is still claimable as a dead file (the keep-alive suppresses callback claims, not the module's own file claim) — capped to medium by the unit's dynamic-dispatch hazard when an `apply`/`Module.concat` exists in the unit, never confidently dead while such a computed dispatch could reach it. HEEx `~H`/`.heex` component references are visible to the tracer (empirically confirmed) and need no special handling. A project with no application callback, mix task, or Phoenix endpoint anchors no liveness and is proven-nothing rather than flagged wholesale, exactly as a TypeScript project with no entrypoint. Full parity (dependency claims via `mix.lock`, umbrella apps, per-callback precision) is post-v1.
+
+### Visible standalone Elixir scripts are analyzed without blanket rooting
+
+The shared gitignore-bounded repository traversal inventories `.ex` and `.exs` once, including exact hidden Elixir config files `.formatter.exs` and `.iex.exs`. Compiler-traced sources, `mix.exs`, `config/**`, and `test/**` retain their existing owners; every other visible `.exs` is an unrooted, claimable file unless an exact GitHub Actions or Taskfile command names it, it is executable, it has an Elixir/Mix shebang, it calls `Mix.install`, it is an exact formatter/IEx config, or matching Ecto/Phoenix dependencies own a conventional `priv/**/migrations/*.exs` or `priv/**/seeds*.exs` path. Each rule roots only that script; arbitrary paths under `priv` remain claimable. A bounded code-position extractor masks comments and string/heredoc bodies, then adds provenance-bearing edges for compiler-known literal module aliases (including grouped aliases), remote calls with or without parentheses, function captures, MFA tuples, exact `Code.require_file` or `Code.eval_file` script loads, and script-defined module names. References from an unreachable script do not make their target live, but they block a single-target deletion plan. Script-defined modules or opaque dynamic loading/evaluation cap only that script file at medium rather than producing a high-confidence file claim. Residual syntax in a rooted script applies a carrier-reachable cap only to referenced module functions, or to its owning unit when the dynamic target is wholly opaque; unrelated project claims remain unaffected.
 
 ### Incomplete Elixir test compilation fails closed
 
@@ -173,6 +177,14 @@ When its carrier file is reachable from a production, config, test, or already-a
 - **Confidence cap:** no-claim
 
 A Phoenix/OTP runtime-dispatch module — a `Phoenix.LiveView`/`Phoenix.LiveComponent`/`Phoenix.Channel`/`Phoenix.Endpoint`/`Phoenix.Router` behaviour implementation, or an Elixir protocol implementation (`defimpl`, detected via the compiled module's `__impl__/1`) or protocol definition (`__protocol__/1`) — exposes functions the framework or the protocol dispatcher calls by convention at runtime (`mount/3`, `handle_event/3`, `render/1`, a `defimpl` body dispatched by `Protocol.impl_for/1`), with no static caller anywhere. HEEx template component references, by contrast, ARE visible to the tracer (empirically confirmed in the ADR 0011 skeleton phase: `~H` and `.heex` component invocations compile to ordinary function calls the tracer records) and need no hazard. Like the behaviour-callback class, the whole module's public-function surface is suppressed (symbol-set, no-claim), because the frontend does not model which functions are the framework-called ones; the module's file liveness is unaffected.
+
+### elixir-script-opaque
+
+- **Activation:** always
+- **Scope:** file
+- **Confidence cap:** medium
+
+A visible standalone Elixir script defines modules or contains dynamic evaluation/loading that the bounded literal script extractor cannot fully model. The script file itself is capped at medium rather than confidently claimed dead. Literal references and exact script-to-script loads are still represented; arbitrary scripts are not blanket-rooted, and this file-scoped cap does not hide unrelated project claims.
 
 ### emit-decorator-metadata
 

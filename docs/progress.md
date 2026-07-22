@@ -273,3 +273,40 @@ Founder review of the reference-codebase deletion list (the real-use-case valida
   and verified canonical/filtered output, zero ordinary deletion simulations,
   runtime liveness, and deletion refusal. No raw or identifying evidence entered
   this repository. No tag, push, publish, or external mutation was performed.
+
+## Standalone Elixir script inventory (accepted, 2026-07-22)
+
+- Root cause: the compiler trace doubled as the analyzed Elixir file inventory,
+  so visible `.exs` files not loaded by Mix existed in neither the graph nor the
+  claim set and could not protect their literal deletion prerequisites.
+- The shared gitignore-bounded discovery pass now inventories `.ex`/`.exs` once.
+  A modular `convention:elixir-scripts` owns otherwise-untraced standalone
+  scripts in both direct Mix and nested polyglot boundaries.
+- Arbitrary scripts remain unrooted and claimable. Only executable mode,
+  Elixir/Mix shebang, `Mix.install`, or an exact GitHub Actions/Taskfile command
+  roots the named file, alongside exact formatter/IEx config and dependency-
+  scoped Ecto/Phoenix migrations/seeds. Arbitrary `priv` scripts remain
+  claimable. Literal aliases, calls, MFA tuples, exact script loads, and inter-
+  script module references produce provenance-bearing graph edges.
+- Script-defined modules and opaque dynamic invocation cap only that file at
+  medium via `elixir-script-opaque`; unrelated claims remain high and visible.
+  Neutral coverage proves target-only deletion refusal and a manually valid
+  caller-plus-target cohort without importing any external project material.
+- The 250–4,000-file isolated extractor benchmark is near-linear (10.352 ms to
+  163.560 ms) with constant reference density and one resolvable exact load per
+  file. A one-file 250–4,000-module adversarial series remains bounded
+  (0.678–10.776 ms), and repository command
+  carriers are cached once per orchestration context. Exact evidence and resume state
+  live in `docs/bench/2026-07-22-elixir-script-inventory.md` and
+  `docs/delivery/polyglot-first-class.md`.
+- Final pre-review gates pass: typecheck, build, assumption set 1.13, lint (the
+  established 2 warnings / 48 infos), boundaries (925 modules / 2,030
+  dependencies), 84 test files / 1,196 tests with no skips, all four corpus
+  gates, installed-tarball schema-1.4 JSON under Node 22.16.0, diff, and privacy
+  checks. Elixir is 15 cases / 41 subjects at precision 1.0 and recall
+  0.9473684210526315 with zero confidence violations or unlabelled claims.
+- Independent public-only review is approved after correcting code/string
+  masking, optional-parentheses and capture coverage, opaque-vs-bounded hazard
+  separation, framework-owned roots, repeated carrier/exact-load work, and
+  adversarial scaling coverage. No private consumer material entered this
+  public batch.

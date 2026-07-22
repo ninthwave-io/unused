@@ -153,3 +153,47 @@ world; evidence therefore says the subject exists only in the test environment
 while preserving the real root provenance. Per-test zombie analysis and
 deletion-consequence checks use the same edge-activity rules. Ordinary shared
 edges and incomplete-partition safety behavior are unchanged.
+
+## Implementation amendment — standalone script inventory (2026-07-22)
+
+The compiler trace is no longer the complete Elixir source inventory. The
+shared repository discovery pass records every visible `.ex` and `.exs` path
+under the same nested `.gitignore` policy used by the other frontends. Mix-
+compiled sources, `mix.exs`, `config/**`, and `test/**` keep their existing
+owners. Every other visible, untraced `.exs` becomes an ordinary graph file and
+is claimable when unreachable; ignored and repository-external paths never
+enter this path.
+
+A compiled-in `convention:elixir-scripts` plugin contributes bounded static
+facts before global reachability. Literal aliases, remote calls, MFA tuples,
+exact `Code.require_file`/`Code.eval_file` loads, and script-defined module
+names produce provenance-bearing edges to known project targets. An unreachable
+script does not make its target live, but its inbound edge prevents a target-
+only deletion plan from being advertised as safe. Calls into a module defined
+by another untraced script conservatively retain the module surface as one
+symbol; function-level script parsing remains outside the compiler-tracer
+contract.
+
+Only exact public conventions root a standalone script: an executable bit, an
+Elixir/Mix shebang, `Mix.install`, an exact GitHub Actions/Taskfile command whose
+executable position names that script (`elixir` or `mix run`), `.formatter.exs`,
+`.iex.exs`, or an Ecto/Phoenix-owned `priv/**/migrations/*.exs` or
+`priv/**/seeds*.exs` path when the matching dependency is present. Ecto's
+documented migrator loads versioned scripts from each Repo's configurable
+`priv` migration directory; Phoenix generates and documents its Repo seeds as
+`mix run` inputs. Phoenix release generation emits compiled `.ex` plus shell
+overlays, so it needs no broader `.exs` root. These rules root only the named
+file. Arbitrary script directories, arbitrary `priv` scripts, and unreferenced
+`.exs` files are never blanket-rooted.
+
+Script-defined module surfaces and opaque dynamic invocation cannot support a
+high-confidence file claim from this bounded extractor. They activate the
+file-scoped `elixir-script-opaque` hazard and cap only that script at medium;
+they neither suppress unrelated claims nor root the whole project. The
+extractor masks non-code text using UTF-16 code-unit offsets and handles grouped
+aliases, optional-parentheses calls/loads, captures, and MFA values. Residual
+rooted-script syntax receives a carrier-reachable affected-symbol cap (or an
+owning-unit cap only when the target is wholly opaque). Extraction is O(total
+script bytes + resolved literal references × log(lines))
+and reads each visible script once. Neutral measurements and reproduction are
+recorded in `docs/bench/2026-07-22-elixir-script-inventory.md`.

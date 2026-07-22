@@ -2230,6 +2230,14 @@ function shellSourcePaths(run: string, allowTaskRuntimeTemplates = false): Shell
           direct: false,
         })),
       );
+    } else if (command === "elixir" || (command === "mix" && tokens[cursor + 1] === "run")) {
+      out.push(
+        ...elixirCommandSourcePaths(tokens, cursor + (command === "mix" ? 2 : 1)).map((path) => ({
+          path,
+          directory,
+          direct: false,
+        })),
+      );
     } else if (command === "k6" && tokens[cursor + 1] === "run") {
       const entry = k6RunSourcePath(tokens, cursor + 2, allowTaskRuntimeTemplates);
       if (entry !== null) out.push({ path: entry, directory, direct: false });
@@ -2241,6 +2249,45 @@ function shellSourcePaths(run: string, allowTaskRuntimeTemplates = false): Shell
     }
   }
   return out;
+}
+
+const ELIXIR_OPTIONS_WITH_VALUE = new Set([
+  "-e",
+  "--eval",
+  "--rpc-eval",
+  "--sname",
+  "--name",
+  "--cookie",
+  "--erl",
+  "--dot-iex",
+  "--config",
+]);
+
+/** Return only scripts in executable positions, never `.exs`-looking option data. */
+function elixirCommandSourcePaths(tokens: readonly string[], start: number): string[] {
+  const paths: string[] = [];
+  for (let cursor = start; cursor < tokens.length; cursor += 1) {
+    const token = tokens[cursor] ?? "";
+    if (token === "-r" || token === "--require") {
+      const required = tokens[cursor + 1];
+      if (required?.toLowerCase().endsWith(".exs") === true) paths.push(required);
+      cursor += 1;
+      continue;
+    }
+    if (token.startsWith("--require=")) {
+      const required = token.slice("--require=".length);
+      if (required.toLowerCase().endsWith(".exs")) paths.push(required);
+      continue;
+    }
+    if (ELIXIR_OPTIONS_WITH_VALUE.has(token)) {
+      cursor += 1;
+      continue;
+    }
+    if (token.startsWith("-")) continue;
+    if (token.toLowerCase().endsWith(".exs")) paths.push(token);
+    break;
+  }
+  return paths;
 }
 
 interface ProtectedTaskTemplates {

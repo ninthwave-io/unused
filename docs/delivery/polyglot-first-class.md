@@ -922,3 +922,72 @@ Packaging and privacy smokes remain mandatory before any release recommendation.
 - `9238c77` — completed polyglot phase and resource instrumentation.
 - `76dc36b` — made BEAM reflection load-free and aligned runtime callback
   reachability, `why`, and deletion refusal with compiler-proven carriers.
+
+### Standalone Elixir script inventory follow-up
+
+Status: complete and independently approved from clean checkpoint `33ec88f`
+
+Resume objective: make gitignore-visible standalone Elixir scripts first-class
+source without treating every script as a production root or weakening
+deletion safety.
+
+Frozen design and acceptance:
+
+- extend the existing single repository discovery pass with `.ex`/`.exs`
+  inventory; reject ignored/external paths and keep compiler, Mix, config, and
+  test ownership unchanged;
+- implement extraction as the statically registered
+  `convention:elixir-scripts`, with direct-root and nested polyglot-boundary
+  coverage;
+- leave arbitrary untraced scripts unrooted and claimable; root only an exact
+  executable/shebang/`Mix.install` script or exact GitHub Actions/Taskfile
+  `elixir`/`mix run` command target, plus exact formatter/IEx configuration and
+  dependency-scoped Ecto/Phoenix migration/seed paths; arbitrary `priv` scripts
+  remain claimable;
+- add exact source-provenance edges for known literal aliases, remote calls,
+  MFA tuples, exact script loads, and inter-script module references;
+- cap only a script-defined module or opaque dynamic invocation at medium with
+  `elixir-script-opaque`; do not add a project-wide suppression or root;
+- mask strings/heredocs at code-unit-stable offsets, cover grouped aliases and
+  optional-parentheses calls/loads, and apply a carrier-reachable bounded cap
+  for residual syntax in an actually rooted script;
+- prove target-only deletion refusal for compiler-known and inter-script
+  targets while retaining an explicit, manually possible deletion cohort;
+- corpus-label every live/dead subject, synchronize assumption set 1.13, keep
+  canonical JSON/schema unchanged, and preserve compiler build isolation;
+- demonstrate bounded scaling with the generated 250–4,000-file benchmark in
+  `docs/bench/2026-07-22-elixir-script-inventory.md`; and
+- run typecheck, lint, boundaries, the full Elixir-equipped suite, generated
+  assumptions, all four corpus scoreboards, build, installed-tarball smoke,
+  diff/privacy checks, and independent public-only review before one focused
+  commit. Do not run the private consuming project from this workstream.
+
+Final matrix before review: typecheck, build, generated assumption set 1.13,
+lint (the established 2 warnings / 48 infos), boundaries (925 modules / 2,030
+dependencies), and the full Elixir-equipped suite (84 files / 1,196 tests, no
+skips) pass. All corpus gates retain zero false positives, confidence
+violations, and unlabelled claims: TypeScript 52 cases / 237 subjects (precision
+1.0, recall 0.826530612244898), Elixir 15 / 41 (precision 1.0, recall
+0.9473684210526315), Rust 4 / 12 (precision 1.0, recall
+0.8333333333333334), and polyglot 1 / 4 (precision/recall 1.0). An installed
+tarball under Node 22.16.0 emits diagnostic-free schema-1.4 JSON and contains
+the CLI, schema, README, LICENSE, and package metadata; diff and privacy checks
+pass.
+
+The neutral
+fixture produces five intended file claims, roots its exact Taskfile target,
+excludes ignored input, keeps a compiler-visible Mix task alive, refuses two
+unsafe target-only plans with exact caller sites, and verifies the explicit
+caller-plus-target cohort still compiles.
+
+Framework/syntax review corrections are included in that matrix: an Ecto-
+scoped neutral inventory roots all 300 generated migration scripts while an
+adjacent manual `priv` script remains unrooted; hidden formatter/IEx discovery
+is exercised end to end; strings/heredocs and Unicode offsets cannot create
+false roots; optional-parentheses and grouped-alias forms retain their targets;
+and repository command carriers are scanned once per orchestration context.
+Independent public-only review drove and then approved the code-position mask,
+optional-parentheses/capture coverage, separate opaque and bounded hazards,
+framework-owned path rules, shared carrier cache, one-time exact-load membership
+set, and both adversarial scaling series. No private access or review artifact
+entered the repository.

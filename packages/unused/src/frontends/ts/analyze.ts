@@ -168,12 +168,15 @@ export interface AnalyzeInternalOptions {
   readonly emitConfigMatchWarnings?: boolean;
   /** Convention families owned by repository plugins instead of this composition path. */
   readonly deferredConventions?: readonly DeferredConventionId[];
+  /** Shared gitignore-bounded inventory supplied to the Elixir frontend. */
+  readonly elixirSourceFiles?: readonly string[];
 }
 
 export type DeferredConventionId =
   | "github-actions-run"
   | "taskfile-command"
   | "native-config-script"
+  | "elixir-scripts"
   | "elixir-runtime";
 
 /**

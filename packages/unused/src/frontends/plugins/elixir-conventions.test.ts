@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { fileId, IRGraph, symbolId } from "../../core/ir/index.js";
-import { elixirRuntimeConventionPlugin } from "./elixir-conventions.js";
+import {
+  elixirRuntimeConventionPlugin,
+  elixirScriptConventionPlugin,
+} from "./elixir-conventions.js";
 import type { FrontendGraphFragment, GraphContribution } from "./types.js";
 
 const site = {
@@ -44,6 +47,35 @@ describe("elixirRuntimeConventionPlugin", () => {
   });
 });
 
+describe("elixirScriptConventionPlugin", () => {
+  it("activates untraced script nodes and references prepared by the frontend", async () => {
+    const contribution: GraphContribution = {
+      nodes: [
+        {
+          kind: "file",
+          id: fileId("scripts/neutral.exs"),
+          path: "scripts/neutral.exs",
+        },
+      ],
+      edges: [
+        {
+          kind: "references",
+          referenceKind: "static",
+          from: fileId("scripts/neutral.exs"),
+          to: symbolId("lib/neutral/callback.ex", "Neutral.Callback.call/1"),
+          site: { ...site, file: "scripts/neutral.exs" },
+          name: "Neutral.Callback.call/1",
+        },
+      ],
+    };
+    const fragment = fixtureFragment(new Map([[elixirScriptConventionPlugin.id, contribution]]));
+    const context = { repository: repository(), fragment };
+
+    expect(await elixirScriptConventionPlugin.applies(context)).toBe(true);
+    expect(await elixirScriptConventionPlugin.analyze(context)).toEqual(contribution);
+  });
+});
+
 function repository() {
   return {
     rootDir: "/neutral",
@@ -52,6 +84,7 @@ function repository() {
       packageJsonDirs: [],
       mixExsDirs: ["/neutral"],
       cargoTomlDirs: [],
+      elixirSourceFiles: [],
       rustSourceFiles: [],
     },
     now: new Date(0),

@@ -133,6 +133,7 @@ function repository(
       packageJsonDirs: [],
       mixExsDirs: [],
       cargoTomlDirs: [],
+      elixirSourceFiles: [],
       rustSourceFiles: rustSourceFiles.map((file) => join(rootDir, file)),
     },
     now: new Date(0),

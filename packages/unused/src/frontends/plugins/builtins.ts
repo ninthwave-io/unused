@@ -1,11 +1,15 @@
 /** Built-in language adapters proving ADR 0013's internal plugin contracts. */
 
+import { relative, sep } from "node:path";
 import type { Evidence, Suppression } from "../../core/claims/index.js";
 import { analyzeElixirProjectWithGraph } from "../elixir/index.js";
 import { analyzeRustProjectWithGraph } from "../rust/index.js";
 import { type AnalyzeOptions, analyzeProjectWithGraph } from "../ts/analyze.js";
 import { selectProjectBoundaries } from "./boundaries.js";
-import { elixirRuntimeConventionPlugin } from "./elixir-conventions.js";
+import {
+  elixirRuntimeConventionPlugin,
+  elixirScriptConventionPlugin,
+} from "./elixir-conventions.js";
 import {
   prefixRepositoryPath,
   rebaseClaimInputs,
@@ -164,7 +168,11 @@ export const elixirLanguagePlugin: LanguageFrontendPlugin = {
       analyzeOptions(context),
       {
         emitConfigMatchWarnings: false,
-        deferredConventions: ["elixir-runtime"],
+        deferredConventions: ["elixir-runtime", "elixir-scripts"],
+        elixirSourceFiles: filesWithinBoundary(
+          boundary.rootDir,
+          context.manifests.elixirSourceFiles,
+        ),
       },
     );
     return fragment(this.id, this.language, boundary, analysis);
@@ -210,8 +218,16 @@ export const BUILT_IN_LANGUAGE_PLUGINS = [
 export const BUILT_IN_PLUGINS: readonly AnalyzerPlugin[] = [
   ...BUILT_IN_LANGUAGE_PLUGINS,
   elixirRuntimeConventionPlugin,
+  elixirScriptConventionPlugin,
   rustlerElixirConventionPlugin,
   rustlerRustConventionPlugin,
   typescriptConfigCarriersConventionPlugin,
   rustlerBridgePlugin,
 ];
+
+function filesWithinBoundary(rootDir: string, files: readonly string[]): string[] {
+  return files.filter((file) => {
+    const rel = relative(rootDir, file).split(sep).join("/");
+    return rel !== ".." && !rel.startsWith("../") && !rel.startsWith("/");
+  });
+}

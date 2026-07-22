@@ -58,6 +58,8 @@ export interface RepositoryManifestInventory {
   readonly packageJsonDirs: readonly string[];
   readonly mixExsDirs: readonly string[];
   readonly cargoTomlDirs: readonly string[];
+  /** Absolute, gitignore-bounded Elixir source/script paths from the shared traversal. */
+  readonly elixirSourceFiles: readonly string[];
   /** Absolute, gitignore-bounded Rust source paths from the shared traversal. */
   readonly rustSourceFiles: readonly string[];
 }

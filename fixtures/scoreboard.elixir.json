@@ -1,25 +1,25 @@
 {
   "analyzer": "elixir-reference-graph",
   "corpus": {
-    "cases": 14,
-    "subjects": 36
+    "cases": 15,
+    "subjects": 41
   },
   "precision": 1,
-  "recall": 0.9285714285714286,
+  "recall": 0.9473684210526315,
   "falsePositives": 0,
   "confidenceViolations": 0,
   "misses": 1,
   "unlabelledClaims": 0,
   "byConfidenceTier": {
     "high": {
-      "claims": 10,
-      "truePositives": 10,
+      "claims": 13,
+      "truePositives": 13,
       "falsePositives": 0,
       "confidenceViolations": 0
     },
     "medium": {
-      "claims": 3,
-      "truePositives": 3,
+      "claims": 5,
+      "truePositives": 5,
       "falsePositives": 0,
       "confidenceViolations": 0
     },
@@ -123,6 +123,17 @@
       "case": "runtime-mfa-callback",
       "subjects": 2,
       "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "standalone-script-references",
+      "subjects": 5,
+      "deadLabels": 5,
       "precision": 1,
       "recall": 1,
       "falsePositives": 0,
