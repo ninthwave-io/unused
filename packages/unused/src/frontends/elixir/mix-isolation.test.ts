@@ -85,6 +85,78 @@ end
     );
     expect(() => discoverRustlerLoaders(duplicateRoot, ["lib"])).toThrow(ElixirCompileError);
   });
+
+  it("includes directly compiled test files in the phase inventory", () => {
+    const root = temporaryRoot();
+    write(
+      root,
+      "test/neutral_native_test.exs",
+      `defmodule Neutral.NativeTest do
+  use Rustler, otp_app: :neutral
+end
+`,
+    );
+
+    expect(discoverRustlerLoaders(root, ["lib"], ["test/neutral_native_test.exs"])).toEqual([
+      { module: "Neutral.NativeTest", otpApp: "neutral" },
+    ]);
+  });
+
+  it("follows an explicitly compiled symlinked test file and refuses a missing one", () => {
+    const root = temporaryRoot();
+    const external = temporaryRoot();
+    write(
+      external,
+      "neutral_native_test.exs",
+      `defmodule Neutral.LinkedNativeTest do
+  use Rustler, otp_app: :neutral
+end
+`,
+    );
+    mkdirSync(join(root, "test"));
+    symlinkSync(
+      join(external, "neutral_native_test.exs"),
+      join(root, "test/neutral_native_test.exs"),
+    );
+
+    expect(discoverRustlerLoaders(root, ["lib"], ["test/neutral_native_test.exs"])).toEqual([
+      { module: "Neutral.LinkedNativeTest", otpApp: "neutral" },
+    ]);
+    expect(() => discoverRustlerLoaders(root, ["lib"], ["test/missing_test.exs"])).toThrow(
+      ElixirCompileError,
+    );
+  });
+
+  it("follows symlinked source files and directories exactly once", () => {
+    const root = temporaryRoot();
+    const external = temporaryRoot();
+    write(
+      external,
+      "native.ex",
+      `defmodule Neutral.LinkedNative do
+  use Rustler, otp_app: :neutral
+end
+`,
+    );
+    const externalFileRoot = temporaryRoot();
+    write(
+      externalFileRoot,
+      "native.ex",
+      `defmodule Neutral.AliasNative do
+  use Rustler, otp_app: :neutral
+end
+`,
+    );
+    mkdirSync(join(root, "lib"), { recursive: true });
+    symlinkSync(external, join(root, "lib/linked"));
+    symlinkSync(join(externalFileRoot, "native.ex"), join(root, "lib/native_alias.ex"));
+    symlinkSync(join(root, "lib"), join(external, "cycle"));
+
+    expect(discoverRustlerLoaders(root, ["lib"])).toEqual([
+      { module: "Neutral.AliasNative", otpApp: "neutral" },
+      { module: "Neutral.LinkedNative", otpApp: "neutral" },
+    ]);
+  });
 });
 
 describe("prepareIsolatedBuild", () => {

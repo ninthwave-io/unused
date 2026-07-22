@@ -9,6 +9,7 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
+  realpathSync,
   statSync,
   symlinkSync,
 } from "node:fs";
@@ -54,23 +55,57 @@ export interface RustlerLoaderIdentity {
 export function discoverRustlerLoaders(
   projectDir: string,
   sourcePaths: readonly string[],
+  additionalFiles: readonly string[] = [],
 ): readonly RustlerLoaderIdentity[] {
-  const files = new Set<string>();
+  const files = new Map<string, string>();
+  const visitedDirectories = new Set<string>();
+  const recordFile = (path: string): void => {
+    const canonicalFile = realpathSync(path);
+    const existing = files.get(canonicalFile);
+    if (existing === undefined || bytewiseCompare(path, existing) < 0) {
+      files.set(canonicalFile, path);
+    }
+  };
   const walk = (dir: string): void => {
     if (!existsSync(dir)) return;
+    const canonicalDirectory = realpathSync(dir);
+    if (visitedDirectories.has(canonicalDirectory)) return;
+    visitedDirectories.add(canonicalDirectory);
     for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
       bytewiseCompare(a.name, b.name),
     )) {
       const path = join(dir, entry.name);
-      if (entry.isDirectory()) walk(path);
-      else if (entry.isFile() && entry.name.endsWith(".ex")) files.add(path);
+      let followed: ReturnType<typeof statSync> | undefined;
+      if (entry.isSymbolicLink()) {
+        try {
+          followed = statSync(path);
+        } catch {
+          throw new ElixirCompileError(
+            "cannot analyze Elixir project: a compiler source symlink cannot be resolved.",
+          );
+        }
+      }
+      if (entry.isDirectory() || followed?.isDirectory()) walk(path);
+      else if ((entry.isFile() || followed?.isFile()) && entry.name.endsWith(".ex")) {
+        recordFile(path);
+      }
     }
   };
   for (const sourcePath of sourcePaths) walk(resolve(projectDir, sourcePath));
+  for (const additionalFile of additionalFiles) {
+    const path = resolve(projectDir, additionalFile);
+    projectRelativePath(projectDir, path);
+    if (!existsSync(path) || !statSync(path).isFile()) {
+      throw new ElixirCompileError(
+        "cannot analyze Elixir project: an inventoried compiler source does not exist.",
+      );
+    }
+    recordFile(path);
+  }
 
   const loaders: RustlerLoaderIdentity[] = [];
   let ambiguous = false;
-  for (const path of [...files].sort(bytewiseCompare)) {
+  for (const path of [...files.values()].sort(bytewiseCompare)) {
     const file = projectRelativePath(projectDir, path);
     const extraction = extractElixirRustlerSource(file, readFileSync(path, "utf8"));
     if (extraction.ambiguousSites.length > 0) ambiguous = true;

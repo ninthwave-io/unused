@@ -291,7 +291,9 @@ function runTestTrace(input: {
   try {
     writeFileSync(
       rustlerInventoryPath,
-      JSON.stringify(discoverRustlerLoaders(input.projectDir, testLayout.sourcePaths)),
+      JSON.stringify(
+        discoverRustlerLoaders(input.projectDir, testLayout.sourcePaths, input.testFiles),
+      ),
       "utf8",
     );
     prepareIsolatedBuild(testLayout, testBuildPath, input.projectDir);
