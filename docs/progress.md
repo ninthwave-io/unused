@@ -2,6 +2,35 @@
 
 Updated: 2026-07-22. **Pre-v0.1.0 scaling, runtime reachability, and first-class polyglot delivery are technically accepted; the founder release action remains.** No semver release tag has been created.
 
+Active public follow-up — structured standalone Elixir calls: the exact parser
+failure is corrected for parenthesized calls containing anonymous functions and
+for multiline calls whose opening line has no arguments. A single masked-source
+delimiter/block index preserves code positions and exact top-level arity where
+provable, with conservative same-name resolution otherwise, and no per-call
+body rescans; nested delimiters, anonymous-function parameter commas,
+atom/keyword lookalikes, comments, strings, and heredocs are covered. A neutral
+Taskfile-rooted fixture makes both exports config-reachable, qualified `why`
+shows their script path, and target-only deletion refuses at the exact ordinary
+inbound sites. The extractor file passes 9/9, selected pinned Elixir integration
+checks pass, and the full pinned suite passes 84 files / 1,214 tests without
+skips. Typecheck, build, generated assumption set 1.15, lint baseline,
+boundaries (926 modules / 2,042 dependencies), all corpus gates, installed-
+tarball schema-1.4 JSON, diff, and privacy checks pass. Elixir is 15 cases / 45
+subjects at precision 1.0 and recall 0.95 with no false positives, confidence
+violations, unlabelled claims, or skips. Documentation confirmation is complete;
+only a focused commit remains. Review corrected keyword-list, whitespace/bare-call,
+nested-call, operator/capture, literal-sentinel, and quoted-key edge cases; the
+final code and documentation reviews are clean. Exact
+design, benchmark counters (250–4,000 files, 14.892–228.158 ms), and resume instructions are in
+`docs/delivery/polyglot-first-class.md` and
+`docs/bench/2026-07-22-elixir-script-inventory.md`.
+
+The next separate public-only neutral slice will distinguish real unresolved
+dynamic invocation sinks from module/name producers and Phoenix-style generated
+template macro provenance, so a reachable template producer cannot activate an
+opaque whole-unit cap without a real sink. It must preserve callback liveness
+and must not be mixed into the current script-extractor change.
+
 Active public follow-up — central hazard evaluation and deletion safety: exact
 symbol carriers and explicit `scope-files`, `affected-symbols`, or `none`
 propagation now prevent reachable sibling code or confidence scope from
@@ -23,11 +52,7 @@ synthetic-symbol queue. An overlapping-scope lock covers range priority and lazy
 `why` effects; a 500-to-8,000-file evaluator probe is near-linear
 (1.679-to-15.730 ms). The fresh full matrix/package/privacy gates pass and
 independent final code/documentation re-review reports no remaining finding.
-The focused local commit remains.
-The separate next public slice is a neutral standalone-script extractor
-regression for anonymous-function arguments and multiline call openings with no
-arguments. Exact resume state is recorded in
-`docs/delivery/polyglot-first-class.md`.
+The focused local commit is `22f5a44`.
 
 Active public follow-up — dead inbound deletion prerequisites: the accepted
 language-agnostic correction is implemented without changing claims. Core now

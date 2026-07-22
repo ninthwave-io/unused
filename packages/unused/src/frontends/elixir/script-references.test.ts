@@ -15,6 +15,239 @@ afterEach(async () => {
 });
 
 describe("extractElixirScriptFacts", () => {
+  it("extracts literal calls with anonymous-function arguments and multiline bodies", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unused-elixir-structured-calls-"));
+    temporaryRoots.push(root);
+    await write(
+      root,
+      "scripts/structured.exs",
+      [
+        "Neutral.Target.one(fn left, right -> Neutral.Target.zero() end)",
+        "Neutral.Target.one(",
+        "  :multiline",
+        ")",
+        "# Neutral.Target.one(fn -> :comment end)",
+        'IO.puts("Neutral.Target.one(\\n  :text\\n)")',
+      ].join("\n"),
+    );
+
+    const facts = extractElixirScriptFacts(root, [join(root, "scripts/structured.exs")], trace());
+    expect(
+      facts.contribution.edges
+        ?.filter((edge) => edge.to === symbolId("lib/target.ex", "Neutral.Target.one/1"))
+        .map((edge) => edge.site.span.startLine),
+    ).toEqual([1, 2]);
+  });
+
+  it("keeps nested delimiters and anonymous clauses inside one argument without text edges", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unused-elixir-nested-calls-"));
+    temporaryRoots.push(root);
+    const content = [
+      "😀",
+      "Neutral.Target.two(",
+      "  %{callback: fn left, right -> {left, right} end},",
+      "  [fn value -> Neutral.Target.zero() end]",
+      ")",
+      "# Neutral.Target.two(:comment, :comment)",
+      'IO.puts("Neutral.Target.two(:text, :text)")',
+      '"""',
+      "Neutral.Target.two(:heredoc, :heredoc)",
+      '"""',
+      "Neutral.Target.two  (:fn), :end",
+      "Neutral.Target.two(value >>> 1, :shifted)",
+    ].join("\n");
+    await write(root, "scripts/nested.exs", content);
+    const baseTrace = trace();
+    const facts = extractElixirScriptFacts(root, [join(root, "scripts/nested.exs")], {
+      ...baseTrace,
+      functions: [
+        ...baseTrace.functions,
+        {
+          k: "function",
+          mod: "Neutral.Target",
+          name: "two",
+          arity: 2,
+          file: "lib/target.ex",
+          line: 4,
+          partition: "prod",
+        },
+        {
+          k: "function",
+          mod: "Neutral.Target",
+          name: "two",
+          arity: 1,
+          file: "lib/target.ex",
+          line: 5,
+          partition: "prod",
+        },
+      ],
+    });
+    const functionEdges = facts.contribution.edges?.filter(
+      (edge) => edge.kind === "references" && edge.to.startsWith("symbol:lib/target.ex#"),
+    );
+    expect(functionEdges).toContainEqual(
+      expect.objectContaining({
+        to: symbolId("lib/target.ex", "Neutral.Target.two/2"),
+        site: expect.objectContaining({
+          span: expect.objectContaining({
+            start: content.indexOf("Neutral.Target.two("),
+            startLine: 2,
+          }),
+        }),
+      }),
+    );
+    expect(
+      functionEdges?.filter(
+        (edge) => edge.to === symbolId("lib/target.ex", "Neutral.Target.zero/0"),
+      ),
+    ).toHaveLength(1);
+    expect(
+      functionEdges?.some(
+        (edge) => edge.site.span.startLine >= 6 && edge.site.span.startLine <= 10,
+      ),
+    ).toBe(false);
+    expect(
+      functionEdges?.filter(
+        (edge) => edge.to === symbolId("lib/target.ex", "Neutral.Target.two/2"),
+      ),
+    ).toHaveLength(3);
+    expect(
+      functionEdges?.filter(
+        (edge) => edge.to === symbolId("lib/target.ex", "Neutral.Target.two/1"),
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("collapses keyword lists and fails closed for nested no-parentheses expressions", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unused-elixir-keyword-calls-"));
+    temporaryRoots.push(root);
+    const content = [
+      "Neutral.Target.keyword(do: :x, end: :y)",
+      "Neutral.Target.keyword(:x, left: 1, right: 2)",
+      "Neutral.Target.nested(if condition, do: :left, else: :right)",
+      "Neutral.Target.nested(build left, right)",
+      "Neutral.Target.operator(value + 1, other)",
+      "Neutral.Target.operator(left: value + 1)",
+      "Neutral.Target.operator(not value)",
+      "Neutral.Target.operator(left && right)",
+      "Neutral.Target.operator(& &1)",
+      "Neutral.Target.operator(build left)",
+      "Neutral.Target.operator(:lead, build left)",
+      "Neutral.Target.operator(build left, right)",
+      "Neutral.Target.operator(value . field, other)",
+    ].join("\n");
+    await write(root, "scripts/keywords.exs", content);
+    const baseTrace = trace();
+    const overloads = [
+      ...[1, 2, 3].map((arity) => ({
+        k: "function" as const,
+        mod: "Neutral.Target",
+        name: "keyword",
+        arity,
+        file: "lib/target.ex",
+        line: 10 + arity,
+        partition: "prod" as const,
+      })),
+      ...[1, 2, 3].map((arity) => ({
+        k: "function" as const,
+        mod: "Neutral.Target",
+        name: "operator",
+        arity,
+        file: "lib/target.ex",
+        line: 30 + arity,
+        partition: "prod" as const,
+      })),
+      ...[1, 2, 3].map((arity) => ({
+        k: "function" as const,
+        mod: "Neutral.Target",
+        name: "nested",
+        arity,
+        file: "lib/target.ex",
+        line: 20 + arity,
+        partition: "prod" as const,
+      })),
+    ];
+    const facts = extractElixirScriptFacts(root, [join(root, "scripts/keywords.exs")], {
+      ...baseTrace,
+      functions: [...baseTrace.functions, ...overloads],
+    });
+    const linesFor = (name: string, arity: number): number[] =>
+      facts.contribution.edges
+        ?.filter(
+          (edge) =>
+            edge.kind === "references" &&
+            edge.to === symbolId("lib/target.ex", `Neutral.Target.${name}/${arity}`),
+        )
+        .map((edge) => edge.site.span.startLine) ?? [];
+
+    expect(linesFor("keyword", 1)).toEqual([1]);
+    expect(linesFor("keyword", 2)).toEqual([2]);
+    expect(linesFor("keyword", 3)).toEqual([]);
+    expect(linesFor("nested", 1)).toEqual([3, 4]);
+    expect(linesFor("nested", 2)).toEqual([3, 4]);
+    expect(linesFor("nested", 3)).toEqual([3, 4]);
+    expect(linesFor("operator", 1)).toEqual([6, 7, 8, 9, 10, 12]);
+    expect(linesFor("operator", 2)).toEqual([5, 11, 12, 13]);
+    expect(linesFor("operator", 3)).toEqual([12]);
+  });
+
+  it("counts masked literal arguments without extracting their bodies", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unused-elixir-literal-calls-"));
+    temporaryRoots.push(root);
+    const content = [
+      'Neutral.Target.literal("value")',
+      'Neutral.Target.literal("left", "right")',
+      'Neutral.Target.literal("""',
+      "Neutral.Target.literal(:heredoc_text)",
+      '""")',
+      'Neutral.Target.literal("value #{Neutral.Target.literal(:interpolated)}")',
+      "Neutral.Target.literal('charlist')",
+      'Neutral.Target.keyword("left": 1, "right": 2)',
+      '# Neutral.Target.literal("comment")',
+      'IO.puts("Neutral.Target.literal(:string_text)")',
+    ].join("\n");
+    await write(root, "scripts/literals.exs", content);
+    const baseTrace = trace();
+    const overloads = [
+      ...[1, 2, 3].map((arity) => ({
+        k: "function" as const,
+        mod: "Neutral.Target",
+        name: "literal",
+        arity,
+        file: "lib/target.ex",
+        line: 40 + arity,
+        partition: "prod" as const,
+      })),
+      ...[1, 2].map((arity) => ({
+        k: "function" as const,
+        mod: "Neutral.Target",
+        name: "keyword",
+        arity,
+        file: "lib/target.ex",
+        line: 50 + arity,
+        partition: "prod" as const,
+      })),
+    ];
+    const facts = extractElixirScriptFacts(root, [join(root, "scripts/literals.exs")], {
+      ...baseTrace,
+      functions: [...baseTrace.functions, ...overloads],
+    });
+    const linesFor = (name: string, arity: number): number[] =>
+      facts.contribution.edges
+        ?.filter(
+          (edge) =>
+            edge.kind === "references" &&
+            edge.to === symbolId("lib/target.ex", `Neutral.Target.${name}/${arity}`),
+        )
+        .map((edge) => edge.site.span.startLine) ?? [];
+
+    expect(linesFor("literal", 1)).toEqual([1, 3, 6, 7]);
+    expect(linesFor("literal", 2)).toEqual([2]);
+    expect(linesFor("literal", 3)).toEqual([]);
+    expect(linesFor("keyword", 1)).toEqual([8]);
+    expect(linesFor("keyword", 2)).toEqual([]);
+  });
+
   it("adds unrooted script files and exact alias, call, and MFA references", async () => {
     const root = await mkdtemp(join(tmpdir(), "unused-elixir-scripts-"));
     const outside = await mkdtemp(join(tmpdir(), "unused-elixir-external-"));

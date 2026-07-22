@@ -1,8 +1,9 @@
 case: standalone-script-references
 description: >-
   A tracked standalone script is not loaded by Mix compilation and is not an
-  application root. It and its target remain valid dead-file claims, while its
-  literal alias, remote calls, and MFA tuples block deleting only the target.
+  application root. It remains a valid dead-file claim and its literal edges
+  do not make exports live. A separate exactly rooted script makes only its two
+  structured-call targets live and blocks deleting them.
 subjects:
   - kind: file
     name: scripts/neutral_bench.exs
@@ -15,11 +16,41 @@ subjects:
   - kind: file
     name: lib/neutral_script/target.ex
     file: lib/neutral_script/target.ex
+    expected: alive
+    because: >-
+      The exact Taskfile-rooted script calls this compiler-known module, so the
+      target file is genuinely config-reachable.
+  - kind: export
+    name: NeutralScript.Target.callback/1
+    file: lib/neutral_script/target.ex
+    expected: alive
+    because: >-
+      The rooted script passes an anonymous function as the one literal
+      argument; commas and nested syntax inside that function do not change the
+      target arity.
+  - kind: export
+    name: NeutralScript.Target.multiline/1
+    file: lib/neutral_script/target.ex
+    expected: alive
+    because: >-
+      The rooted script's parenthesized call begins its argument on the next
+      line and retains exact opening-line provenance.
+  - kind: export
+    name: NeutralScript.Target.zero/0
+    file: lib/neutral_script/target.ex
     expected: dead
     minConfidence: high
     because: >-
-      References from an unreachable script do not make the target live, but
-      they remain deletion prerequisites with exact source provenance.
+      Literal references from the unrooted neutral benchmark remain deletion
+      prerequisites but do not make this export reachable.
+  - kind: export
+    name: NeutralScript.Target.one/1
+    file: lib/neutral_script/target.ex
+    expected: dead
+    minConfidence: high
+    because: >-
+      Literal references from the unrooted neutral benchmark remain deletion
+      prerequisites but do not make this export reachable.
   - kind: file
     name: scripts/module_surface.exs
     file: scripts/module_surface.exs

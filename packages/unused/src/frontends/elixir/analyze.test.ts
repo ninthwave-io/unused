@@ -73,7 +73,6 @@ describe("Elixir analysis policy", () => {
           .map((claim) => ({ file: claim.subject.loc.file, confidence: claim.confidence }))
           .sort((a, b) => a.file.localeCompare(b.file)),
       ).toEqual([
-        { file: "lib/neutral_script/target.ex", confidence: "high" },
         { file: "scripts/module_caller.exs", confidence: "high" },
         { file: "scripts/module_surface.exs", confidence: "medium" },
         { file: "scripts/neutral_bench.exs", confidence: "high" },
@@ -126,6 +125,54 @@ describe("Elixir analysis policy", () => {
         ),
       ).toBe(true);
 
+      const callbackWhy = whyAlive({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        claims: analysis.result.claims,
+        query: "lib/neutral_script/target.ex:NeutralScript.Target.callback/1",
+        hazardEvaluations: [analysis.hazardEvaluation],
+      });
+      expect(callbackWhy).toMatchObject({ outcome: "alive", entrypointKind: "config" });
+      if (callbackWhy.outcome !== "alive") throw new Error("expected callback to be alive");
+      expect(callbackWhy.paths[0]?.hops.map((hop) => hop.file)).toEqual([
+        "scripts/invoked.exs",
+        "lib/neutral_script/target.ex",
+      ]);
+      expect(
+        computeDeletionPlan({
+          graph: analysis.graph,
+          reachability: analysis.reachability,
+          subject: callbackWhy.subject,
+          hazardEvaluations: [analysis.hazardEvaluation],
+        }),
+      ).toMatchObject({
+        supported: false,
+        unsupportedReason:
+          "non-re-export inbound reference remains at scripts/invoked.exs:1; coordinated caller edits or deletion cohort are not modeled",
+      });
+
+      const multilineWhy = whyAlive({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        claims: analysis.result.claims,
+        query: "lib/neutral_script/target.ex:NeutralScript.Target.multiline/1",
+        hazardEvaluations: [analysis.hazardEvaluation],
+      });
+      expect(multilineWhy).toMatchObject({ outcome: "alive", entrypointKind: "config" });
+      if (multilineWhy.outcome !== "alive") throw new Error("expected multiline target alive");
+      expect(
+        computeDeletionPlan({
+          graph: analysis.graph,
+          reachability: analysis.reachability,
+          subject: multilineWhy.subject,
+          hazardEvaluations: [analysis.hazardEvaluation],
+        }),
+      ).toMatchObject({
+        supported: false,
+        unsupportedReason:
+          "non-re-export inbound reference remains at scripts/invoked.exs:2; coordinated caller edits or deletion cohort are not modeled",
+      });
+
       expect(
         computeDeletionPlan({
           graph: analysis.graph,
@@ -135,7 +182,7 @@ describe("Elixir analysis policy", () => {
       ).toMatchObject({
         supported: false,
         unsupportedReason:
-          "non-re-export inbound reference remains at scripts/neutral_bench.exs:1; coordinated caller edits or deletion cohort are not modeled",
+          "non-re-export inbound reference remains at scripts/invoked.exs:1; coordinated caller edits or deletion cohort are not modeled",
         reExportEdits: [],
         stages: [],
       });

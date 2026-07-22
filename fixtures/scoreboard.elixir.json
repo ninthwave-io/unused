@@ -2,18 +2,18 @@
   "analyzer": "elixir-reference-graph",
   "corpus": {
     "cases": 15,
-    "subjects": 41
+    "subjects": 45
   },
   "precision": 1,
-  "recall": 0.9473684210526315,
+  "recall": 0.95,
   "falsePositives": 0,
   "confidenceViolations": 0,
   "misses": 1,
   "unlabelledClaims": 0,
   "byConfidenceTier": {
     "high": {
-      "claims": 13,
-      "truePositives": 13,
+      "claims": 14,
+      "truePositives": 14,
       "falsePositives": 0,
       "confidenceViolations": 0
     },
@@ -132,8 +132,8 @@
     },
     {
       "case": "standalone-script-references",
-      "subjects": 5,
-      "deadLabels": 5,
+      "subjects": 9,
+      "deadLabels": 6,
       "precision": 1,
       "recall": 1,
       "falsePositives": 0,

@@ -1112,3 +1112,85 @@ line contains no arguments. Independently generated fixtures must prove the
 literal target stays alive, `why` exposes the source edge, and deletion planning
 refuses target-only deletion. No consuming-project input or wording may enter
 the public fixture or documentation.
+
+### Structured standalone-script call follow-up
+
+Status: implementation and full public matrix complete; independently approved;
+local commit pending
+
+Resume objective: recover exact literal Elixir remote-call edges when a
+parenthesized call contains an anonymous function or begins its arguments on a
+later line, without broad text matching, per-call body rescans, or blanket
+hazard suppression.
+
+Root cause and frozen design:
+
+- the previous parenthesized-call regex rejected every newline and every nested
+  parenthesis, while its comma counter understood delimiters but not `fn … end`;
+  both valid forms therefore emitted no exact function edge;
+- source masking remains the existing code-unit-position-stable boundary for
+  comments, strings, and heredocs;
+- one delimiter/block pass indexes arity for every parenthesis in the masked
+  file. The subsequent literal `Module.function` head scan performs map lookups
+  rather than rescanning call bodies; nested `()`, `[]`, `{}`, `<<>>`, and
+  `fn`/`do` blocks hide their internal commas from the outer arity;
+- position-stable sentinels retain literal arguments while erasing string,
+  charlist, heredoc, and interpolation bodies. Contiguous trailing keyword
+  pairs collapse to one list argument; proven nested no-parentheses syntax uses
+  conservative same-name unknown-arity resolution;
+- `:fn`, `:do`, `:end`, keyword keys, remote names, and `<<<`/`>>>` shift
+  operators do not open or close a block. Unsupported or unbalanced syntax
+  retains conservative unknown-arity resolution rather than inventing a
+  precise edge;
+- bare calls, captures, MFA tuples, module aliases, and exact script loads keep
+  their existing bounded extractors and provenance; and
+- schema 1.4, claim identity, confidence policy, and hazard registry are
+  unchanged. The material extractor assumption is published as assumption set
+  1.15.
+
+Neutral public acceptance coverage:
+
+- unit fixtures exercise multiline arguments, direct anonymous-function
+  parameters containing commas, nested maps/tuples/lists/calls, Unicode source
+  offsets, atom/block-keyword ambiguity, and false-edge candidates in comments,
+  strings, and heredocs;
+- the Taskfile-rooted standalone fixture makes both target exports genuinely
+  config-reachable. Qualified `why` follows the exact script-to-export path,
+  and target-only deletion refuses through ordinary inbound sites on lines 1
+  and 2; and
+- the generated 250–4,000-file benchmark retains all structured references.
+  Over a 16× file/byte/reference increase it measures 14.892–228.158 ms on Node
+  22.16.0; the one-file 250–4,000-module series measures 0.899–14.357 ms. Exact
+  counters and fixture composition are recorded in
+  `docs/bench/2026-07-22-elixir-script-inventory.md`.
+
+Current checkpoint: focused extractor/integration coverage passes 2 files / 17
+tests. The complete suite under Elixir 1.20.2 / Erlang 29.0.3 passes 84 files /
+1,214 tests with no skips. Typecheck, build, generated assumption set 1.15,
+lint (the established 2 warnings / 48 infos), and dependency boundaries (926
+modules / 2,042 dependencies) pass. All corpus gates retain zero false
+positives, confidence violations, and unlabelled claims: TypeScript 52 cases /
+237 subjects (precision 1.0, recall 0.826530612244898), Elixir 15 / 45
+(precision 1.0, recall 0.95, no skips), Rust 4 / 12 (precision 1.0, recall
+0.8333333333333334), and polyglot 1 / 4 (precision/recall 1.0). A packed
+tarball installs under Node 22.16.0, contains the CLI/schema/README/LICENSE and
+package metadata, and emits one diagnostic-free schema-1.4 claim from a neutral
+fixture. Diff and privacy scans are clean. No private consumer material is
+present in the repository evidence; this slice used neutral public evidence
+only. Resume by making one focused local commit without pushing.
+
+Independent public-only review found and drove corrections for trailing keyword
+lists, whitespace-form bare calls, nested no-parentheses comma ownership,
+ordinary symbolic/word operators, captures, masked literal arguments, quoted
+keyword keys, and keeping sentinel semantics out of the frozen legacy bare
+extractor. The reviewer then found the code clean and reproduced 2 files / 17
+focused tests plus the combined extractor/integration/CLI set at 3 files / 149
+tests. The documentation-only confirmation is also clean; only the local commit
+remains.
+
+Separate next public-only neutral follow-up (do not fold into this slice):
+distinguish actual unresolved dynamic invocation sinks from module/name
+producers and generated-template macro provenance for Phoenix-style template
+embedding. A reachable template producer must not activate an opaque whole-unit
+cap without a real unresolved sink. Preserve callback liveness and derive all
+fixtures independently from public Phoenix conventions.

@@ -8,15 +8,18 @@ Command: `node packages/unused/scripts/benchmark-elixir-script-references.mjs`
 
 This benchmark isolates the new static extraction step after repository
 discovery. It generates neutral temporary `.exs` files with literal aliases,
-remote calls, MFA tuples, and one resolvable exact script load per file, then removes the temporary
-tree. It does not invoke Mix and is not presented as an end-to-end compiler
-benchmark.
+same-line calls containing anonymous functions, multiline calls containing
+nested delimiters and anonymous functions, MFA tuples, and one resolvable exact
+script load per file, then removes the temporary tree. It does not invoke Mix
+and is not presented as an end-to-end compiler benchmark.
 
 The implementation reads every visible standalone script once, builds module
 and function indexes once, scans source text linearly, and resolves source
 locations with binary search over line starts. Expected complexity is
 O(total bytes + literal references × log(lines)); memory is O(files + bytes +
-emitted facts). The fixture never reduces reference density at larger sizes.
+emitted facts). Parenthesized call arities are indexed in one position-stable
+delimiter/block pass; nested call bodies are not rescanned for each outer call.
+The fixture never reduces reference density at larger sizes.
 
 ## Result
 
@@ -25,14 +28,14 @@ reports the median extraction time.
 
 | Files | Bytes | Reference edges | Resolution attempts | Median |
 | ---: | ---: | ---: | ---: | ---: |
-| 250 | 49,000 | 3,000 | 3,750 | 10.352 ms |
-| 500 | 98,000 | 6,000 | 7,500 | 20.468 ms |
-| 1,000 | 196,000 | 12,000 | 15,000 | 39.786 ms |
-| 2,000 | 392,000 | 24,000 | 30,000 | 81.390 ms |
-| 4,000 | 784,000 | 48,000 | 60,000 | 163.560 ms |
+| 250 | 85,250 | 4,250 | 5,250 | 14.892 ms |
+| 500 | 170,500 | 8,500 | 10,500 | 28.192 ms |
+| 1,000 | 341,000 | 17,000 | 21,000 | 56.215 ms |
+| 2,000 | 682,000 | 34,000 | 42,000 | 111.218 ms |
+| 4,000 | 1,364,000 | 68,000 | 84,000 | 228.158 ms |
 
 Doubling input size approximately doubles work and elapsed time across the
-series. At 4,000 files the bounded extractor remains 164 ms on this host, far
+series. At 4,000 files the bounded extractor remains 228 ms on this host, far
 below Mix compiler startup and trace time. No native rewrite is warranted for
 this operation; future work should profile the complete frontend again before
 changing that decision.
@@ -43,11 +46,11 @@ for every `defmodule`.
 
 | Modules in one script | Bytes | Median |
 | ---: | ---: | ---: |
-| 250 | 9,389 | 0.678 ms |
-| 500 | 18,889 | 1.273 ms |
-| 1,000 | 37,889 | 2.664 ms |
-| 2,000 | 76,889 | 5.181 ms |
-| 4,000 | 154,889 | 10.776 ms |
+| 250 | 9,389 | 0.899 ms |
+| 500 | 18,889 | 1.828 ms |
+| 1,000 | 37,889 | 3.567 ms |
+| 2,000 | 76,889 | 7.482 ms |
+| 4,000 | 154,889 | 14.357 ms |
 
 Both series grow with input facts rather than multiplying files or modules by
 the full inventory. The resolvable-load membership set is built once, not once

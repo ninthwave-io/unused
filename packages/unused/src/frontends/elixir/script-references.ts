@@ -32,13 +32,11 @@ export interface ElixirScriptFacts {
 const MODULE = String.raw`[A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*`;
 const MODULE_OR_ALIAS = String.raw`[A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*`;
 const FUNCTION = "[a-z_][A-Za-z0-9_]*[!?]?";
+const WORD_OPERATORS = new Set(["and", "in", "not", "or", "when"]);
 const MODULE_TOKEN_RE = new RegExp(String.raw`\b(${MODULE})\b`, "gu");
 const ALIAS_RE = new RegExp(String.raw`\balias\s+(${MODULE})(?:\s*,\s*as:\s*(${MODULE}))?`, "gu");
 const GROUPED_ALIAS_RE = new RegExp(String.raw`\balias\s+(${MODULE})\.\{([^}\n]+)\}`, "gu");
-const REMOTE_CALL_RE = new RegExp(
-  String.raw`\b(${MODULE_OR_ALIAS})\.(${FUNCTION})\s*\(([^()\n]*)\)`,
-  "gu",
-);
+const REMOTE_CALL_HEAD_RE = new RegExp(String.raw`\b(${MODULE_OR_ALIAS})\.(${FUNCTION})\b`, "gu");
 const REMOTE_BARE_CALL_RE = new RegExp(
   String.raw`\b(${MODULE_OR_ALIAS})\.(${FUNCTION})[ \t]+([^\r\n]+)`,
   "gu",
@@ -73,6 +71,7 @@ interface KnownModule {
 interface ScriptSource {
   readonly content: string;
   readonly code: string;
+  readonly structuredCode: string;
   readonly literals: string;
   readonly starts: readonly number[];
 }
@@ -113,8 +112,15 @@ export function extractElixirScriptFacts(
     if (contents.has(file)) continue;
     const content = readFileSync(resolve(projectDir, ...file.split("/")), "utf8");
     const code = maskCommentsAndStrings(content);
+    const structuredCode = maskCommentsAndStrings(content, true);
     const starts = lineStarts(content);
-    contents.set(file, { content, code, literals: withoutComments(content), starts });
+    contents.set(file, {
+      content,
+      code,
+      structuredCode,
+      literals: withoutComments(content),
+      starts,
+    });
     for (const match of code.matchAll(DEFMODULE_RE)) {
       const mod = match[1];
       if (mod !== undefined) {
@@ -140,7 +146,7 @@ export function extractElixirScriptFacts(
     seenFiles.add(file);
     const source = contents.get(file);
     if (source === undefined) continue;
-    const { content, code, literals, starts } = source;
+    const { content, code, structuredCode, literals, starts } = source;
     nodes.push({ kind: "file", id: fileId(file), path: file });
     lineCounts.set(fileId(file), countLines(content));
     for (const mod of modulesByFile.get(file) ?? []) {
@@ -217,18 +223,8 @@ export function extractElixirScriptFacts(
       const moduleName = match[1];
       if (moduleName !== undefined) addModuleReference(moduleName, match.index ?? 0);
     }
-    for (const match of code.matchAll(REMOTE_CALL_RE)) {
-      const moduleName = match[1];
-      const functionName = match[2];
-      const args = match[3];
-      if (moduleName === undefined || functionName === undefined || args === undefined) continue;
-      addFunctionReference(
-        moduleName,
-        functionName,
-        expressionListArity(args),
-        match.index ?? 0,
-        "static",
-      );
+    for (const call of collectParenthesizedRemoteCalls(structuredCode)) {
+      addFunctionReference(call.moduleName, call.functionName, call.arity, call.index, "static");
     }
     for (const match of code.matchAll(REMOTE_BARE_CALL_RE)) {
       const moduleName = match[1];
@@ -545,6 +541,298 @@ function expressionListArity(content: string): number | null {
   return depth === 0 && quote === null ? arity : null;
 }
 
+interface ParenthesizedRemoteCall {
+  readonly moduleName: string;
+  readonly functionName: string;
+  readonly arity: number | null;
+  readonly index: number;
+}
+
+/**
+ * Scan masked source once for literal `Module.function(...)` heads. Matching
+ * arguments is delimiter/block aware, so multiline bodies and nested
+ * anonymous functions preserve exact arity without a recursive regex or a
+ * rescan per call.
+ */
+function collectParenthesizedRemoteCalls(code: string): ParenthesizedRemoteCall[] {
+  const calls: ParenthesizedRemoteCall[] = [];
+  const arities = indexParenthesizedArities(code);
+  for (const match of code.matchAll(REMOTE_CALL_HEAD_RE)) {
+    const moduleName = match[1];
+    const functionName = match[2];
+    if (moduleName === undefined || functionName === undefined) continue;
+    const index = match.index ?? 0;
+    const open = index + match[0].length;
+    if (code[open] !== "(") continue;
+    calls.push({
+      moduleName,
+      functionName,
+      arity: arities.get(open) ?? null,
+      index,
+    });
+  }
+  return calls;
+}
+
+interface DelimiterFrame {
+  readonly open: number;
+  readonly close: string;
+  arity: number;
+  blockDepth: number;
+  hasContent: boolean;
+  argumentShape: "empty" | "identifier" | "other" | "keyword";
+  keywordValueStarted: boolean;
+  pendingWhitespace: boolean;
+  trailingKeywordArguments: number;
+  ambiguousNoParenSyntax: boolean;
+  mayConsumeFollowingComma: boolean;
+  expectingOperatorOperand: boolean;
+}
+
+/** One delimiter/block pass for every parenthesized call candidate in a file. */
+function indexParenthesizedArities(code: string): ReadonlyMap<number, number | null> {
+  const arities = new Map<number, number | null>();
+  const stack: DelimiterFrame[] = [];
+  for (let index = 0; index < code.length; index += 1) {
+    const char = code[index] as string;
+    if (/\s/u.test(char)) {
+      markFrameWhitespace(stack);
+      continue;
+    }
+    if (code.startsWith("<<<", index) || code.startsWith(">>>", index)) {
+      const frame = stack.at(-1);
+      if (frame !== undefined) markFrameOperator(frame);
+      index += 2;
+      continue;
+    }
+    if (code.startsWith("<<", index)) {
+      markFrameContent(stack);
+      stack.push(newDelimiterFrame(index, ">>"));
+      index += 1;
+      continue;
+    }
+    if (code.startsWith(">>", index)) {
+      if (stack.at(-1)?.close !== ">>") stack.length = 0;
+      else stack.pop();
+      index += 1;
+      continue;
+    }
+    const expectedClose = char === "(" ? ")" : char === "[" ? "]" : char === "{" ? "}" : null;
+    if (expectedClose !== null) {
+      markFrameContent(stack);
+      stack.push(newDelimiterFrame(index, expectedClose));
+      if (char === "(") arities.set(index, null);
+      continue;
+    }
+    if (char === ")" || char === "]" || char === "}") {
+      const frame = stack.at(-1);
+      if (frame?.close !== char) {
+        stack.length = 0;
+        continue;
+      }
+      stack.pop();
+      if (char === ")" && frame.blockDepth === 0) {
+        arities.set(frame.open, completedFrameArity(frame));
+      }
+      continue;
+    }
+    const operatorLength = symbolicOperatorLength(code, index);
+    if (code.startsWith("::", index) || code.startsWith("..", index) || operatorLength > 0) {
+      const frame = stack.at(-1);
+      if (frame !== undefined) markFrameOperator(frame);
+      if (code.startsWith("::", index) || code.startsWith("..", index)) index += 1;
+      else index += operatorLength - 1;
+      continue;
+    }
+    if (isIdentifierStart(char)) {
+      let end = index + 1;
+      while (end < code.length && isIdentifierContinue(code[end] as string)) end += 1;
+      const word = code.slice(index, end);
+      const frame = stack.at(-1);
+      if (frame !== undefined) {
+        const wasInBlock = frame.blockDepth > 0;
+        const previous = previousNonWhitespace(code, index);
+        const next = nextNonWhitespace(code, end);
+        if (word === "fn" || word === "end" || word === "do") {
+          const isBlockKeyword = previous !== ":" && previous !== "." && next !== ":";
+          if (word === "fn" && isBlockKeyword) frame.blockDepth += 1;
+          else if (word === "end" && isBlockKeyword && frame.blockDepth > 0) {
+            frame.blockDepth -= 1;
+          } else if (word === "do" && isBlockKeyword) frame.blockDepth += 1;
+        }
+        if (!wasInBlock) {
+          if (
+            WORD_OPERATORS.has(word) &&
+            previous !== "." &&
+            previous !== ":" &&
+            code[end] !== ":"
+          ) {
+            markFrameOperator(frame);
+          } else {
+            markFrameIdentifier(frame);
+          }
+        }
+        frame.hasContent = true;
+      }
+      index = end - 1;
+      continue;
+    }
+    const frame = stack.at(-1);
+    if (frame !== undefined) {
+      if (char === "," && frame.blockDepth === 0) {
+        if (frame.mayConsumeFollowingComma) frame.ambiguousNoParenSyntax = true;
+        completeFrameArgument(frame);
+        frame.arity += 1;
+      } else if (
+        char === ":" &&
+        frame.blockDepth === 0 &&
+        frame.argumentShape === "identifier" &&
+        !frame.pendingWhitespace &&
+        code[index + 1] !== ":"
+      ) {
+        frame.argumentShape = "keyword";
+        frame.keywordValueStarted = false;
+        frame.hasContent = true;
+      } else {
+        markFrameOther(frame);
+      }
+    }
+  }
+  return arities;
+}
+
+function newDelimiterFrame(open: number, close: string): DelimiterFrame {
+  return {
+    open,
+    close,
+    arity: 1,
+    blockDepth: 0,
+    hasContent: false,
+    argumentShape: "empty",
+    keywordValueStarted: false,
+    pendingWhitespace: false,
+    trailingKeywordArguments: 0,
+    ambiguousNoParenSyntax: false,
+    mayConsumeFollowingComma: false,
+    expectingOperatorOperand: false,
+  };
+}
+
+function completedFrameArity(frame: DelimiterFrame): number | null {
+  if (!frame.hasContent) return 0;
+  completeFrameArgument(frame);
+  if (frame.ambiguousNoParenSyntax) return null;
+  return frame.arity - Math.max(0, frame.trailingKeywordArguments - 1);
+}
+
+function completeFrameArgument(frame: DelimiterFrame): void {
+  if (frame.argumentShape === "keyword") frame.trailingKeywordArguments += 1;
+  else frame.trailingKeywordArguments = 0;
+  frame.argumentShape = "empty";
+  frame.keywordValueStarted = false;
+  frame.pendingWhitespace = false;
+  frame.mayConsumeFollowingComma = false;
+  frame.expectingOperatorOperand = false;
+}
+
+function markFrameWhitespace(stack: readonly DelimiterFrame[]): void {
+  const frame = stack.at(-1);
+  if (frame !== undefined && frame.blockDepth === 0 && frame.argumentShape !== "empty") {
+    frame.pendingWhitespace = true;
+  }
+}
+
+function markFrameIdentifier(frame: DelimiterFrame): void {
+  markFrameToken(frame, frame.argumentShape === "empty" ? "identifier" : "other");
+}
+
+function markFrameOther(frame: DelimiterFrame): void {
+  if (frame.blockDepth > 0) {
+    frame.hasContent = true;
+    return;
+  }
+  markFrameToken(frame, "other");
+}
+
+function markFrameToken(frame: DelimiterFrame, nextShape: "identifier" | "other"): void {
+  const followsOperator = frame.expectingOperatorOperand;
+  frame.expectingOperatorOperand = false;
+  if (frame.argumentShape === "keyword") {
+    if (frame.pendingWhitespace && frame.keywordValueStarted && !followsOperator) {
+      frame.mayConsumeFollowingComma = true;
+    }
+    frame.keywordValueStarted = true;
+  } else {
+    if (frame.pendingWhitespace && frame.argumentShape !== "empty" && !followsOperator) {
+      frame.mayConsumeFollowingComma = true;
+    }
+    frame.argumentShape = nextShape;
+  }
+  frame.pendingWhitespace = false;
+  frame.hasContent = true;
+}
+
+function markFrameOperator(frame: DelimiterFrame): void {
+  if (frame.blockDepth > 0) {
+    frame.hasContent = true;
+    return;
+  }
+  if (frame.argumentShape === "keyword") frame.keywordValueStarted = true;
+  else frame.argumentShape = "other";
+  frame.pendingWhitespace = false;
+  frame.expectingOperatorOperand = true;
+  frame.hasContent = true;
+}
+
+function symbolicOperatorLength(content: string, index: number): number {
+  const char = content[index];
+  if (char === ".") return 1;
+  if (char === "&") {
+    if (content.startsWith("&&&", index)) return 3;
+    if (content.startsWith("&&", index)) return 2;
+    return 1;
+  }
+  return Number(
+    char === "+" ||
+      char === "-" ||
+      char === "*" ||
+      char === "/" ||
+      char === "=" ||
+      char === "<" ||
+      char === ">" ||
+      char === "|" ||
+      char === "^" ||
+      char === "!" ||
+      char === "~" ||
+      char === "\\",
+  );
+}
+
+function markFrameContent(stack: readonly DelimiterFrame[]): void {
+  const frame = stack.at(-1);
+  if (frame !== undefined) markFrameOther(frame);
+}
+
+function isIdentifierStart(char: string): boolean {
+  return /[A-Za-z_]/u.test(char);
+}
+
+function isIdentifierContinue(char: string): boolean {
+  return /[A-Za-z0-9_!?]/u.test(char);
+}
+
+function nextNonWhitespace(content: string, start: number): string | undefined {
+  let index = start;
+  while (index < content.length && /\s/u.test(content[index] as string)) index += 1;
+  return content[index];
+}
+
+function previousNonWhitespace(content: string, start: number): string | undefined {
+  let index = start - 1;
+  while (index >= 0 && /\s/u.test(content[index] as string)) index -= 1;
+  return content[index];
+}
+
 /** Remove comments while preserving strings, byte offsets, and line numbers. */
 function withoutComments(content: string): string {
   const output = content.split("");
@@ -584,9 +872,10 @@ function withoutComments(content: string): string {
 }
 
 /** Mask comments and string/heredoc bodies while preserving offsets and lines. */
-function maskCommentsAndStrings(content: string): string {
+function maskCommentsAndStrings(content: string, preserveLiteralSentinels = false): string {
   const output = content.split("");
   let quote: string | null = null;
+  let quoteStart = -1;
   let heredoc: string | null = null;
   for (let index = 0; index < content.length; index += 1) {
     if (heredoc !== null) {
@@ -605,12 +894,19 @@ function maskCommentsAndStrings(content: string): string {
       if (char === "\\") {
         index += 1;
         if (content[index] !== "\n" && content[index] !== "\r") output[index] = " ";
-      } else if (char === quote) quote = null;
+      } else if (char === quote) {
+        if (preserveLiteralSentinels && nextNonWhitespace(content, index + 1) === ":") {
+          output[quoteStart] = " ";
+          output[index] = "q";
+        }
+        quote = null;
+        quoteStart = -1;
+      }
       continue;
     }
     if (content.startsWith('"""', index) || content.startsWith("'''", index)) {
       heredoc = content.slice(index, index + 3);
-      output[index] = " ";
+      output[index] = preserveLiteralSentinels ? "@" : " ";
       output[index + 1] = " ";
       output[index + 2] = " ";
       index += 2;
@@ -619,7 +915,8 @@ function maskCommentsAndStrings(content: string): string {
     const char = content[index];
     if (char === '"' || char === "'") {
       quote = char;
-      output[index] = " ";
+      quoteStart = index;
+      output[index] = preserveLiteralSentinels ? "@" : " ";
       continue;
     }
     if (char !== "#") continue;

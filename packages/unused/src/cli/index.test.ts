@@ -2121,23 +2121,38 @@ describe("unused CLI — why (T8.2, cli-ux §4)", () => {
   );
 
   it.skipIf(!MIX_AVAILABLE)(
-    "refuses a dead Elixir target referenced only by an unrooted tracked script",
+    "keeps rooted structured Elixir calls alive and refuses target-only deletion",
     () => {
       const canonical = runCli(["--json", "--cwd", ELIXIR_SCRIPT_FIXTURE]);
       expect(canonical.status).toBe(0);
       expect(canonical.stderr).toBe("");
       expect(
         (
-          JSON.parse(canonical.stdout) as { claims: Array<{ subject: { loc: { file: string } } }> }
+          JSON.parse(canonical.stdout) as {
+            claims: Array<{ subject: { kind: string; name?: string; loc: { file: string } } }>;
+          }
         ).claims
-          .map((claim) => claim.subject.loc.file)
-          .sort(),
+          .map((claim) => ({
+            kind: claim.subject.kind,
+            name: claim.subject.name,
+            file: claim.subject.loc.file,
+          }))
+          .sort((left, right) => (left.name ?? "").localeCompare(right.name ?? "")),
       ).toEqual([
-        "lib/neutral_script/target.ex",
-        "scripts/module_caller.exs",
-        "scripts/module_surface.exs",
-        "scripts/neutral_bench.exs",
-        "scripts/opaque.exs",
+        {
+          kind: "export",
+          name: "NeutralScript.Target.one/1",
+          file: "lib/neutral_script/target.ex",
+        },
+        {
+          kind: "export",
+          name: "NeutralScript.Target.zero/0",
+          file: "lib/neutral_script/target.ex",
+        },
+        { kind: "file", name: "scripts/module_caller.exs", file: "scripts/module_caller.exs" },
+        { kind: "file", name: "scripts/module_surface.exs", file: "scripts/module_surface.exs" },
+        { kind: "file", name: "scripts/neutral_bench.exs", file: "scripts/neutral_bench.exs" },
+        { kind: "file", name: "scripts/opaque.exs", file: "scripts/opaque.exs" },
       ]);
 
       const deletion = runCli([
@@ -2155,10 +2170,38 @@ describe("unused CLI — why (T8.2, cli-ux §4)", () => {
         selected: { kind: "file", file: "lib/neutral_script/target.ex" },
         supported: false,
         unsupportedReason:
-          "non-re-export inbound reference remains at scripts/neutral_bench.exs:1; coordinated caller edits or deletion cohort are not modeled",
+          "non-re-export inbound reference remains at scripts/invoked.exs:1; coordinated caller edits or deletion cohort are not modeled",
         reExportEdits: [],
         stages: [],
       });
+
+      for (const [subject, line] of [
+        ["NeutralScript.Target.callback/1", 1],
+        ["NeutralScript.Target.multiline/1", 2],
+      ] as const) {
+        const why = runCli(["why", subject, "--cwd", ELIXIR_SCRIPT_FIXTURE]);
+        expect(why.status).toBe(0);
+        expect(why.stderr).toBe("");
+        expect(why.stdout).toContain("-- alive");
+        expect(why.stdout).toContain("scripts/invoked.exs");
+
+        const targetDeletion = runCli([
+          "why",
+          "--delete",
+          "--json",
+          subject,
+          "--cwd",
+          ELIXIR_SCRIPT_FIXTURE,
+        ]);
+        expect(targetDeletion.status).toBe(0);
+        expect(targetDeletion.stderr).toBe("");
+        expect(JSON.parse(targetDeletion.stdout)).toMatchObject({
+          selected: { kind: "export", name: subject },
+          supported: false,
+          unsupportedReason: `non-re-export inbound reference remains at scripts/invoked.exs:${line}; coordinated caller edits or deletion cohort are not modeled`,
+          stages: [],
+        });
+      }
     },
     30_000,
   );
