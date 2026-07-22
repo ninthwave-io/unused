@@ -517,7 +517,7 @@ function emitDynamicDispatchHazards(
       hazardClass: "elixir-dynamic-dispatch",
       detail:
         affectedSymbols === undefined
-          ? `opaque dynamic dispatch (\`apply\`/\`Module.concat\`) in \`${mod.mod}\` — the runtime target is not statically resolvable`
+          ? `opaque dynamic dispatch in \`${mod.mod}\` — an apply, computed module, or computed atom receiver is not statically resolvable`
           : `bounded dynamic dispatch in \`${mod.mod}\` may select ${affectedSymbols.length} compiler-confirmed public function(s)`,
       site: siteAt(source.file, source.line),
       ...(affectedSymbols === undefined ? {} : { affectedSymbols }),

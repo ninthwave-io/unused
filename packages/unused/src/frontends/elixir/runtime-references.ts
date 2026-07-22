@@ -18,7 +18,7 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { FunctionRecord, TraceEvent, TraceResult } from "./events.js";
+import type { FunctionRecord, ModuleRecord, TraceEvent, TraceResult } from "./events.js";
 
 export interface ElixirRuntimeReference {
   readonly fromMod: string;
@@ -91,12 +91,13 @@ export function extractElixirRuntimeConventions(
   const sources = new Map(
     [...contents].map(([file, content]) => [file, indexSource(content)] as const),
   );
+  const ownerIndex = indexOwners(traceResult);
+  const selfApplyFiles = new Set(
+    [...sources].filter(([, source]) => APPLY_SELF_RE.test(source.code)).map(([file]) => file),
+  );
   const dispatchModules = new Set<string>();
   for (const mod of traceResult.modules) {
-    const source = sources.get(mod.file);
-    if (source !== undefined && APPLY_SELF_RE.test(source.code)) {
-      dispatchModules.add(mod.mod);
-    }
+    if (selfApplyFiles.has(mod.file)) dispatchModules.add(mod.mod);
   }
 
   const references: ElixirRuntimeReference[] = [];
@@ -108,7 +109,7 @@ export function extractElixirRuntimeConventions(
       const toName = match[2];
       if (toMod === undefined || toName === undefined || match[3] === undefined) continue;
       const line = lineAt(source.lineStarts, match.index ?? 0);
-      const owner = resolveOwner(traceResult, file, line, toMod);
+      const owner = resolveOwner(ownerIndex, file, line, toMod);
       if (owner === null) continue;
       const targets = functionsByModuleName.get(`${toMod}\0${toName}`) ?? [];
       for (const target of targets) {
@@ -133,7 +134,7 @@ export function extractElixirRuntimeConventions(
       );
       if (target === undefined) continue;
       const line = lineAt(source.lineStarts, match.index ?? 0);
-      const owner = resolveOwner(traceResult, file, line, toMod);
+      const owner = resolveOwner(ownerIndex, file, line, toMod);
       if (owner === null) continue;
       addReference(references, seen, {
         ...owner,
@@ -170,6 +171,7 @@ function extractDynamicDispatches(
     if (bucket === undefined) functionsByModule.set(fn.mod, [fn]);
     else bucket.push(fn);
   }
+  const aliasTargetsByCarrierSite = indexAliasTargets(traceResult.events, functionsByModule);
 
   const parsedBySite = new Map<string, ParsedApply[]>();
   for (const [file, source] of sources) {
@@ -249,8 +251,8 @@ function extractDynamicDispatches(
     const targetModule = resolveTargetModule(
       call.moduleExpr,
       event,
-      traceResult.events,
       functionsByModule,
+      aliasTargetsByCarrierSite,
     );
     const targetFunction = call.functionExpr.startsWith(":") ? call.functionExpr.slice(1) : null;
     const targets = candidateFunctions(
@@ -473,6 +475,8 @@ function exactUseDispatcherEvents(
     if (event.name === "__using__" && event.arity === 1)
       append(useEventsByModule, event.to_mod, event);
   }
+  const modulesByFile = new Map<string, ModuleRecord[]>();
+  for (const mod of traceResult.modules) append(modulesByFile, mod.file, mod);
 
   const exact = new Map<TraceEvent, readonly FunctionRecord[]>();
   for (const event of traceResult.events) {
@@ -491,7 +495,7 @@ function exactUseDispatcherEvents(
     }
     const source = sources.get(event.file);
     if (source === undefined || !uniqueUsingSelector(source.code, call.functionExpr)) continue;
-    const modulesInFile = traceResult.modules.filter((mod) => mod.file === event.file);
+    const modulesInFile = modulesByFile.get(event.file) ?? [];
     if (modulesInFile.length !== 1 || modulesInFile[0]?.mod !== event.from_mod) continue;
 
     const useEvents = useEventsByModule.get(event.from_mod) ?? [];
@@ -573,8 +577,8 @@ function moduleToken(value: string): boolean {
 function resolveTargetModule(
   expression: string,
   event: TraceEvent,
-  events: readonly TraceEvent[],
   functionsByModule: ReadonlyMap<string, FunctionRecord[]>,
+  aliasTargetsByCarrierSite: ReadonlyMap<string, ReadonlySet<string>>,
 ): string | null {
   if (expression === "__MODULE__") return event.from_mod;
   if (!moduleToken(expression)) return null;
@@ -584,19 +588,27 @@ function resolveTargetModule(
   // compiler tracer supplies the expanded module atom on an alias event; only
   // accept a unique project-module candidate. Ambiguity falls back to the
   // conservative cross-unit name/arity candidate set below.
-  const expanded = new Set(
-    events
-      .filter(
-        (candidate) =>
-          candidate.kind === "alias" &&
-          candidate.file === event.file &&
-          candidate.line === event.line &&
-          candidate.from_mod === event.from_mod &&
-          functionsByModule.has(candidate.to_mod),
-      )
-      .map((candidate) => candidate.to_mod),
-  );
+  const expanded = aliasTargetsByCarrierSite.get(aliasCarrierSiteKey(event)) ?? new Set();
   return expanded.size === 1 ? ([...expanded][0] ?? null) : null;
+}
+
+function indexAliasTargets(
+  events: readonly TraceEvent[],
+  functionsByModule: ReadonlyMap<string, FunctionRecord[]>,
+): ReadonlyMap<string, ReadonlySet<string>> {
+  const index = new Map<string, Set<string>>();
+  for (const event of events) {
+    if (event.kind !== "alias" || !functionsByModule.has(event.to_mod)) continue;
+    const key = aliasCarrierSiteKey(event);
+    const targets = index.get(key);
+    if (targets === undefined) index.set(key, new Set([event.to_mod]));
+    else targets.add(event.to_mod);
+  }
+  return index;
+}
+
+function aliasCarrierSiteKey(event: TraceEvent): string {
+  return [event.file, event.line, event.from_mod ?? ""].join("\0");
 }
 
 function listArity(value: string): number | null {
@@ -671,23 +683,54 @@ function readProjectSources(projectDir: string, traceResult: TraceResult): Map<s
   return contents;
 }
 
+interface OwnerIndex {
+  readonly bySiteTarget: ReadonlyMap<
+    string,
+    readonly Pick<ElixirRuntimeReference, "fromMod" | "fromFun">[]
+  >;
+  readonly modulesByFile: ReadonlyMap<string, readonly ModuleRecord[]>;
+}
+
+function indexOwners(traceResult: TraceResult): OwnerIndex {
+  const bySiteTarget = new Map<
+    string,
+    Array<Pick<ElixirRuntimeReference, "fromMod" | "fromFun">>
+  >();
+  for (const event of traceResult.events) {
+    if (event.from_mod === null) continue;
+    const key = ownerSiteTargetKey(event.file, event.line, event.to_mod);
+    const owner = ownerFromEvent(event);
+    const bucket = bySiteTarget.get(key);
+    if (
+      bucket === undefined ||
+      !bucket.some(
+        (candidate) => candidate.fromMod === owner.fromMod && candidate.fromFun === owner.fromFun,
+      )
+    ) {
+      if (bucket === undefined) bySiteTarget.set(key, [owner]);
+      else bucket.push(owner);
+    }
+  }
+  const modulesByFile = new Map<string, ModuleRecord[]>();
+  for (const mod of traceResult.modules) append(modulesByFile, mod.file, mod);
+  return { bySiteTarget, modulesByFile };
+}
+
 function resolveOwner(
-  traceResult: TraceResult,
+  index: OwnerIndex,
   file: string,
   line: number,
   referencedModule: string,
 ): Pick<ElixirRuntimeReference, "fromMod" | "fromFun"> | null {
-  const event = traceResult.events.find(
-    (candidate) =>
-      candidate.file === file &&
-      candidate.line === line &&
-      candidate.to_mod === referencedModule &&
-      candidate.from_mod !== null,
-  );
-  if (event?.from_mod !== undefined && event.from_mod !== null) return ownerFromEvent(event);
-  const modules = traceResult.modules.filter((candidate) => candidate.file === file);
+  const owners = index.bySiteTarget.get(ownerSiteTargetKey(file, line, referencedModule)) ?? [];
+  if (owners.length === 1 && owners[0] !== undefined) return owners[0];
+  const modules = index.modulesByFile.get(file) ?? [];
   if (modules.length !== 1 || modules[0] === undefined) return null;
   return { fromMod: modules[0].mod };
+}
+
+function ownerSiteTargetKey(file: string, line: number, referencedModule: string): string {
+  return `${file}\0${line}\0${referencedModule}`;
 }
 
 function ownerFromEvent(event: TraceEvent): Pick<ElixirRuntimeReference, "fromMod" | "fromFun"> {
