@@ -132,6 +132,7 @@ describe("unused-config.schema.json", () => {
     const validate = compileSchema();
     const rule = { language: "ts", file: "src/api.ts", name: "run", reason: "public API" };
     expect(validate({ entrySymbols: [rule, rule] })).toBe(false);
+    expect(validate({ workspaces: { pkg: { entrySymbols: [rule, rule] } } })).toBe(false);
     expect(validate({ entrySymbols: [rule, { ...rule, reason: "runtime operation" }] })).toBe(true);
   });
 

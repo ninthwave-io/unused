@@ -58,6 +58,7 @@
         "entry": { "$ref": "#/$defs/globArray" },
         "entrySymbols": {
           "type": "array",
+          "uniqueItems": true,
           "items": { "$ref": "#/$defs/entrySymbolRule" }
         },
         "project": { "$ref": "#/$defs/globArray" },
