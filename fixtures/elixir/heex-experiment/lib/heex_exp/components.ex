@@ -10,6 +10,12 @@ defmodule HeexExp.Components do
     """
   end
 
+  def template_greeting(assigns) do
+    ~H"""
+    <p>Embedded hello, {@name}</p>
+    """
+  end
+
   # Rendered by nobody. HEEx component references ARE visible to the tracer, so
   # an unrendered component is a real dead-code claim (the finding this case records).
   def unused_component(assigns) do

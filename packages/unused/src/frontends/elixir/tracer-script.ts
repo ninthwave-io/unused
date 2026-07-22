@@ -10,8 +10,8 @@
  *     `trace/2`) that records `remote_function`/`remote_macro`/
  *     `imported_function`/`local_function`/`alias_reference`/`struct_expansion`
  *     events into an ETS table — module + function + arity + the referencing
- *     site's file/line, plus a `dyn` flag for `apply`/`Module.concat`-style
- *     dynamic-dispatch call sites.
+ *     site's file/line, plus a `dyn` flag for invocation primitives and the
+ *     `Module.concat` proxy needed for dynamic remote calls.
  *     `:on_module` facts capture compiler-time source ownership before a later
  *     definition can replace the module's final BEAM.
  *  2. Registers the tracer via `Code.put_compiler_option(:tracers, …)` and
@@ -39,13 +39,17 @@
 export const TRACER_SCRIPT = `
 defmodule Unused.Tracer do
   @moduledoc false
-  # Well-known dynamic-dispatch call targets: a call to one of these means the
-  # dispatching file could reach a module/function no static reference names.
+  # Well-known dynamic invocation targets. Module.concat and function-scoped
+  # atom producers remain conservative proxies because calls such as
+  # String.to_atom(name).run() emit no separate outer compiler event. At module
+  # scope those atom facts are compile-time name production (for example a
+  # generated function name), not runtime dispatch.
   @dyn MapSet.new([
     "Kernel.apply/2", "Kernel.apply/3", ":erlang.apply/3",
     "Module.concat/1", "Module.concat/2",
     "String.to_atom/1", "String.to_existing_atom/1"
   ])
+  @function_scoped_dyn MapSet.new(["String.to_atom/1", "String.to_existing_atom/1"])
 
   def trace({:remote_function, meta, m, n, a}, env), do: ev("remote", env, meta, m, n, a)
   def trace({:remote_macro, meta, m, n, a}, env), do: ev("remote", env, meta, m, n, a)
@@ -67,7 +71,9 @@ defmodule Unused.Tracer do
   defp ev(kind, env, meta, module, name, arity) do
     line = Keyword.get(meta, :line, env.line) || 0
     tomod = ms(module)
-    dyn = MapSet.member?(@dyn, "#{tomod}.#{name}/#{arity}")
+    target = "#{tomod}.#{name}/#{arity}"
+    dyn = MapSet.member?(@dyn, target) and
+      (not MapSet.member?(@function_scoped_dyn, target) or env.function != nil)
     :ets.insert(:unused_events,
       {{kind, to_string(env.file), line, ms(env.module), fnf(env.function), tomod, ns(name), arity, dyn}})
     :ok
@@ -99,9 +105,10 @@ defmodule Unused.Reflect do
   def line_of(_), do: 0
 
   # Generated / reflection helpers a module always exposes — never claimable.
-  def generated?(name) do
+  def generated?(name, arity) do
     s = to_string(name)
-    s in ["module_info", "behaviour_info", "__struct__"] or Regex.match?(~r/^__.*__$/, s)
+    (s == "__mix_recompile__?" and arity == 0) or
+      s in ["module_info", "behaviour_info", "__struct__"] or Regex.match?(~r/^__.*__$/, s)
   end
 
   # Emit one module record + one record per public, non-generated function by
@@ -130,7 +137,7 @@ defmodule Unused.Reflect do
         exports
         |> Enum.sort()
         |> Enum.each(fn {name, arity} ->
-          unless generated?(name) or String.starts_with?(to_string(name), "MACRO-") do
+          unless generated?(name, arity) or String.starts_with?(to_string(name), "MACRO-") do
             emit.(%{"k" => "function", "mod" => inspect(mod), "name" => to_string(name),
                     "arity" => arity, "file" => rel,
                     "line" => Map.get(flines, "#{name}/#{arity}", modline),
