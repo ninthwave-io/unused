@@ -1,3 +1,4 @@
+import type { PerformanceTracker } from "../core/analysis/index.js";
 import { entrypointId, type IRGraph } from "../core/ir/index.js";
 import {
   ConfigError,
@@ -13,6 +14,7 @@ export interface ApplyConfigSymbolEntrypointsInput {
   readonly units: readonly ConfigUnit[];
   /** Symbol id to the language frontend that emitted it. */
   readonly symbolLanguages: ReadonlyMap<string, EntrySymbolLanguage>;
+  readonly performance?: PerformanceTracker;
 }
 
 export function graphSymbolLanguages(
@@ -39,6 +41,7 @@ export function applyConfigSymbolEntrypoints(input: ApplyConfigSymbolEntrypoints
   ) {
     return;
   }
+  const started = input.performance?.now();
 
   const symbolIndex = new Map<string, string[]>();
   for (const node of graph.nodes()) {
@@ -90,6 +93,7 @@ export function applyConfigSymbolEntrypoints(input: ApplyConfigSymbolEntrypoints
   }
 
   for (const { rule, file, label } of rules) {
+    input.performance?.increment("resolutionAttempts");
     const key = selectorKey(rule.language, file, rule.name);
     if (effective.has(key)) {
       throw new ConfigError(
@@ -123,6 +127,7 @@ export function applyConfigSymbolEntrypoints(input: ApplyConfigSymbolEntrypoints
       reason: rule.reason,
     });
   }
+  if (started !== undefined) input.performance?.finish("convention-config-roots", started);
 }
 
 function selectorKey(language: string, file: string, name: string): string {

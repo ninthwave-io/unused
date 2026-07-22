@@ -722,6 +722,7 @@ export async function analyzeProjectWithGraph(
       config,
       units: configUnits,
       symbolLanguages: graphSymbolLanguages(graph, "ts"),
+      ...(performance === undefined ? {} : { performance }),
     });
   }
   const reachability = computePartitionedReachability(graph, performance);

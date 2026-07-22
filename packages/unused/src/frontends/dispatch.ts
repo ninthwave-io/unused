@@ -231,7 +231,13 @@ export async function analyzeProjectAutoWithGraph(
       if (node.kind === "symbol") symbolLanguages.set(node.id, fragment.language);
     }
   }
-  applyConfigSymbolEntrypoints({ graph, config, units, symbolLanguages });
+  applyConfigSymbolEntrypoints({
+    graph,
+    config,
+    units,
+    symbolLanguages,
+    ...(options.performance === undefined ? {} : { performance: options.performance }),
+  });
   warnOnEmptyConfigMatches(config, analyzedFiles, analyzedFiles, units);
 
   const reachability = computePartitionedReachability(graph, options.performance);

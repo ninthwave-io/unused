@@ -210,6 +210,7 @@ async function analyzeRustProjectWithIsolatedCargo(
       config,
       units: configUnits,
       symbolLanguages: graphSymbolLanguages(graph, "rs"),
+      ...(performance === undefined ? {} : { performance }),
     });
   }
   const reachability = computePartitionedReachability(graph, performance);

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { PerformanceTracker } from "../core/analysis/index.js";
 import { fileId, IRGraph, symbolId } from "../core/ir/index.js";
 import { applyConfigSymbolEntrypoints } from "./config-symbol-entrypoints.js";
 import { ConfigError, EMPTY_CONFIG, type EntrySymbolLanguage } from "./ts/config.js";
@@ -30,6 +31,7 @@ describe("applyConfigSymbolEntrypoints", () => {
     const graph = new IRGraph();
     const root = addSymbol(graph, "src/api.ts", "run");
     const nested = addSymbol(graph, "services/backend/lib/worker.ex", "Neutral.Worker.perform/1");
+    const performance = new PerformanceTracker();
     applyConfigSymbolEntrypoints({
       graph,
       config: {
@@ -59,6 +61,7 @@ describe("applyConfigSymbolEntrypoints", () => {
         [root, "ts"],
         [nested, "ex"],
       ]),
+      performance,
     });
 
     expect(graph.entrypoints()).toEqual([
@@ -69,6 +72,8 @@ describe("applyConfigSymbolEntrypoints", () => {
         reason: "runtime callback",
       }),
     ]);
+    expect(performance.snapshot().counters.resolutionAttempts).toBe(2);
+    expect(performance.snapshot().phasesMs["convention-config-roots"]).toBeGreaterThan(0);
   });
 
   it("matches a workspace by a unique package name", () => {

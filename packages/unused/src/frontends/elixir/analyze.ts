@@ -230,6 +230,7 @@ export async function analyzeElixirProjectWithGraph(
       config,
       units: configUnits,
       symbolLanguages: graphSymbolLanguages(graph, "ex"),
+      ...(performance === undefined ? {} : { performance }),
     });
   }
   const reachability = computePartitionedReachability(graph, performance);
