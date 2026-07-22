@@ -2,7 +2,14 @@
 
 import { realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { CargoMetadataError, runCargo } from "./runner.js";
+import {
+  type CargoExecutionContext,
+  CargoMetadataError,
+  createCargoExecutionContext,
+  disposeCargoExecutionContext,
+  runCargo,
+  validateCargoExecutionContext,
+} from "./runner.js";
 
 export interface CargoTarget {
   readonly name: string;
@@ -32,6 +39,10 @@ export interface CargoWorkspace {
 
 export interface LoadCargoMetadataOptions {
   readonly cargoCommand?: string;
+  /** Shared analyzer-owned execution context. Omit for a standalone metadata call. */
+  readonly execution?: CargoExecutionContext;
+  /** Test-only parent for a standalone metadata call's temporary target. */
+  readonly targetParentDir?: string;
 }
 
 export function loadCargoMetadata(
@@ -39,11 +50,35 @@ export function loadCargoMetadata(
   options: LoadCargoMetadataOptions = {},
 ): CargoWorkspace {
   const root = realpathSync(resolve(projectDir));
-  const { stdout } = runCargo(
-    root,
-    ["metadata", "--format-version", "1", "--no-deps"],
-    options.cargoCommand,
-  );
+  const ownedContext =
+    options.execution === undefined
+      ? createCargoExecutionContext(root, options.targetParentDir, "metadata")
+      : undefined;
+  const execution = options.execution ?? ownedContext;
+  if (execution === undefined)
+    throw new CargoMetadataError("Cargo target isolation was not created");
+  let primaryFailure: unknown;
+  try {
+    const { targetDir } = validateCargoExecutionContext(root, execution, "metadata");
+    const { stdout } = runCargo(
+      root,
+      ["metadata", "--frozen", "--format-version", "1", "--no-deps"],
+      execution,
+      options.cargoCommand,
+      "metadata",
+    );
+    return parseCargoMetadata(stdout, root, targetDir);
+  } catch (error) {
+    primaryFailure = error;
+    throw error;
+  } finally {
+    if (ownedContext !== undefined) {
+      disposeCargoExecutionContext(ownedContext, primaryFailure, "metadata");
+    }
+  }
+}
+
+function parseCargoMetadata(stdout: string, root: string, targetDir: string): CargoWorkspace {
   let raw: unknown;
   try {
     raw = JSON.parse(stdout);
@@ -52,9 +87,18 @@ export function loadCargoMetadata(
   }
   const record = asRecord(raw, "metadata");
   const workspaceRoot = absolutePath(valueAt(record, "workspace_root"), "metadata.workspace_root");
+  const targetDirectory = absolutePath(
+    valueAt(record, "target_directory"),
+    "metadata.target_directory",
+  );
   if (!contains(root, workspaceRoot) && root !== workspaceRoot) {
     throw new CargoMetadataError(
       `Cargo workspace root escapes the detected boundary: ${workspaceRoot}`,
+    );
+  }
+  if (resolve(targetDirectory) !== resolve(targetDir)) {
+    throw new CargoMetadataError(
+      "Cargo metadata ignored the analyzer-owned target directory; refusing to risk consumer build artifacts",
     );
   }
   const packages = asArray(valueAt(record, "packages"), "metadata.packages").map((value, index) =>
@@ -77,7 +121,7 @@ export function loadCargoMetadata(
   }
   return {
     workspaceRoot,
-    targetDirectory: absolutePath(valueAt(record, "target_directory"), "metadata.target_directory"),
+    targetDirectory,
     packages,
     workspaceMemberIds,
   };

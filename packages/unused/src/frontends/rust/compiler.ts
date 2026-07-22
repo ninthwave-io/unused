@@ -3,7 +3,14 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { Site } from "../../core/ir/index.js";
 import type { CargoWorkspace } from "./metadata.js";
-import { CargoCompileError, runCargo } from "./runner.js";
+import {
+  CargoCompileError,
+  type CargoExecutionContext,
+  createCargoExecutionContext,
+  disposeCargoExecutionContext,
+  runCargo,
+  validateCargoExecutionContext,
+} from "./runner.js";
 
 export interface CompilerDeadFunction {
   readonly name: string;
@@ -13,6 +20,10 @@ export interface CompilerDeadFunction {
 
 export interface CollectCompilerFactsOptions {
   readonly cargoCommand?: string;
+  /** Shared analyzer-owned execution context. Omit for a standalone compiler call. */
+  readonly execution?: CargoExecutionContext;
+  /** Test-only parent for a standalone compiler call's temporary target. */
+  readonly targetParentDir?: string;
 }
 
 /**
@@ -24,19 +35,49 @@ export function collectCompilerDeadFunctions(
   workspace: CargoWorkspace,
   options: CollectCompilerFactsOptions = {},
 ): CompilerDeadFunction[] {
-  const base = ["check", "--workspace", "--all-targets", "--message-format=json"] as const;
-  const defaultFacts = compile(workspace, base, options.cargoCommand);
-  const allFeatureFacts = compile(workspace, [...base, "--all-features"], options.cargoCommand);
-  const allFeatureKeys = new Set(allFeatureFacts.map(factKey));
-  return defaultFacts.filter((fact) => allFeatureKeys.has(factKey(fact))).sort(bySite);
+  const ownedContext =
+    options.execution === undefined
+      ? createCargoExecutionContext(workspace.workspaceRoot, options.targetParentDir)
+      : undefined;
+  const execution = options.execution ?? ownedContext;
+  if (execution === undefined)
+    throw new CargoCompileError("Cargo target isolation was not created");
+  let primaryFailure: unknown;
+  try {
+    validateCargoExecutionContext(workspace.workspaceRoot, execution);
+    const base = [
+      "check",
+      "--frozen",
+      "--workspace",
+      "--all-targets",
+      "--message-format=json",
+    ] as const;
+    const defaultFacts = compile(workspace, base, options.cargoCommand, execution);
+    const allFeatureFacts = compile(
+      workspace,
+      [...base, "--all-features"],
+      options.cargoCommand,
+      execution,
+    );
+    const allFeatureKeys = new Set(allFeatureFacts.map(factKey));
+    return defaultFacts.filter((fact) => allFeatureKeys.has(factKey(fact))).sort(bySite);
+  } catch (error) {
+    primaryFailure = error;
+    throw error;
+  } finally {
+    if (ownedContext !== undefined) {
+      disposeCargoExecutionContext(ownedContext, primaryFailure);
+    }
+  }
 }
 
 function compile(
   workspace: CargoWorkspace,
   args: readonly string[],
   cargoCommand: string | undefined,
+  execution: CargoExecutionContext,
 ): CompilerDeadFunction[] {
-  const { stdout } = runCargo(workspace.workspaceRoot, args, cargoCommand, "compile");
+  const { stdout } = runCargo(workspace.workspaceRoot, args, execution, cargoCommand, "compile");
   const facts: CompilerDeadFunction[] = [];
   let sawBuildFinished = false;
   for (const [index, line] of stdout.split(/\r?\n/u).entries()) {

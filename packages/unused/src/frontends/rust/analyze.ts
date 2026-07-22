@@ -29,6 +29,11 @@ import {
 import { discoverProjectInventory } from "../ts/discover.js";
 import { collectCompilerDeadFunctions } from "./compiler.js";
 import { type CargoPackage, type CargoWorkspace, loadCargoMetadata } from "./metadata.js";
+import {
+  type CargoExecutionContext,
+  createCargoExecutionContext,
+  disposeCargoExecutionContext,
+} from "./runner.js";
 
 const ANALYZER_NAME = "rust-reference-graph";
 const CLAIM_LANGUAGE = "rs";
@@ -36,6 +41,8 @@ const DEFAULT_TOOL_VERSION = "0.1.0";
 
 export interface RustAnalyzeInternalOptions extends AnalyzeInternalOptions {
   readonly cargoCommand?: string;
+  /** Test-only parent for the analyzer-owned Cargo target directory. */
+  readonly cargoTargetParentDir?: string;
   /** Shared gitignore-bounded inventory supplied by repository orchestration. */
   readonly sourceFiles?: readonly string[];
 }
@@ -61,14 +68,33 @@ export async function analyzeRustProjectWithGraph(
   options: AnalyzeOptions = {},
   internal: RustAnalyzeInternalOptions = {},
 ): Promise<AnalyzeRustWithGraph> {
-  const started = Date.now();
   const root = realpathSync(resolve(rootDir));
+  const cargo = createCargoExecutionContext(root, internal.cargoTargetParentDir);
+  let primaryFailure: unknown;
+  try {
+    return await analyzeRustProjectWithIsolatedCargo(root, options, internal, cargo);
+  } catch (error) {
+    primaryFailure = error;
+    throw error;
+  } finally {
+    disposeCargoExecutionContext(cargo, primaryFailure);
+  }
+}
+
+async function analyzeRustProjectWithIsolatedCargo(
+  root: string,
+  options: AnalyzeOptions,
+  internal: RustAnalyzeInternalOptions,
+  cargo: CargoExecutionContext,
+): Promise<AnalyzeRustWithGraph> {
+  const started = Date.now();
   const now = options.now ?? new Date();
   const version = options.toolVersion ?? DEFAULT_TOOL_VERSION;
   const performance = options.performance;
   const workspaceStarted = performance?.now();
   const metadata = loadCargoMetadata(root, {
     ...(internal.cargoCommand === undefined ? {} : { cargoCommand: internal.cargoCommand }),
+    execution: cargo,
   });
   const config = await loadConfig(root, options.configPath);
   if (workspaceStarted !== undefined) {
@@ -136,6 +162,7 @@ export async function analyzeRustProjectWithGraph(
   const compilerStarted = performance?.now();
   const compilerFacts = collectCompilerDeadFunctions(metadata, {
     ...(internal.cargoCommand === undefined ? {} : { cargoCommand: internal.cargoCommand }),
+    execution: cargo,
   }).filter(
     (fact) =>
       fileSet.has(fact.file) &&
