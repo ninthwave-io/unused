@@ -72,7 +72,7 @@ interface SourceIndex {
   readonly closeByOpen: ReadonlyMap<number, number>;
   readonly parentByOpen: ReadonlyMap<number, number>;
   readonly commasByOpen: ReadonlyMap<number, readonly number[]>;
-  readonly usingSelectorCounts: ReadonlyMap<string, number>;
+  readonly usingSignatures: readonly { readonly line: number; readonly selector: string }[];
 }
 
 /** Extract independently provable runtime references from traced project files. */
@@ -95,7 +95,12 @@ export function extractElixirRuntimeConventions(
   );
   const ownerIndex = indexOwners(traceResult);
   const parsedBySite = indexParsedApplies(sources);
-  const dispatchModules = indexUseDispatcherModules(traceResult.events, sources, parsedBySite);
+  const usingSelectorsByCarrier = indexUsingSelectorsByCarrier(traceResult.events, sources);
+  const dispatchModules = indexUseDispatcherModules(
+    traceResult.events,
+    parsedBySite,
+    usingSelectorsByCarrier,
+  );
   const useEventsBySite = indexUseEventsBySite(traceResult.events);
   const useFactCountsBySite = indexUseFactCountsBySite(sources);
 
@@ -158,6 +163,7 @@ export function extractElixirRuntimeConventions(
     traceResult,
     sources,
     parsedBySite,
+    usingSelectorsByCarrier,
     functionsByModuleName,
     references,
     seen,
@@ -189,8 +195,8 @@ function indexParsedApplies(
 
 function indexUseDispatcherModules(
   events: readonly TraceEvent[],
-  sources: ReadonlyMap<string, SourceIndex>,
   parsedBySite: ReadonlyMap<string, ParsedApply[]>,
+  usingSelectorsByCarrier: ReadonlyMap<string, number>,
 ): ReadonlySet<string> {
   const modules = new Set<string>();
   for (const event of events) {
@@ -199,18 +205,59 @@ function indexUseDispatcherModules(
     const calls = parsedBySite.get(dispatchSiteKey(event.file, event.line)) ?? [];
     if (calls.length !== 1 || calls[0] === undefined) continue;
     const call = calls[0];
-    const source = sources.get(event.file);
     if (
       call.moduleExpr !== "__MODULE__" ||
       call.functionExpr.startsWith(":") ||
       call.arity !== 0 ||
-      source?.usingSelectorCounts.get(call.functionExpr) !== 1
+      usingSelectorsByCarrier.get(usingSelectorCarrierKey(event, call.functionExpr)) !== 1
     ) {
       continue;
     }
     modules.add(event.from_mod);
   }
   return modules;
+}
+
+function indexUsingSelectorsByCarrier(
+  events: readonly TraceEvent[],
+  sources: ReadonlyMap<string, SourceIndex>,
+): ReadonlyMap<string, number> {
+  const definitionEventsBySite = new Map<string, TraceEvent[]>();
+  for (const event of events) {
+    if (
+      event.name === "defmacro" &&
+      event.arity === 2 &&
+      event.from_mod !== null &&
+      event.from_fun === undefined
+    ) {
+      append(
+        definitionEventsBySite,
+        partitionSiteKey(event.file, event.line, event.partition),
+        event,
+      );
+    }
+  }
+  const result = new Map<string, number>();
+  for (const [file, source] of sources) {
+    for (const signature of source.usingSignatures) {
+      for (const partition of ["prod", "test"] as const) {
+        const definitionEvents =
+          definitionEventsBySite.get(partitionSiteKey(file, signature.line, partition)) ?? [];
+        if (definitionEvents.length !== 1 || definitionEvents[0] === undefined) continue;
+        const key = usingSelectorCarrierKey(definitionEvents[0], signature.selector);
+        result.set(key, (result.get(key) ?? 0) + 1);
+      }
+    }
+  }
+  return result;
+}
+
+function usingSelectorCarrierKey(event: TraceEvent, selector: string): string {
+  return [event.file, event.from_mod ?? "", selector, event.partition].join("\0");
+}
+
+function partitionSiteKey(file: string, line: number, partition: TraceEvent["partition"]): string {
+  return `${file}\0${line}\0${partition}`;
 }
 
 function indexUseEventsBySite(events: readonly TraceEvent[]): ReadonlyMap<string, TraceEvent[]> {
@@ -239,6 +286,7 @@ function extractDynamicDispatches(
   traceResult: TraceResult,
   sources: ReadonlyMap<string, SourceIndex>,
   parsedBySite: ReadonlyMap<string, ParsedApply[]>,
+  usingSelectorsByCarrier: ReadonlyMap<string, number>,
   functionsByModuleName: ReadonlyMap<string, FunctionRecord[]>,
   references: ElixirRuntimeReference[],
   seenReferences: Set<string>,
@@ -255,10 +303,10 @@ function extractDynamicDispatches(
   const safeAtomEvents = safeAtomProducerEvents(traceResult.events, sources);
   const exactUseDispatchEvents = exactUseDispatcherEvents(
     traceResult,
-    sources,
     references,
     parsedBySite,
     functionsByModuleName,
+    usingSelectorsByCarrier,
   );
 
   const dispatches: ElixirDynamicDispatch[] = [];
@@ -520,10 +568,10 @@ function directMapKeyConsumer(
  */
 function exactUseDispatcherEvents(
   traceResult: TraceResult,
-  sources: ReadonlyMap<string, SourceIndex>,
   references: readonly ElixirRuntimeReference[],
   parsedBySite: ReadonlyMap<string, ParsedApply[]>,
   functionsByModuleName: ReadonlyMap<string, FunctionRecord[]>,
+  usingSelectorsByCarrier: ReadonlyMap<string, number>,
 ): ReadonlyMap<TraceEvent, readonly FunctionRecord[]> {
   const useReferencesByModule = new Map<string, ElixirRuntimeReference[]>();
   for (const reference of references) {
@@ -535,10 +583,15 @@ function exactUseDispatcherEvents(
     if (event.name === "__using__" && event.arity === 1)
       append(useEventsByModule, event.to_mod, event);
   }
-  const exact = new Map<TraceEvent, readonly FunctionRecord[]>();
+  const dispatcherEventsByModule = new Map<string, TraceEvent[]>();
   for (const event of traceResult.events) {
-    if (!isApply3Event(event) || event.from_mod === null || event.from_fun !== "__using__/1")
-      continue;
+    if (isApply3Event(event) && event.from_mod !== null && event.from_fun === "__using__/1")
+      append(dispatcherEventsByModule, event.from_mod, event);
+  }
+  const exact = new Map<TraceEvent, readonly FunctionRecord[]>();
+  for (const [dispatcherModule, dispatcherEvents] of dispatcherEventsByModule) {
+    if (dispatcherEvents.length !== 1 || dispatcherEvents[0] === undefined) continue;
+    const event = dispatcherEvents[0];
     const parsed = parsedBySite.get(dispatchSiteKey(event.file, event.line)) ?? [];
     if (parsed.length !== 1) continue;
     const call = parsed[0];
@@ -550,11 +603,11 @@ function exactUseDispatcherEvents(
     ) {
       continue;
     }
-    const source = sources.get(event.file);
-    if (source?.usingSelectorCounts.get(call.functionExpr) !== 1) continue;
+    if (usingSelectorsByCarrier.get(usingSelectorCarrierKey(event, call.functionExpr)) !== 1)
+      continue;
 
-    const useEvents = useEventsByModule.get(event.from_mod) ?? [];
-    const useReferences = useReferencesByModule.get(event.from_mod) ?? [];
+    const useEvents = useEventsByModule.get(dispatcherModule) ?? [];
+    const useReferences = useReferencesByModule.get(dispatcherModule) ?? [];
     if (useEvents.length === 0 || useEvents.length !== useReferences.length) continue;
     const eventsByCarrierSite = groupBy(useEvents, useCarrierSiteKey);
     const referencesByCarrierSite = groupBy(useReferences, referenceCarrierSiteKey);
@@ -654,7 +707,9 @@ function indexAliasTargets(
 }
 
 function aliasCarrierSiteKey(event: TraceEvent): string {
-  return [event.file, event.line, event.from_mod ?? ""].join("\0");
+  return [event.file, event.line, event.from_mod ?? "", event.from_fun ?? "", event.partition].join(
+    "\0",
+  );
 }
 
 function listArity(value: string): number | null {
@@ -739,25 +794,22 @@ interface OwnerIndex {
 }
 
 function indexOwners(traceResult: TraceResult): OwnerIndex {
-  const bySiteTarget = new Map<
+  const ownersBySiteTarget = new Map<
     string,
-    Array<Pick<ElixirRuntimeReference, "fromMod" | "fromFun">>
+    Map<string, Pick<ElixirRuntimeReference, "fromMod" | "fromFun">>
   >();
   for (const event of traceResult.events) {
     if (event.from_mod === null) continue;
     const key = ownerSiteTargetKey(event.file, event.line, event.to_mod);
     const owner = ownerFromEvent(event);
-    const bucket = bySiteTarget.get(key);
-    if (
-      bucket === undefined ||
-      !bucket.some(
-        (candidate) => candidate.fromMod === owner.fromMod && candidate.fromFun === owner.fromFun,
-      )
-    ) {
-      if (bucket === undefined) bySiteTarget.set(key, [owner]);
-      else bucket.push(owner);
-    }
+    const ownerKey = `${owner.fromMod}\0${owner.fromFun ?? ""}`;
+    const bucket = ownersBySiteTarget.get(key);
+    if (bucket === undefined) ownersBySiteTarget.set(key, new Map([[ownerKey, owner]]));
+    else bucket.set(ownerKey, owner);
   }
+  const bySiteTarget = new Map(
+    [...ownersBySiteTarget].map(([key, owners]) => [key, [...owners.values()]] as const),
+  );
   const modulesByFile = new Map<string, ModuleRecord[]>();
   for (const mod of traceResult.modules) append(modulesByFile, mod.file, mod);
   return { bySiteTarget, modulesByFile };
@@ -807,11 +859,15 @@ function indexSource(content: string): SourceIndex {
   const closeByOpen = new Map<number, number>();
   const parentByOpen = new Map<number, number>();
   const commasByOpen = new Map<number, number[]>();
-  const usingSelectorCounts = new Map<string, number>();
+  const usingSignatures: Array<{ line: number; selector: string }> = [];
   for (const match of code.matchAll(USING_SELECTOR_RE)) {
     const selector = match[1];
-    if (selector !== undefined)
-      usingSelectorCounts.set(selector, (usingSelectorCounts.get(selector) ?? 0) + 1);
+    if (selector !== undefined) {
+      usingSignatures.push({
+        line: lineAt(lineStarts, match.index ?? 0),
+        selector,
+      });
+    }
   }
   const stack: Array<{ open: number; close: string; commas: number[] }> = [];
   for (let index = 0; index < code.length; index += 1) {
@@ -844,7 +900,7 @@ function indexSource(content: string): SourceIndex {
     closeByOpen,
     parentByOpen,
     commasByOpen,
-    usingSelectorCounts,
+    usingSignatures,
   };
 }
 

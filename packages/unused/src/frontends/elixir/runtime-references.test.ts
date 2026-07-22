@@ -9,6 +9,8 @@ import {
 
 const fixture = (name: string): string =>
   fileURLToPath(new URL(`../../../../../fixtures/elixir/${name}`, import.meta.url));
+const testFixture = (name: string): string =>
+  fileURLToPath(new URL(`./__testfixtures__/${name}`, import.meta.url));
 
 function mod(mod: string, file: string): ModuleRecord {
   return {
@@ -82,6 +84,18 @@ describe("extractElixirRuntimeReferences", () => {
         fn("NeutralUse.Web", "controller", 0, "lib/neutral_use/web.ex"),
       ],
       events: [
+        {
+          k: "event",
+          kind: "imported",
+          file: "lib/neutral_use/web.ex",
+          line: 4,
+          from_mod: "NeutralUse.Web",
+          to_mod: "Kernel",
+          name: "defmacro",
+          arity: 2,
+          dyn: false,
+          partition: "prod",
+        },
         {
           k: "event",
           kind: "imported",
@@ -221,6 +235,18 @@ describe("extractElixirRuntimeReferences", () => {
           k: "event",
           kind: "imported",
           file: "lib/neutral_use/web.ex",
+          line: 4,
+          from_mod: "NeutralUse.Web",
+          to_mod: "Kernel",
+          name: "defmacro",
+          arity: 2,
+          dyn: false,
+          partition: "prod",
+        },
+        {
+          k: "event",
+          kind: "imported",
+          file: "lib/neutral_use/web.ex",
           line: 5,
           from_mod: "NeutralUse.Web",
           from_fun: "__using__/1",
@@ -246,7 +272,122 @@ describe("extractElixirRuntimeReferences", () => {
       dynamicEventKey({ ...production, partition: "test" }),
     );
   });
+
+  it("requires a self-apply selector signature on the exact module carrier", () => {
+    const file = "dispatchers.ex";
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [
+        mod("NeutralRole.SignatureOnly", file),
+        mod("NeutralRole.Misdirected", file),
+        mod("NeutralRole.Consumer", "consumer.ex"),
+      ],
+      functions: [
+        fn("NeutralRole.Misdirected", "router", 0, file),
+        fn("NeutralRole.Misdirected", "controller", 0, file),
+      ],
+      events: [
+        definitionEvent(file, 2, "NeutralRole.SignatureOnly"),
+        definitionEvent(file, 8, "NeutralRole.Misdirected"),
+        {
+          k: "event",
+          kind: "imported",
+          file,
+          line: 11,
+          from_mod: "NeutralRole.Misdirected",
+          from_fun: "__using__/1",
+          to_mod: "Kernel",
+          name: "apply",
+          arity: 3,
+          dyn: true,
+          partition: "prod",
+        },
+        {
+          k: "event",
+          kind: "remote",
+          file: "consumer.ex",
+          line: 2,
+          from_mod: "NeutralRole.Consumer",
+          to_mod: "NeutralRole.Misdirected",
+          name: "__using__",
+          arity: 1,
+          dyn: false,
+          partition: "prod",
+        },
+      ],
+    };
+
+    const extraction = extractElixirRuntimeConventions(testFixture("dynamic-role-carriers"), trace);
+    expect(extraction.references).toEqual([]);
+    expect(extraction.dynamicDispatches).toEqual([expect.objectContaining({ kind: "bounded" })]);
+  });
+
+  it("keeps same-line alias resolution isolated by function carrier", () => {
+    const file = "alias_collision.ex";
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod("NeutralAlias.Dispatch", file), mod("NeutralAlias.Target", file)],
+      functions: [
+        fn("NeutralAlias.Dispatch", "a", 0, file),
+        fn("NeutralAlias.Dispatch", "b", 0, file),
+        fn("NeutralAlias.Target", "run", 0, file),
+      ],
+      events: [
+        {
+          ...dynamicApplyEvent("a/0", 2),
+          file,
+          from_mod: "NeutralAlias.Dispatch",
+        },
+        aliasEvent(file, 2, "a/0", "ExternalAlias"),
+        aliasEvent(file, 2, "b/0", "NeutralAlias.Target"),
+      ],
+    };
+
+    const extraction = extractElixirRuntimeConventions(testFixture("dynamic-role-carriers"), trace);
+    expect(extraction.references).toEqual([]);
+    expect(extraction.dynamicDispatches).toEqual([
+      expect.objectContaining({
+        kind: "bounded",
+        targets: [expect.objectContaining({ mod: "NeutralAlias.Target", name: "run" })],
+      }),
+    ]);
+  });
 });
+
+function definitionEvent(file: string, line: number, fromMod: string): TraceEvent {
+  return {
+    k: "event",
+    kind: "imported",
+    file,
+    line,
+    from_mod: fromMod,
+    to_mod: "Kernel",
+    name: "defmacro",
+    arity: 2,
+    dyn: false,
+    partition: "prod",
+  };
+}
+
+function aliasEvent(file: string, line: number, fromFun: string, toMod: string): TraceEvent {
+  return {
+    k: "event",
+    kind: "alias",
+    file,
+    line,
+    from_mod: "NeutralAlias.Dispatch",
+    from_fun: fromFun,
+    to_mod: toMod,
+    dyn: false,
+    partition: "prod",
+  };
+}
 
 function dynamicApplyEvent(fromFun: string, line: number): TraceEvent {
   return {
