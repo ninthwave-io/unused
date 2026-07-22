@@ -361,7 +361,7 @@ describe("test-phase compatibility filtering", () => {
   const reemittedFunction = { ...firstFunction, partition: "test" as const };
 
   it.each(["lib/app/core.ex", "neutral_generated"])(
-    "accepts and removes an owned production duplicate from %s",
+    "accepts and removes an owned production duplicate without provenance from %s",
     (file) => {
       const result = validateTestTraceOwnership(
         compatibleProduction,
@@ -403,7 +403,7 @@ describe("test-phase compatibility filtering", () => {
     ).toMatchObject({ testPartition: "incomplete", testPartitionReason: "ownership" });
   });
 
-  it("discards exact raw-source duplicates normalized in production independent of order", () => {
+  it("discards exact non-owner raw-source duplicates independent of source shape and order", () => {
     const first = {
       ...productionCoreEvent,
       file: "/neutral/compiler/application.ex",
@@ -411,7 +411,7 @@ describe("test-phase compatibility filtering", () => {
     };
     const second = {
       ...productionCoreEvent,
-      file: "/neutral/compiler/kernel.ex",
+      file: "deps/neutral_macro.ex",
       to_mod: "Kernel",
       partition: "prod" as const,
     };
@@ -437,12 +437,17 @@ describe("test-phase compatibility filtering", () => {
     ).toEqual({ events: [], modules: [], functions: [], testPartition: "complete" });
   });
 
-  it.each(["/neutral/compiler/spoofed.ex", "test/core_test.exs", "neutral_generated.ex"])(
-    "rejects a duplicate whose raw source does not match production provenance: %s",
-    (file) => {
+  it.each([
+    ["external", "/neutral/compiler/application.ex", "/neutral/compiler/spoofed.ex"],
+    ["safe repository-relative", "generated/shared_macro.ex", "generated/spoofed_macro.ex"],
+    ["test-inventory substitution", "generated/shared_macro.ex", "test/core_test.exs"],
+    ["extensionful substitution", "/neutral/compiler/application.ex", "neutral_generated.ex"],
+  ])(
+    "rejects a duplicate whose %s raw source does not match production provenance",
+    (_label, productionFile, testFile) => {
       const rawProductionEvent = {
         ...productionCoreEvent,
-        file: "/neutral/compiler/application.ex",
+        file: productionFile,
         partition: "prod" as const,
       };
       const validatedProduction = validateProductionTraceOwnership(
@@ -455,7 +460,7 @@ describe("test-phase compatibility filtering", () => {
           {
             modules: [reemittedModule],
             functions: [reemittedFunction],
-            events: [{ ...rawProductionEvent, file, partition: "test" }],
+            events: [{ ...rawProductionEvent, file: testFile, partition: "test" }],
             testPartition: "complete",
           },
           inventory,
@@ -463,6 +468,68 @@ describe("test-phase compatibility filtering", () => {
       ).toMatchObject({ testPartition: "incomplete", testPartitionReason: "ownership" });
     },
   );
+
+  const semanticChanges: ReadonlyArray<
+    readonly [
+      string,
+      {
+        readonly to_mod?: string;
+        readonly name?: string;
+        readonly dyn?: boolean;
+        readonly from_mod?: string | null;
+      },
+    ]
+  > = [
+    ["target", { to_mod: "App.Novel" }],
+    ["name", { name: "novel" }],
+    ["dynamic-dispatch marker", { dyn: true }],
+    ["ownerless source", { from_mod: null }],
+    ["unknown owner", { from_mod: "App.Unknown" }],
+  ];
+  it.each(semanticChanges)(
+    "rejects changed %s semantics despite exact non-owner raw-source provenance",
+    (_label, change) => {
+      const rawProductionEvent = {
+        ...productionCoreEvent,
+        file: "generated/shared_macro.ex",
+        partition: "prod" as const,
+      };
+      const validatedProduction = validateProductionTraceOwnership(
+        { ...production, events: [rawProductionEvent] },
+        ["lib"],
+      );
+      expect(
+        validateTestTraceOwnership(
+          validatedProduction,
+          {
+            modules: [reemittedModule],
+            functions: [reemittedFunction],
+            events: [{ ...rawProductionEvent, ...change, partition: "test" }],
+            testPartition: "complete",
+          },
+          inventory,
+        ),
+      ).toMatchObject({ testPartition: "incomplete", testPartitionReason: "ownership" });
+    },
+  );
+
+  it("does not let an ordinary owner-sourced production event authorize a non-owner duplicate", () => {
+    const validatedProduction = validateProductionTraceOwnership(compatibleProduction, ["lib"]);
+    expect(
+      validateTestTraceOwnership(
+        validatedProduction,
+        {
+          modules: [reemittedModule],
+          functions: [reemittedFunction],
+          events: [
+            { ...productionCoreEvent, file: "generated/shared_macro.ex", partition: "test" },
+          ],
+          testPartition: "complete",
+        },
+        inventory,
+      ),
+    ).toMatchObject({ testPartition: "incomplete", testPartitionReason: "ownership" });
+  });
 
   it("makes the test partition partial for a novel function in a production-owned module", () => {
     expect(

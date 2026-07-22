@@ -311,6 +311,65 @@ end
     expect(existsSync(join(root, "_build"))).toBe(false);
   });
 
+  it("discards an exact cross-phase duplicate with the same safe path-like template source", {
+    timeout: 60_000,
+  }, () => {
+    const root = project("unused-ex-shared-macro-source-");
+    roots.push(root);
+    write(root, "mix.exs", basicMix("neutral_shared_source"));
+    write(
+      root,
+      "lib/neutral_shared_source.ex",
+      `defmodule NeutralSharedSource.Target do
+  def value, do: :shared
+end
+
+defmodule NeutralSharedSource.Owner do
+  require EEx
+  EEx.function_from_file(:def, :render, Path.expand("priv/shared.eex"), [])
+  def stable, do: :stable
+end
+`,
+    );
+    write(
+      root,
+      "priv/shared.eex",
+      `<%= NeutralSharedSource.Target.value() %>
+`,
+    );
+    write(
+      root,
+      "test/shared_source_test.exs",
+      `defmodule NeutralSharedSourceTest do
+  use ExUnit.Case
+  test "the neutral project compiles", do: assert(true)
+end
+`,
+    );
+
+    const trace = runTracer(root);
+    expect(trace.testPartition).toBe("complete");
+    const sharedEvents = trace.events.filter(
+      (event) =>
+        event.from_mod === "NeutralSharedSource.Owner" &&
+        event.to_mod === "NeutralSharedSource.Target" &&
+        event.name === "value" &&
+        event.arity === 0,
+    );
+    expect(sharedEvents).toEqual([
+      expect.objectContaining({
+        partition: "prod",
+        file: "priv/shared.eex",
+      }),
+    ]);
+    expect(sharedEvents[0]?.file).not.toBe("lib/neutral_shared_source.ex");
+    expect(sharedEvents.some((event) => event.partition === "test")).toBe(false);
+    expect(readFileSync(join(root, "priv/shared.eex"), "utf8")).toBe(
+      `<%= NeutralSharedSource.Target.value() %>\n`,
+    );
+    expect(existsSync(join(root, "_build"))).toBe(false);
+  });
+
   it("keeps a project with no test files complete without creating build artifacts", {
     timeout: 60_000,
   }, () => {

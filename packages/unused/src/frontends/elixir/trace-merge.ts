@@ -20,10 +20,10 @@ import {
 } from "./trace-protocol.js";
 
 // Raw compiler-source provenance is needed only for production events whose
-// source had to be normalized to their reflected owner. Keep it internal and
+// source differs from their validated reflected owner. Keep it internal and
 // weakly keyed by the validated trace: it is neither serialized nor retained
-// after the analysis, and ordinary owner-sourced events allocate no entries.
-const normalizedProductionEventSources = new WeakMap<TraceResult, ReadonlySet<string>>();
+// after the analysis, and ordinary owner-sourced events allocate no set.
+const nonOwnerProductionEventSources = new WeakMap<TraceResult, ReadonlySet<string>>();
 
 export function incompleteTestTrace(reason: TestPartitionIncompleteReason): TestTraceResult {
   return {
@@ -60,32 +60,35 @@ export function validateProductionTraceOwnership(
     }
   }
 
-  const normalizedSources = new Set<string>();
+  let nonOwnerSources: Set<string> | undefined;
+  const recordNonOwnerSource = (event: TraceEvent): void => {
+    nonOwnerSources ??= new Set<string>();
+    nonOwnerSources.add(rawSourceKey(event));
+  };
   const events = production.events.map((event): TraceEvent => {
+    const owner = event.from_mod === null ? undefined : moduleOwners.get(event.from_mod);
     if (safeRepoRelative(event.file)) {
       const sourceOwned = sourceRoots.some((root) => pathWithin(event.file, root));
-      const moduleOwned = event.from_mod !== null && moduleOwners.has(event.from_mod);
-      if (!sourceOwned && !moduleOwned) {
+      if (!sourceOwned && owner === undefined) {
         throw new ElixirCompileError(
           "cannot analyze Elixir project: the production tracer emitted an unowned event source.",
         );
       }
+      if (owner !== undefined && event.file !== owner) recordNonOwnerSource(event);
       return event;
     }
 
-    const owner = event.from_mod === null ? undefined : moduleOwners.get(event.from_mod);
     if (owner === undefined) {
       throw new ElixirCompileError(
         "cannot analyze Elixir project: the production tracer emitted an external unowned event source.",
       );
     }
-    normalizedSources.add(normalizedSourceKey(event));
+    recordNonOwnerSource(event);
     return { ...event, file: owner };
   });
 
   const validated = { ...production, events };
-  if (normalizedSources.size > 0)
-    normalizedProductionEventSources.set(validated, normalizedSources);
+  if (nonOwnerSources !== undefined) nonOwnerProductionEventSources.set(validated, nonOwnerSources);
   return validated;
 }
 
@@ -107,7 +110,7 @@ export function validateTestTraceOwnership(
     production.functions.map((fn) => [functionIdentityKey(fn), functionSemanticKey(fn)]),
   );
   const productionEvents = new Set(production.events.map(eventCompatibilityKey));
-  const productionNormalizedSources = normalizedProductionEventSources.get(production);
+  const productionNonOwnerSources = nonOwnerProductionEventSources.get(production);
   const acceptedModules: ModuleRecord[] = [];
   const acceptedModuleOwners = new Map<string, string>();
   const compatibleProductionModules = new Set<string>();
@@ -149,20 +152,21 @@ export function validateTestTraceOwnership(
   const acceptedEvents: TraceEvent[] = [];
   for (const event of test.events) {
     // Ownership is authoritative even for a semantic duplicate. Compatibility
-    // deliberately excludes source location, so discarding first would let an
-    // absolute, spoofed, or otherwise invalid source bypass this boundary.
+    // deliberately excludes source location, so discarding first would let a
+    // non-owner, spoofed, or otherwise invalid source bypass this boundary.
     const owned = normalizeTestEventSource(event, combinedOwners, inventory);
     if (owned === null) {
-      // Compiler/library macros can attribute a semantic duplicate to their own
-      // absolute source. Accept no new fact: discard only when the already-
-      // validated production phase normalized the exact same semantic event
-      // from the exact same raw source. A mismatch or spoof still fails closed.
-      const exactNormalizedProductionDuplicate =
+      // Compiler/library macros and tracked templates can attribute a semantic
+      // duplicate to a safe or unsafe source other than the reflected owner.
+      // Accept no new fact: discard only when production validation recorded
+      // the exact semantic event and raw source as non-owner provenance. A
+      // mismatch or spoof still fails closed.
+      const exactNonOwnerProductionDuplicate =
         event.from_mod !== null &&
         productionModules.has(event.from_mod) &&
         productionEvents.has(eventCompatibilityKey(event)) &&
-        productionNormalizedSources?.has(normalizedSourceKey(event)) === true;
-      if (exactNormalizedProductionDuplicate) continue;
+        productionNonOwnerSources?.has(rawSourceKey(event)) === true;
+      if (exactNonOwnerProductionDuplicate) continue;
       return incompleteTestTrace("ownership");
     }
     if (event.from_mod !== null && productionModules.has(event.from_mod)) {
@@ -204,7 +208,7 @@ function normalizeTestEventSource(
   return null;
 }
 
-function normalizedSourceKey(event: TraceEvent): string {
+function rawSourceKey(event: TraceEvent): string {
   return `${eventCompatibilityKey(event)}\0${event.file}`;
 }
 

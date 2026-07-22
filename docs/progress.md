@@ -7,15 +7,22 @@ now distinguishes exact production duplicates from additive references emitted
 only under `MIX_ENV=test`. Additive edges require compatible reflected module
 semantics and fail-closed source ownership; a bounded extensionless compiler
 pseudo-source is normalized only to its uniquely named owner. The IR records
-test edge activity explicitly. Production/config walks use shared edges, while
-the effective test world retains actual root provenance and adds test edges;
+test edge activity explicitly. Exact cross-phase duplicates from compiler
+macros or tracked templates may retain safe or unsafe raw non-owner source
+labels only through an internal, weak, lazy exact semantic-plus-source record;
+safe production evidence remains unchanged, unsafe evidence is normalized, and
+ordinary owner events allocate no record or authority. Production/config walks
+use shared edges, while the effective test world retains actual root provenance
+and adds test edges;
 `why`, zombie analysis, and deletion consequences use that same model. Neutral
 complete/partial and real-Mix regressions are implemented. The full suite is
-green at 83 files / 1,168 tests with no skips; typecheck, lint (the established
+green at 83 files / 1,177 tests with no skips; typecheck, lint (the established
 2 warnings / 48 infos), boundaries (923 modules / 2,014 dependencies), build,
-assumption-set 1.11, all corpus gates, installed-tarball JSON, diff, and privacy
-checks pass. Independent review remains before commit; exact resume details are
-in the P9 follow-up in `docs/delivery/polyglot-first-class.md`.
+assumption-set 1.12, all corpus gates, installed-tarball schema-1.4 JSON under
+Node 22.16.0, diff, and privacy checks pass. The focused ownership suite passes
+65/65 and the strengthened neutral real-Mix suite passes 25/25. Final
+independent review reports no findings; commit remains. Exact resume details
+are in the P9 follow-up in `docs/delivery/polyglot-first-class.md`.
 
 Active public checkpoint — isolated Mix test environment: the approved
 phase-delimited production plus explicit `MIX_ENV=test` correction is implemented

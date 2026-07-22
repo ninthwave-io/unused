@@ -633,7 +633,8 @@ Implementation and verification:
 
 #### Test-scoped production-edge follow-up
 
-Status: implementation and public verification complete; independent review pending
+Status: non-owner provenance amendment and public verification complete;
+independent review approved, commit pending
 
 Resume objective: retain additive `MIX_ENV=test` references emitted by a
 semantically compatible production module without weakening the fail-closed
@@ -648,11 +649,13 @@ Design and acceptance:
   safe extensionless compiler pseudo-source to that unique owner; ownerless
   events remain restricted to the explicit test inventory, and all ambiguous,
   external, substituted, path-like, or extension-bearing sources fail closed;
-- for an exact semantic duplicate only, allow a raw compiler/library source
-  that exactly matches the bounded provenance recorded when production
-  validation normalized that same event to its owner; keep this weakly held,
-  internal, and limited to actually normalized production events so ordinary
-  event streams incur no duplicate provenance allocation;
+- for an exact semantic duplicate only, allow a raw compiler/library/template
+  source that exactly matches bounded provenance recorded when a validated
+  production event's raw source differed from its reflected owner; preserve
+  safe repository-relative production evidence, normalize unsafe production
+  evidence to its owner, and keep the raw provenance weak, lazy, internal, and
+  nonserialized so ordinary owner-sourced events allocate none and cannot
+  authorize a non-owner duplicate;
 - represent the accepted event as a test-scoped IR edge: production/config
   traverse shared edges, while the effective test world traverses shared plus
   test edges from immutable roots retaining their actual ids, kinds, and
@@ -663,8 +666,44 @@ Design and acceptance:
 - neutral generated Mix coverage must prove both exact-owner and extensionless
   pseudo-source cases, plus complete/partial merge negatives; shared-edge and
   production/config regressions must remain green; and
-- before commit: synchronize assumption set 1.11, run all public quality gates,
+- before commit: synchronize assumption set 1.12, run all public quality gates,
   corpus gates, packaging and privacy smokes, then obtain independent review.
+
+Non-owner provenance amendment (2026-07-22):
+
+- the exact-duplicate exception now covers validated safe repository-relative
+  non-owner source labels as well as unsafe external labels; it remains an
+  exact semantic-key plus raw-source match, never authorizes a novel edge, and
+  does not alter safe production evidence;
+- synthetic negatives cover changed safe, external, and test-inventory raw
+  sources; changed target, function name, and dynamic-dispatch semantics;
+  ownerless and unknown owners; and an ordinary owner-sourced production event
+  attempting to authorize a non-owner test duplicate; and
+- an independently generated real-Mix EEx fixture uses a tracked template as
+  the shared non-owner compiler source. It proves the production evidence stays
+  `priv/shared.eex`, the exact test re-emission is discarded rather than added
+  as a test edge, and the tracked template and source build tree are unchanged.
+
+Amendment verification (2026-07-22):
+
+- the focused ownership suite passes 65/65 and the neutral real-Mix suite passes
+  25/25 under Elixir 1.20.2 / Erlang 29.0.3;
+- the complete Elixir-equipped suite passes 83 files / 1,177 tests with no
+  skips; typecheck, assumption-set 1.12 generation/sync, build, lint (the
+  established 2 warnings / 48 infos), dependency boundaries (923 modules /
+  2,014 dependencies), and diff checks pass;
+- all corpus gates retain zero false positives, confidence violations, and
+  unlabelled claims: TypeScript 52 cases / 237 subjects (precision 1.0, recall
+  0.826530612244898), Elixir 13 cases / 33 subjects (precision 1.0, recall
+  0.9090909090909091, no toolchain skips), Rust 4 cases (precision 1.0, recall
+  0.8333333333333334), and polyglot 1 case (precision/recall 1.0); and
+- a packed tarball installs under Node 22.16.0 and emits diagnostic-free schema
+  1.4.0 JSON from a neutral entrypoint. Its archive contains the CLI, claim-run
+  schema, README, LICENSE, and package metadata. The public-diff privacy scan is
+  clean; and
+- final independent review reports no findings and separately passes the 65
+  focused ownership cases, 25 real-Mix cases, typecheck, assumption sync, lint
+  baseline, and diff checks.
 
 Verification checkpoint (2026-07-22):
 

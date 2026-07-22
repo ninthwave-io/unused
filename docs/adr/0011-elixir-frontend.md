@@ -131,13 +131,18 @@ substitution, paths, extension-bearing labels, and every ownership conflict
 fail the complete test partition closed.
 
 One content-free compiler-origin exception applies to exact production
-duplicates. A library macro can attribute the same event in both phases to its
-own absolute compiler source. Production validation records provenance only for
-events whose raw source it actually normalized to the reflected owner. The test
-event is discarded only when both its semantic compatibility key and raw source
-exactly match that bounded production provenance. The provenance is internal,
-weakly held, and never serialized; mismatched or spoofed paths still fail
-closed. Ordinary owner-sourced events allocate no provenance record.
+duplicates. A library macro or tracked template can attribute the same event in
+both phases to a safe repository-relative or unsafe external source other than
+its reflected owner. After validating `from_mod` against that owner, production
+validation records the event's exact semantic key and raw source only when the
+raw source differs from the owner; safe repository-relative evidence remains
+unchanged, while unsafe evidence is normalized to the owner in the public
+trace. A test event is discarded only when both its semantic compatibility key
+and raw source exactly match that bounded non-owner provenance. The provenance
+is internal, weakly held, lazily allocated, and never serialized; changed
+semantics, mismatched sources, ownerless/unknown events, and spoofs still fail
+closed. Ordinary owner-sourced events allocate no provenance record and cannot
+authorize a non-owner duplicate.
 
 The shared IR marks the accepted edge as test-scoped. Production and config
 reachability traverse shared edges only. The effective test world starts from
