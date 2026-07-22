@@ -681,14 +681,17 @@ function resolveTargetModule(
 ): string | null {
   if (expression === "__MODULE__") return event.from_mod;
   if (!moduleToken(expression)) return null;
-  if (functionsByModule.has(expression)) return expression;
 
   // An alias may spell a project module differently at the source site. The
   // compiler tracer supplies the expanded module atom on an alias event; only
-  // accept a unique project-module candidate. Ambiguity falls back to the
-  // conservative cross-unit name/arity candidate set below.
+  // accept a unique project-module candidate. This compiler expansion must
+  // take precedence even when the source token also happens to name a project
+  // module: a local `alias Other, as: Direct` shadows the top-level `Direct`.
+  // Ambiguity falls back to the conservative cross-unit name/arity set below.
   const expanded = aliasTargetsByCarrierSite.get(aliasCarrierSiteKey(event)) ?? new Set();
-  return expanded.size === 1 ? ([...expanded][0] ?? null) : null;
+  if (expanded.size === 1) return [...expanded][0] ?? null;
+  if (expanded.size > 1) return null;
+  return functionsByModule.has(expression) ? expression : null;
 }
 
 function indexAliasTargets(

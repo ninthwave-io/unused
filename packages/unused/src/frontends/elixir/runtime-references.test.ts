@@ -358,6 +358,51 @@ describe("extractElixirRuntimeReferences", () => {
       }),
     ]);
   });
+
+  it("prefers a carrier-confirmed alias when its token shadows a project module", () => {
+    const file = "alias_collision.ex";
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [
+        mod("Direct", file),
+        mod("NeutralAlias.Other", file),
+        mod("NeutralAlias.ShadowDispatch", file),
+      ],
+      functions: [
+        fn("Direct", "run", 0, file),
+        fn("NeutralAlias.Other", "run", 0, file),
+        fn("NeutralAlias.ShadowDispatch", "execute", 0, file),
+      ],
+      events: [
+        {
+          ...dynamicApplyEvent("execute/0", 18),
+          file,
+          from_mod: "NeutralAlias.ShadowDispatch",
+        },
+        {
+          ...aliasEvent(file, 18, "execute/0", "NeutralAlias.Other"),
+          from_mod: "NeutralAlias.ShadowDispatch",
+        },
+      ],
+    };
+
+    const extraction = extractElixirRuntimeConventions(testFixture("dynamic-role-carriers"), trace);
+    expect(extraction.references).toContainEqual(
+      expect.objectContaining({
+        toMod: "NeutralAlias.Other",
+        toName: "run",
+        toArity: 0,
+        convention: "dynamic-apply",
+      }),
+    );
+    expect(extraction.references).not.toContainEqual(
+      expect.objectContaining({ toMod: "Direct", toName: "run" }),
+    );
+    expect(extraction.dynamicDispatches).toEqual([expect.objectContaining({ kind: "exact" })]);
+  });
 });
 
 function definitionEvent(file: string, line: number, fromMod: string): TraceEvent {
