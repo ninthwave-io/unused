@@ -35,6 +35,7 @@ import type {
   AppModRecord,
   DepsRecord,
   FunctionRecord,
+  ModuleOwnerRecord,
   ModuleRecord,
   TestPartitionIncompleteReason,
   TestTraceResult,
@@ -58,7 +59,12 @@ import {
   validateProductionTraceOwnership,
   validateTestTraceOwnership,
 } from "./trace-merge.js";
-import { decodeTraceRecord, hasConflictingDefinitions, hasValidPhase } from "./trace-protocol.js";
+import {
+  decodeTraceRecord,
+  hasConflictingDefinitions,
+  hasExactModuleOwnership,
+  hasValidPhase,
+} from "./trace-protocol.js";
 import { TRACER_SCRIPT } from "./tracer-script.js";
 
 export { ElixirCompileError, ElixirFrontendError, ElixirToolchainError } from "./errors.js";
@@ -288,6 +294,7 @@ function runTestTrace(input: {
 
 export function parseTraceOutput(raw: string): TraceResult {
   const events: TraceEvent[] = [];
+  const owners: ModuleOwnerRecord[] = [];
   const modules: ModuleRecord[] = [];
   const functions: FunctionRecord[] = [];
   const records: TraceRecord[] = [];
@@ -320,6 +327,9 @@ export function parseTraceOutput(raw: string): TraceResult {
     }
     records.push(record);
     switch (record.k) {
+      case "owner":
+        owners.push(record);
+        break;
       case "event":
         events.push(record);
         break;
@@ -383,6 +393,11 @@ export function parseTraceOutput(raw: string): TraceResult {
       "cannot analyze Elixir project: the production tracer did not complete.",
     );
   }
+  if (!hasExactModuleOwnership(owners, modules)) {
+    throw new ElixirCompileError(
+      "cannot analyze Elixir project: the production tracer emitted conflicting or incomplete module ownership.",
+    );
+  }
   if (modules.length === 0) {
     throw new ElixirCompileError(
       "cannot analyze Elixir project: the tracer found no compiled modules. Confirm the project " +
@@ -396,6 +411,7 @@ export function parseTraceOutput(raw: string): TraceResult {
 /** Parse one isolated test child. Invalid/partial output is bounded, never thrown. */
 export function parseTestTraceOutput(raw: string): TestTraceResult {
   const events: TraceEvent[] = [];
+  const owners: ModuleOwnerRecord[] = [];
   const modules: ModuleRecord[] = [];
   const functions: FunctionRecord[] = [];
   const records: TraceRecord[] = [];
@@ -418,6 +434,9 @@ export function parseTestTraceOutput(raw: string): TestTraceResult {
     }
     records.push(record);
     switch (record.k) {
+      case "owner":
+        if (record.partition === "test") owners.push(record);
+        break;
       case "event":
         if (record.partition === "test") events.push(record);
         break;
@@ -443,6 +462,7 @@ export function parseTestTraceOutput(raw: string): TestTraceResult {
     return incompleteTestTrace(sawCompileError ? "compile" : "output");
   }
   if (sawCompileError) return incompleteTestTrace("compile");
+  if (!hasExactModuleOwnership(owners, modules)) return incompleteTestTrace("ownership");
   return { events, modules, functions, testPartition: "complete" };
 }
 

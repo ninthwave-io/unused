@@ -1,6 +1,12 @@
 /** Strict runtime decoding and canonical keys for the Elixir trace protocol. */
 
-import type { FunctionRecord, ModuleRecord, TraceEvent, TraceRecord } from "./events.js";
+import type {
+  FunctionRecord,
+  ModuleOwnerRecord,
+  ModuleRecord,
+  TraceEvent,
+  TraceRecord,
+} from "./events.js";
 
 interface JsonRecord extends Readonly<Record<string, unknown>> {
   readonly arity?: unknown;
@@ -40,6 +46,8 @@ export function decodeTraceRecord(
         : null;
     case "event":
       return decodeEventRecord(value, phase);
+    case "owner":
+      return decodeOwnerRecord(value, phase);
     case "module":
       return decodeModuleRecord(value, phase);
     case "function":
@@ -70,6 +78,16 @@ export function decodeTraceRecord(
     default:
       return null;
   }
+}
+
+function decodeOwnerRecord(value: JsonRecord, phase: "production" | "test"): TraceRecord | null {
+  const partition = phase === "production" ? "prod" : "test";
+  return exactKeys(value, ["k", "mod", "file", "partition"]) &&
+    nonEmptyString(value.mod) &&
+    nonEmptyString(value.file) &&
+    value.partition === partition
+    ? (value as unknown as ModuleOwnerRecord)
+    : null;
 }
 
 function decodeEventRecord(value: JsonRecord, phase: "production" | "test"): TraceRecord | null {
@@ -116,7 +134,10 @@ function decodeModuleRecord(value: JsonRecord, phase: "production" | "test"): Tr
     typeof value.protocol === "boolean" &&
     typeof value.impl === "boolean" &&
     value.partition === partition
-    ? (value as unknown as TraceRecord)
+    ? ({
+        ...value,
+        behaviours: canonicalBehaviours(value.behaviours as readonly string[]),
+      } as unknown as ModuleRecord)
     : null;
 }
 
@@ -171,6 +192,38 @@ export function hasConflictingDefinitions(
   );
 }
 
+/**
+ * Require compiler-time ownership to equal reflected ownership exactly.
+ * Repeated identical pairs are harmless; one module observed in two files is not.
+ */
+export function hasExactModuleOwnership(
+  owners: readonly ModuleOwnerRecord[],
+  modules: readonly ModuleRecord[],
+): boolean {
+  const ownerPairs = new Set<string>();
+  const ownerFiles = new Map<string, string>();
+  for (const owner of owners) {
+    const prior = ownerFiles.get(owner.mod);
+    if (prior !== undefined && prior !== owner.file) return false;
+    ownerFiles.set(owner.mod, owner.file);
+    ownerPairs.add(moduleOwnerKey(owner.mod, owner.file));
+  }
+
+  const reflectedPairs = new Set<string>();
+  for (const module of modules) {
+    reflectedPairs.add(moduleOwnerKey(module.mod, module.file));
+  }
+  if (ownerPairs.size !== reflectedPairs.size) return false;
+  for (const pair of ownerPairs) {
+    if (!reflectedPairs.has(pair)) return false;
+  }
+  return true;
+}
+
+function moduleOwnerKey(mod: string, file: string): string {
+  return `${mod}\0${file}`;
+}
+
 export function hasValidPhase(
   records: readonly TraceRecord[],
   phase: "production" | "test",
@@ -211,10 +264,14 @@ export function moduleSemanticKey(module: ModuleRecord): string {
     module.mod,
     module.file,
     module.line,
-    [...module.behaviours].sort(bytewiseCompare).join("\x01"),
+    canonicalBehaviours(module.behaviours).join("\x01"),
     module.protocol ? 1 : 0,
     module.impl ? 1 : 0,
   ].join("\0");
+}
+
+export function canonicalBehaviours(behaviours: readonly string[]): readonly string[] {
+  return [...new Set(behaviours)].sort(bytewiseCompare);
 }
 
 export function functionIdentityKey(fn: FunctionRecord): string {

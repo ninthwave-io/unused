@@ -18,7 +18,15 @@ import {
   parseTraceOutput,
   runTracer,
 } from "./runner.js";
-import { validateProductionTraceOwnership, validateTestTraceOwnership } from "./trace-merge.js";
+import {
+  stableTraceResult,
+  validateProductionTraceOwnership,
+  validateTestTraceOwnership,
+} from "./trace-merge.js";
+
+function ownerLine(mod: string, file: string, partition: "prod" | "test" = "prod"): string {
+  return JSON.stringify({ k: "owner", mod, file, partition });
+}
 
 /** A minimal well-formed trace: one module, one function, compile ok. */
 const OK_LINES = [
@@ -26,6 +34,7 @@ const OK_LINES = [
   JSON.stringify({ k: "meta", compile_ok: true }),
   JSON.stringify({ k: "app_mod", mod: "App.Application" }),
   JSON.stringify({ k: "deps", names: ["phoenix", "ecto"] }),
+  ownerLine("App.Core", "lib/app/core.ex"),
   JSON.stringify({
     k: "module",
     mod: "App.Core",
@@ -78,9 +87,108 @@ describe("parseTraceOutput", () => {
     expect(() => parseTraceOutput(withNoise)).toThrow(/malformed phase protocol/);
   });
 
+  it("accepts repeated same-file ownership facts", () => {
+    const lines = OK_LINES.split("\n");
+    lines.splice(4, 0, ownerLine("App.Core", "lib/app/core.ex"));
+    expect(parseTraceOutput(lines.join("\n")).modules).toHaveLength(1);
+  });
+
+  it.each([
+    ["missing", (lines: string[]) => lines.filter((line) => !line.includes('"k":"owner"'))],
+    [
+      "conflicting",
+      (lines: string[]) => {
+        const changed = [...lines];
+        changed.splice(4, 0, ownerLine("App.Core", "lib/app/other.ex"));
+        return changed;
+      },
+    ],
+    [
+      "extra",
+      (lines: string[]) => {
+        const changed = [...lines];
+        changed.splice(4, 0, ownerLine("App.Extra", "lib/app/extra.ex"));
+        return changed;
+      },
+    ],
+    [
+      "mismatched",
+      (lines: string[]) =>
+        lines.map((line) =>
+          line.includes('"k":"owner"') ? ownerLine("App.Core", "lib/app/other.ex") : line,
+        ),
+    ],
+  ])("refuses %s compiler-time module ownership", (_label, mutate) => {
+    expect(() => parseTraceOutput(mutate(OK_LINES.split("\n")).join("\n"))).toThrow(
+      /conflicting or incomplete module ownership/,
+    );
+  });
+
+  it("canonicalizes behaviour order and duplicates at the protocol boundary", () => {
+    const lines = OK_LINES.split("\n");
+    const moduleIndex = lines.findIndex((line) => line.includes('"k":"module"'));
+    const module = JSON.parse(lines[moduleIndex] ?? "{}") as { behaviours?: unknown };
+    module.behaviours = ["Zulu.Behaviour", "Alpha.Behaviour", "Zulu.Behaviour"];
+    lines[moduleIndex] = JSON.stringify(module);
+    expect(parseTraceOutput(lines.join("\n")).modules[0]?.behaviours).toEqual([
+      "Alpha.Behaviour",
+      "Zulu.Behaviour",
+    ]);
+  });
+
+  it("is stable across non-phase record permutations", () => {
+    const lines = OK_LINES.split("\n");
+    const permuted = [lines[0] ?? "", ...lines.slice(1, -1).reverse(), lines.at(-1) ?? ""];
+    expect(stableTraceResult(parseTraceOutput(permuted.join("\n")))).toEqual(
+      stableTraceResult(parseTraceOutput(OK_LINES)),
+    );
+  });
+
+  it("validates 4,000 owner/reflection pairs within a bounded parser budget", () => {
+    const middle: string[] = [
+      JSON.stringify({ k: "meta", compile_ok: true }),
+      JSON.stringify({ k: "deps", names: [] }),
+    ];
+    for (let index = 0; index < 4_000; index += 1) {
+      const mod = `Neutral.Scale.Module${index}`;
+      const file = `lib/neutral_scale/module_${index}.ex`;
+      middle.push(ownerLine(mod, file));
+      middle.push(
+        JSON.stringify({
+          k: "module",
+          mod,
+          file,
+          line: 1,
+          behaviours: [],
+          protocol: false,
+          impl: false,
+          partition: "prod",
+        }),
+      );
+    }
+    const raw = [
+      JSON.stringify({ k: "phase", phase: "production", status: "started" }),
+      ...middle,
+      JSON.stringify({ k: "phase", phase: "production", status: "complete" }),
+    ].join("\n");
+    const started = performance.now();
+    expect(parseTraceOutput(raw).modules).toHaveLength(4_000);
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
+
   it.each([
     ["JSON null", "null"],
     ["unknown record", JSON.stringify({ k: "future_record" })],
+    [
+      "owner with an extra key",
+      JSON.stringify({
+        k: "owner",
+        mod: "App.Core",
+        file: "lib/app/core.ex",
+        partition: "prod",
+        line: 1,
+      }),
+    ],
     [
       "foreign partition",
       JSON.stringify({
@@ -229,6 +337,7 @@ describe("parseTraceOutput — test partition tag", () => {
   it("carries the test partition tag through", () => {
     const lines = [
       JSON.stringify({ k: "phase", phase: "test", status: "started" }),
+      ownerLine("App.CoreTest", "test/core_test.exs", "test"),
       JSON.stringify({
         k: "module",
         mod: "App.CoreTest",
@@ -257,12 +366,14 @@ describe("parseTraceOutput — test partition tag", () => {
       impl: false,
       partition: "test",
     });
+    const owner = ownerLine("App.CoreTest", "test/core_test.exs", "test");
     const missing = parseTestTraceOutput(
-      [JSON.stringify({ k: "phase", phase: "test", status: "started" }), module].join("\n"),
+      [JSON.stringify({ k: "phase", phase: "test", status: "started" }), owner, module].join("\n"),
     );
     const duplicated = parseTestTraceOutput(
       [
         JSON.stringify({ k: "phase", phase: "test", status: "started" }),
+        owner,
         module,
         JSON.stringify({ k: "phase", phase: "test", status: "complete" }),
         JSON.stringify({ k: "phase", phase: "test", status: "complete" }),
@@ -309,6 +420,8 @@ describe("parseTraceOutput — test partition tag", () => {
     const first = parseTestTraceOutput(
       [
         JSON.stringify({ k: "phase", phase: "test", status: "started" }),
+        ownerLine("App.SecondTest", "test/second_test.exs", "test"),
+        ownerLine("App.FirstTest", "test/first_test.exs", "test"),
         JSON.stringify({
           k: "module",
           mod: "App.SecondTest",
@@ -334,6 +447,33 @@ describe("parseTraceOutput — test partition tag", () => {
     );
     const second = { ...first, modules: [...first.modules].reverse() };
     expect(mergeTraceResults(production, first)).toEqual(mergeTraceResults(production, second));
+  });
+
+  it("makes a complete test trace ownership-incomplete when owner facts disagree", () => {
+    const result = parseTestTraceOutput(
+      [
+        JSON.stringify({ k: "phase", phase: "test", status: "started" }),
+        ownerLine("App.CoreTest", "test/other_test.exs", "test"),
+        JSON.stringify({
+          k: "module",
+          mod: "App.CoreTest",
+          file: "test/core_test.exs",
+          line: 1,
+          behaviours: [],
+          protocol: false,
+          impl: false,
+          partition: "test",
+        }),
+        JSON.stringify({ k: "phase", phase: "test", status: "complete" }),
+      ].join("\n"),
+    );
+    expect(result).toEqual({
+      events: [],
+      modules: [],
+      functions: [],
+      testPartition: "incomplete",
+      testPartitionReason: "ownership",
+    });
   });
 });
 

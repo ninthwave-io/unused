@@ -59,6 +59,16 @@ export interface FunctionRecord {
   readonly partition: Partition;
 }
 
+/** Compiler-time ownership captured before later definitions can replace a BEAM. */
+export interface ModuleOwnerRecord {
+  readonly k: "owner";
+  /** `inspect`-form module name. */
+  readonly mod: string;
+  /** Repo-relative source file reported by the compiler's `:on_module` event. */
+  readonly file: string;
+  readonly partition: Partition;
+}
+
 export interface AppModRecord {
   readonly k: "app_mod";
   /** `inspect`-form OTP application callback module. */
@@ -97,6 +107,7 @@ export type TestPartitionStatus = "complete" | "incomplete";
 
 export type TraceRecord =
   | TraceEvent
+  | ModuleOwnerRecord
   | ModuleRecord
   | FunctionRecord
   | AppModRecord

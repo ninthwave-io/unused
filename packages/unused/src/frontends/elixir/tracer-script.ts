@@ -12,6 +12,8 @@
  *     events into an ETS table — module + function + arity + the referencing
  *     site's file/line, plus a `dyn` flag for `apply`/`Module.concat`-style
  *     dynamic-dispatch call sites.
+ *     `:on_module` facts capture compiler-time source ownership before a later
+ *     definition can replace the module's final BEAM.
  *  2. Registers the tracer via `Code.put_compiler_option(:tracers, …)` and
  *     force-compiles the phase's effective `elixirc_paths` with
  *     `Mix.Task.rerun("compile.elixir", ["--force", "--return-errors"])`
@@ -53,7 +55,14 @@ defmodule Unused.Tracer do
   def trace({:local_macro, meta, n, a}, env), do: ev("local", env, meta, env.module, n, a)
   def trace({:alias_reference, meta, m}, env), do: ev("alias", env, meta, m, nil, nil)
   def trace({:struct_expansion, meta, m, _keys}, env), do: ev("struct", env, meta, m, nil, nil)
+  def trace({:on_module, _bytecode, _warnings}, env), do: owner(env)
   def trace(_event, _env), do: :ok
+
+  defp owner(%{module: module, file: file}) when is_atom(module) do
+    :ets.insert(:unused_owners, {{inspect(module), to_string(file)}})
+    :ok
+  end
+  defp owner(_env), do: :ok
 
   defp ev(kind, env, meta, module, name, arity) do
     line = Keyword.get(meta, :line, env.line) || 0
@@ -75,9 +84,18 @@ end
 
 defmodule Unused.Reflect do
   @moduledoc false
-  def line_of(a) when is_integer(a), do: a
-  def line_of(a) when is_list(a), do: Keyword.get(a, :line, 0)
-  def line_of({l, _c}), do: l
+  def line_of(a) when is_integer(a) and a >= 0, do: a
+  def line_of(a) when is_list(a) do
+    if Keyword.keyword?(a) do
+      case Keyword.get(a, :line, 0) do
+        line when is_integer(line) and line >= 0 -> line
+        _ -> 0
+      end
+    else
+      0
+    end
+  end
+  def line_of({l, _c}) when is_integer(l) and l >= 0, do: l
   def line_of(_), do: 0
 
   # Generated / reflection helpers a module always exposes — never claimable.
@@ -105,7 +123,7 @@ defmodule Unused.Reflect do
            true <- valid_exports?(exports) do
         {modline, flines} = docs(path)
         emit.(%{"k" => "module", "mod" => inspect(mod), "file" => rel, "line" => modline,
-                "behaviours" => Enum.map(behaviours, &inspect/1),
+                "behaviours" => behaviours,
                 "protocol" => protocol,
                 "impl" => impl,
                 "partition" => partition})
@@ -135,8 +153,9 @@ defmodule Unused.Reflect do
          behaviour_groups <-
            Keyword.get_values(attrs, :behaviour) ++ Keyword.get_values(attrs, :behavior),
          true <- Enum.all?(behaviour_groups, &is_list/1),
-         behaviours <- List.flatten(behaviour_groups),
-         true <- Enum.all?(behaviours, &is_atom/1),
+         behaviour_atoms <- List.flatten(behaviour_groups),
+         true <- Enum.all?(behaviour_atoms, &is_atom/1),
+         behaviours <- behaviour_atoms |> Enum.map(&inspect/1) |> Enum.uniq() |> Enum.sort(),
          {:ok, protocol} <- protocol_attribute(Keyword.get_values(attrs, :__protocol__)),
          {:ok, impl} <- impl_attribute(Keyword.get_values(attrs, :__impl__)) do
       {:ok, {behaviours, protocol, impl}}
@@ -156,12 +175,12 @@ defmodule Unused.Reflect do
 
   defp docs(path) do
     case Code.fetch_docs(path) do
-      {:docs_v1, anno, _, _, _, _, docs} when is_list(docs) ->
+      {:docs_v1, anno, _, _, _, module_metadata, docs} when is_list(docs) ->
         flines =
           Enum.reduce(docs, %{}, fn
             {{:function, name, arity}, function_anno, _, _, metadata}, acc
                 when is_atom(name) and is_integer(arity) and is_map(metadata) ->
-              line = definition_line(function_anno, metadata)
+              line = canonical_line(function_anno, metadata)
               defaults = Map.get(metadata, :defaults, 0)
               if is_integer(defaults) and defaults >= 0 and defaults <= arity do
                 Enum.reduce((arity - defaults)..arity, acc, fn actual_arity, lines ->
@@ -173,16 +192,24 @@ defmodule Unused.Reflect do
             _, acc ->
               acc
           end)
-        {line_of(anno), flines}
+        {canonical_line(anno, module_metadata), flines}
       _ ->
         {0, %{}}
     end
   end
 
-  defp definition_line(_fallback, %{source_annos: [source_anno | _]}) do
-    line_of(source_anno)
+  defp canonical_line(fallback, metadata) when is_map(metadata) do
+    case Map.get(metadata, :source_annos, []) do
+      source_annos when is_list(source_annos) ->
+        case source_annos |> Enum.map(&line_of/1) |> Enum.filter(&(&1 > 0)) do
+          [] -> line_of(fallback)
+          lines -> Enum.min(lines)
+        end
+      _ ->
+        line_of(fallback)
+    end
   end
-  defp definition_line(fallback, _metadata), do: line_of(fallback)
+  defp canonical_line(fallback, _metadata), do: line_of(fallback)
 
   defp valid_exports?(exports) do
     Enum.all?(exports, fn
@@ -209,6 +236,16 @@ defmodule Unused.Output do
       emit.(base)
     end)
   end
+
+  def dump_owners(emit, root, partition) do
+    :ets.tab2list(:unused_owners)
+    |> Enum.map(fn {owner} -> owner end)
+    |> Enum.sort()
+    |> Enum.each(fn {mod, file} ->
+      emit.(%{"k" => "owner", "mod" => mod, "file" => Path.relative_to(file, root),
+              "partition" => partition})
+    end)
+  end
 end
 
 # --- output sink -----------------------------------------------------------
@@ -220,6 +257,7 @@ phase = System.get_env("UNUSED_PHASE") || "production"
 emit.(%{"k" => "phase", "phase" => phase, "status" => "started"})
 
 :ets.new(:unused_events, [:public, :named_table, :duplicate_bag, write_concurrency: true])
+:ets.new(:unused_owners, [:public, :named_table, :set, write_concurrency: true])
 Code.put_compiler_option(:tracers, [Unused.Tracer])
 
 case phase do
@@ -251,6 +289,7 @@ case phase do
     reflection_ok =
       if compile_ok do
         Unused.Output.dump_events(emit, root, "prod")
+        Unused.Output.dump_owners(emit, root, "prod")
         Mix.Project.compile_path()
         |> Path.join("*.beam")
         |> Path.wildcard()
@@ -318,17 +357,18 @@ case phase do
     compile_complete = support_ok and tests_ok
     reflection_ok =
       if compile_complete do
-      Mix.Project.compile_path()
-      |> Path.join("*.beam")
-      |> Path.wildcard()
-      |> Enum.sort()
-      |> Enum.reduce_while(true, fn path, _acc ->
-        with :ok <- Unused.Reflect.dump_beam(emit, path, root, "test") do
-          {:cont, true}
-        else
-          _ -> {:halt, false}
-        end
-      end)
+        Unused.Output.dump_owners(emit, root, "test")
+        Mix.Project.compile_path()
+        |> Path.join("*.beam")
+        |> Path.wildcard()
+        |> Enum.sort()
+        |> Enum.reduce_while(true, fn path, _acc ->
+          with :ok <- Unused.Reflect.dump_beam(emit, path, root, "test") do
+            {:cont, true}
+          else
+            _ -> {:halt, false}
+          end
+        end)
       else
         false
       end
