@@ -358,29 +358,36 @@ describe("extractElixirRuntimeReferences", () => {
       "    Map.has_key?(map, kind)",
       "  end",
       "  def callback(values, raw) do",
-      "    Enum.map(values, fn _ -> String.to_atom(raw) end)",
-      "    |> MapSet.new()",
-      "    |> MapSet.member?(:known)",
+      "    Map.new(values, fn key -> {key, String.to_atom(raw)} end)",
+      "    |> Map.has_key?(:known)",
       "  end",
       "  def callback_multiclause(values, raw) do",
-      "    Enum.map(values, fn",
-      "      :first -> String.to_atom(raw)",
-      "      _other -> :known",
+      "    Map.new(values, fn",
+      "      :first -> {:first, String.to_atom(raw)}",
+      "      _other -> {:other, :known}",
       "    end)",
-      "    |> MapSet.new()",
-      "    |> MapSet.member?(:known)",
+      "    |> Map.has_key?(:known)",
       "  end",
       "  def callback_intermediate(values, raw) do",
-      "    Enum.map(values, fn _ -> String.to_atom(raw); :known end)",
-      "    |> MapSet.new()",
-      "    |> MapSet.member?(:known)",
+      "    Map.new(values, fn _ -> String.to_atom(raw); {:known, :known} end)",
+      "    |> Map.has_key?(:known)",
       "  end",
       "  def callback_argument(values, raw), do: Enum.map(values, String.to_atom(raw))",
+      "  def lazy_map(raw), do: Map.get_lazy(%{}, :kind, fn -> String.to_atom(raw) end) |> Atom.to_string()",
+      "  def lazy_keyword(raw), do: Keyword.get_lazy([], :kind, fn -> String.to_atom(raw) end) |> Atom.to_string()",
+      "  def map_callback_input(raw), do: Map.update(%{kind: String.to_atom(raw)}, :kind, :known, fn selector -> {NeutralIndexed.Target, selector, []} end)",
+      "  def keyword_callback_input(raw), do: [kind: String.to_atom(raw)] |> Keyword.update(:kind, :known, fn selector -> {NeutralIndexed.Target, selector, []} end)",
+      "  def enum_callback_input(raw), do: Enum.map([String.to_atom(raw)], fn selector -> {NeutralIndexed.Target, selector, []} end)",
       "  def ambiguous_calls(map, raw) do",
       "    kind = String.to_atom(raw)",
       "    {Map.has_key?(map, kind), Map.has_key?(map, kind)}",
       "  end",
       "  def ecto_alias(raw), do: Type.equal?(:atom, String.to_atom(raw), :known)",
+      "  def ecto_change(raw) do",
+      "    Changeset.change(%{__struct__: String.to_atom(raw)})",
+      "    |> Changeset.get_field(:known)",
+      "    |> Atom.to_string()",
+      "  end",
       "  def ecto_changeset(changeset, raw) do",
       "    Changeset.put_change(changeset, :kind, String.to_atom(raw))",
       "    |> Changeset.get_change(:kind)",
@@ -400,7 +407,7 @@ describe("extractElixirRuntimeReferences", () => {
       ["allowlist/1", "def allowlist", "data"],
       ["assigned/2", "box =", "data"],
       ["with_assignment/2", "with kind", "data"],
-      ["assigned_list/1", "values = [String", "data"],
+      ["assigned_list/1", "values = [String", "escape"],
       ["assigned_keyword/1", "options = [kind: String", "data"],
       ["assigned_struct/1", "%NeutralIndexed.Box{kind: String", "data"],
       ["assigned_tuple/1", "box = {String", "escape"],
@@ -410,13 +417,19 @@ describe("extractElixirRuntimeReferences", () => {
       ["returned_tuple/1", "def returned_tuple", "escape"],
       ["unknown/1", "def unknown", "escape"],
       ["rebound/2", "    kind = String.to_atom", "escape"],
-      ["callback/2", "Enum.map(values, fn _ -> String", "data"],
-      ["callback_multiclause/2", ":first -> String", "data"],
-      ["callback_intermediate/2", "Enum.map(values, fn _ -> String", "escape"],
+      ["callback/2", "Map.new(values, fn key", "data"],
+      ["callback_multiclause/2", ":first -> {:first, String", "data"],
+      ["callback_intermediate/2", "Map.new(values, fn _ -> String", "escape"],
       ["callback_argument/2", "def callback_argument", "invocation"],
+      ["lazy_map/1", "def lazy_map", "data"],
+      ["lazy_keyword/1", "def lazy_keyword", "data"],
+      ["map_callback_input/1", "def map_callback_input", "escape"],
+      ["keyword_callback_input/1", "def keyword_callback_input", "escape"],
+      ["enum_callback_input/1", "def enum_callback_input", "escape"],
       ["ambiguous_calls/2", "kind = String.to_atom", "escape"],
-      ["ecto_alias/1", "def ecto_alias", "data"],
-      ["ecto_changeset/2", "Changeset.put_change", "data"],
+      ["ecto_alias/1", "def ecto_alias", "escape"],
+      ["ecto_change/1", "Changeset.change(%{__struct__", "escape"],
+      ["ecto_changeset/2", "Changeset.put_change", "escape"],
       ["ecto_imported/2", "get_change(String", "data"],
       ["ecto_selector/2", "def ecto_selector", "invocation"],
     ] as const;
@@ -500,63 +513,70 @@ describe("extractElixirRuntimeReferences", () => {
           2,
           lineOf("def rebound") - 1,
         ),
-        call("callback/2", "Enum.map(values, fn _ -> String", "Enum", "map", 2),
-        call("callback/2", "|> MapSet.new", "MapSet", "new", 1),
-        call("callback/2", "|> MapSet.member", "MapSet", "member?", 2),
+        call("callback/2", "Map.new(values, fn key", "Map", "new", 2),
+        call("callback/2", "|> Map.has_key", "Map", "has_key?", 2),
         call(
           "callback_multiclause/2",
-          "Enum.map(values, fn",
-          "Enum",
-          "map",
+          "Map.new(values, fn",
+          "Map",
+          "new",
           2,
           lineOf("def callback_multiclause") - 1,
         ),
         call(
           "callback_multiclause/2",
-          "|> MapSet.new",
-          "MapSet",
-          "new",
-          1,
-          lineOf("def callback_multiclause") - 1,
-        ),
-        call(
-          "callback_multiclause/2",
-          "|> MapSet.member",
-          "MapSet",
-          "member?",
+          "|> Map.has_key",
+          "Map",
+          "has_key?",
           2,
           lineOf("def callback_multiclause") - 1,
         ),
         call(
           "callback_intermediate/2",
-          "Enum.map(values, fn _ -> String",
-          "Enum",
-          "map",
+          "Map.new(values, fn _ -> String",
+          "Map",
+          "new",
           2,
           lineOf("def callback_intermediate") - 1,
         ),
         call(
           "callback_intermediate/2",
-          "|> MapSet.new",
-          "MapSet",
-          "new",
-          1,
-          lineOf("def callback_intermediate") - 1,
-        ),
-        call(
-          "callback_intermediate/2",
-          "|> MapSet.member",
-          "MapSet",
-          "member?",
+          "|> Map.has_key",
+          "Map",
+          "has_key?",
           2,
           lineOf("def callback_intermediate") - 1,
         ),
         call("callback_argument/2", "def callback_argument", "Enum", "map", 2),
+        call("lazy_map/1", "def lazy_map", "Map", "get_lazy", 3),
+        call("lazy_map/1", "def lazy_map", "Atom", "to_string", 1),
+        call("lazy_keyword/1", "def lazy_keyword", "Keyword", "get_lazy", 3),
+        call(
+          "lazy_keyword/1",
+          "Atom.to_string()",
+          "Atom",
+          "to_string",
+          1,
+          lineOf("def lazy_keyword") - 1,
+        ),
+        call("map_callback_input/1", "def map_callback_input", "Map", "update", 4),
+        call("keyword_callback_input/1", "def keyword_callback_input", "Keyword", "update", 4),
+        call("enum_callback_input/1", "def enum_callback_input", "Enum", "map", 2),
         call("ambiguous_calls/2", "{Map.has_key?", "Map", "has_key?", 2),
         call("ecto_alias/1", "def ecto_alias", "Ecto.Type", "equal?", 3),
+        call("ecto_change/1", "Changeset.change", "Ecto.Changeset", "change", 1),
+        call("ecto_change/1", "Changeset.get_field", "Ecto.Changeset", "get_field", 2),
+        call("ecto_change/1", "Atom.to_string()", "Atom", "to_string", 1),
         call("ecto_changeset/2", "Changeset.put_change", "Ecto.Changeset", "put_change", 3),
         call("ecto_changeset/2", "Changeset.get_change", "Ecto.Changeset", "get_change", 2),
-        call("ecto_changeset/2", "Atom.to_string()", "Atom", "to_string", 1),
+        call(
+          "ecto_changeset/2",
+          "Atom.to_string()",
+          "Atom",
+          "to_string",
+          1,
+          lineOf("def ecto_changeset") - 1,
+        ),
         call("ecto_imported/2", "get_change(String", "Ecto.Changeset", "get_change", 2),
         call(
           "ecto_imported/2",
@@ -572,6 +592,7 @@ describe("extractElixirRuntimeReferences", () => {
 
     try {
       writeFileSync(join(root, file), `${lines.join("\n")}\n`);
+      writeFileSync(join(root, "mix.lock"), ectoHexLock("3.14.1"));
       expect(
         extractElixirRuntimeConventions(root, trace, summaryProviders).dynamicDispatches.map(
           (fact) => ({
@@ -587,19 +608,50 @@ describe("extractElixirRuntimeReferences", () => {
       ).toEqual(cases.map(([fromFun, , result]) => ({ fromFun, result })));
 
       const ectoCall = trace.events.find(
-        (event) => event.from_fun === "ecto_alias/1" && event.to_mod === "Ecto.Type",
+        (event) => event.from_fun === "ecto_imported/2" && event.to_mod === "Ecto.Changeset",
       );
       if (ectoCall === undefined) throw new Error("missing Ecto role event");
       for (const variant of [
         { ...trace, deps: [] },
-        { ...trace, modules: [...trace.modules, mod("Ecto.Type", file)] },
+        { ...trace, modules: [...trace.modules, mod("Ecto.Changeset", file)] },
         { ...trace, events: [...trace.events, ectoCall] },
       ]) {
         expect(
           extractElixirRuntimeConventions(root, variant, summaryProviders).dynamicDispatches.find(
-            (fact) => fact.fromFun === "ecto_alias/1",
+            (fact) => fact.fromFun === "ecto_imported/2",
           ),
         ).toMatchObject({ factKind: "computed-atom", flow: "escape", kind: "opaque" });
+      }
+
+      for (const lock of [
+        undefined,
+        ectoHexLock("3.13.4"),
+        `%{\n  "ecto": {:path, "deps/ecto"}\n}\n`,
+        `%{\n  "ecto": {:git, "https://example.invalid/ecto.git", "neutral-ref", []}\n}\n`,
+        `%{\n  "ecto": {:hex, :ecto, "3.14.1"\n}\n`,
+        `malformed\n${ectoHexLock("3.14.1")}`,
+        ectoHexLock("3.14.1").replace("[:mix]", "[(:mix]"),
+        `%{\n  "ecto": ${ectoHexTuple("3.14.1")},\n  invalid\n}\n`,
+        `%{\n  "ecto": ${ectoHexTuple("3.14.1")},\n  "ecto": ${ectoHexTuple("3.14.1")}\n}\n`,
+        `${ectoHexLock("3.14.1")}\n${ectoHexLock("3.14.1")}`,
+      ]) {
+        if (lock === undefined) rmSync(join(root, "mix.lock"));
+        else writeFileSync(join(root, "mix.lock"), lock);
+        const facts = extractElixirRuntimeConventions(
+          root,
+          trace,
+          summaryProviders,
+        ).dynamicDispatches;
+        expect(facts.find((fact) => fact.fromFun === "ecto_imported/2")).toMatchObject({
+          factKind: "computed-atom",
+          flow: "escape",
+          kind: "opaque",
+        });
+        expect(facts.find((fact) => fact.fromFun === "ecto_selector/2")).toMatchObject({
+          factKind: "computed-atom",
+          flow: "escape",
+          kind: "opaque",
+        });
       }
 
       expect(
@@ -612,6 +664,99 @@ describe("extractElixirRuntimeReferences", () => {
           summaryProviders,
         ).dynamicDispatches.find((fact) => fact.fromFun === "map_key/2"),
       ).toMatchObject({ factKind: "computed-atom", flow: "escape", kind: "opaque" });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("executes the remaining callback-result shapes through representative sinks", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-callback-result-contracts-"));
+    const file = "callback_results.ex";
+    const lines = [
+      "defmodule NeutralIndexed.CallbackResults do",
+      "  def map_get_and_update(raw), do: Map.get_and_update(%{}, :known, fn _value -> {String.to_atom(raw), :stored} end) |> elem(0) |> Atom.to_string()",
+      "  def map_new(entries, raw), do: Map.new(entries, fn key -> {key, String.to_atom(raw)} end) |> Map.has_key?(:known)",
+      "  def keyword_new(entries, raw), do: Keyword.new(entries, fn key -> {key, String.to_atom(raw)} end) |> Keyword.has_key?(:known)",
+      "  def mapset_new(entries, raw), do: MapSet.new(entries, fn _entry -> String.to_atom(raw) end) |> MapSet.member?(:known)",
+      "  def map_merge(raw), do: Map.merge(%{}, %{}, fn _key, _left, _right -> String.to_atom(raw) end) |> Map.has_key?(:known)",
+      "  def keyword_merge(raw), do: Keyword.merge([], [], fn _key, _left, _right -> String.to_atom(raw) end) |> Keyword.has_key?(:known)",
+      "  def enum_into(entries, raw), do: Enum.into(entries, %{}, fn key -> {key, String.to_atom(raw)} end) |> Map.has_key?(:known)",
+      "end",
+      "",
+    ];
+    const shapes = [
+      [
+        "map_get_and_update/1",
+        "Map",
+        "get_and_update",
+        3,
+        ["Kernel", "elem", 2, "Atom", "to_string", 1],
+        "data",
+      ],
+      ["map_new/2", "Map", "new", 2, ["Map", "has_key?", 2], "data"],
+      ["keyword_new/2", "Keyword", "new", 2, ["Keyword", "has_key?", 2], "data"],
+      ["mapset_new/2", "MapSet", "new", 2, ["MapSet", "member?", 2], "data"],
+      ["map_merge/1", "Map", "merge", 3, ["Map", "has_key?", 2], "data"],
+      ["keyword_merge/1", "Keyword", "merge", 3, ["Keyword", "has_key?", 2], "data"],
+      ["enum_into/2", "Enum", "into", 3, ["Map", "has_key?", 2], "escape"],
+    ] as const;
+    const events: TraceEvent[] = [];
+    for (const [fromFun, module, name, arity, sink] of shapes) {
+      const line = lines.findIndex((source) => source.includes(`def ${fromFun.split("/")[0]}`)) + 1;
+      const base = {
+        k: "event" as const,
+        kind: "remote" as const,
+        file,
+        line,
+        from_mod: "NeutralIndexed.CallbackResults",
+        from_fun: fromFun,
+        partition: "prod" as const,
+      };
+      events.push(
+        { ...base, to_mod: "String", name: "to_atom", arity: 1, dyn: true },
+        { ...base, to_mod: module, name, arity, dyn: false },
+      );
+      if (sink !== undefined) {
+        events.push({ ...base, to_mod: sink[0], name: sink[1], arity: sink[2], dyn: false });
+        if (sink.length === 6) {
+          const [, , , nextModule, nextName, nextArity] = sink;
+          events.push({
+            ...base,
+            to_mod: nextModule,
+            name: nextName,
+            arity: nextArity,
+            dyn: false,
+          });
+        }
+      }
+    }
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod("NeutralIndexed.CallbackResults", file)],
+      functions: [],
+      events,
+    };
+
+    try {
+      writeFileSync(join(root, file), lines.join("\n"));
+      const extraction = extractElixirRuntimeConventions(root, trace);
+      expect(
+        extraction.dynamicDispatches.map((fact) => ({
+          fromFun: fact.fromFun,
+          result: fact.factKind === "computed-atom" && fact.flow === "data" ? "data" : "escape",
+        })),
+      ).toEqual(shapes.map(([fromFun, , , , , result]) => ({ fromFun, result })));
+      expect(extraction.atomFlowStats).toMatchObject({
+        producers: 7,
+        joinedProducerOutcomes: 7,
+        unjoinedOpaqueFallbacks: 0,
+        dataSinks: 6,
+        escapes: 1,
+        summaryMatches: 14,
+      });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -770,8 +915,8 @@ describe("extractElixirRuntimeReferences", () => {
         flow: fact.factKind === "computed-atom" ? fact.flow : "invocation",
       }));
       expect(outcomes).toEqual([
-        { fromFun: "explicit/2", flow: "data" },
-        { fromFun: "piped/2", flow: "data" },
+        { fromFun: "explicit/2", flow: "escape" },
+        { fromFun: "piped/2", flow: "escape" },
         { fromFun: "keyword_fn/2", flow: "data" },
         { fromFun: "nested_result/2", flow: "escape" },
         { fromFun: "collection_input/2", flow: "escape" },
@@ -785,9 +930,9 @@ describe("extractElixirRuntimeReferences", () => {
         producers: 10,
         joinedProducerOutcomes: 8,
         unjoinedOpaqueFallbacks: 2,
-        legacyIndexedDisagreements: 3,
-        dataSinks: 3,
-        escapes: 5,
+        legacyIndexedDisagreements: 1,
+        dataSinks: 1,
+        escapes: 7,
       });
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -2241,10 +2386,10 @@ describe("extractElixirRuntimeReferences", () => {
         producers: 1_000,
         joinedProducerOutcomes: 1_000,
         unjoinedOpaqueFallbacks: 0,
-        legacyIndexedDisagreements: 1_000,
-        dataSinks: 1_000,
-        escapes: 0,
-        summaryMatches: 3_000,
+        legacyIndexedDisagreements: 0,
+        dataSinks: 0,
+        escapes: 1_000,
+        summaryMatches: 2_000,
       });
       const small = median(smallRuns.map((run) => run.elapsed));
       const large = median(largeRuns.map((run) => run.elapsed));
@@ -2341,10 +2486,10 @@ describe("extractElixirRuntimeReferences", () => {
         producers: 1_000,
         joinedProducerOutcomes: 1_000,
         unjoinedOpaqueFallbacks: 0,
-        legacyIndexedDisagreements: 1_000,
-        dataSinks: 1_000,
-        escapes: 0,
-        summaryMatches: 2_001,
+        legacyIndexedDisagreements: 0,
+        dataSinks: 0,
+        escapes: 1_000,
+        summaryMatches: 2_000,
       });
       const small = median(smallRuns.map((run) => run.elapsed));
       const large = median(largeRuns.map((run) => run.elapsed));
@@ -2354,6 +2499,97 @@ describe("extractElixirRuntimeReferences", () => {
     }
   }, 10_000);
 
+  it("joins callback-fed input escapes near-linearly with constant semantic density", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-atom-callback-input-scaling-"));
+    const file = "many_callback_inputs.ex";
+    const measure = (count: number) => {
+      const lines = ["defmodule NeutralScale.CallbackInputs do"];
+      const events: TraceEvent[] = [];
+      for (let index = 0; index < count; index += 1) {
+        const line = lines.length + 1;
+        const variant = index % 3;
+        const source =
+          variant === 0
+            ? `  def classify_${index}(raw), do: Map.update(%{selected: String.to_atom(raw)}, :selected, :known, fn selector -> selector end)`
+            : variant === 1
+              ? `  def classify_${index}(raw), do: [selected: String.to_atom(raw)] |> Keyword.update(:selected, :known, fn selector -> selector end)`
+              : `  def classify_${index}(raw), do: Enum.map([String.to_atom(raw)], fn selector -> selector end)`;
+        lines.push(source);
+        const base = {
+          k: "event" as const,
+          kind: "remote" as const,
+          file,
+          line,
+          from_mod: "NeutralScale.CallbackInputs",
+          from_fun: `classify_${index}/1`,
+          partition: "prod" as const,
+        };
+        events.push(
+          {
+            ...base,
+            to_mod: "String",
+            name: "to_atom",
+            arity: 1,
+            dyn: true,
+          },
+          {
+            ...base,
+            to_mod: variant === 0 ? "Map" : variant === 1 ? "Keyword" : "Enum",
+            name: variant === 2 ? "map" : "update",
+            arity: variant === 2 ? 2 : 4,
+            dyn: false,
+          },
+        );
+      }
+      lines.push("end", "");
+      writeFileSync(join(root, file), lines.join("\n"));
+      const trace: TraceResult = {
+        appMod: null,
+        deps: [],
+        compileOk: true,
+        testPartition: "complete",
+        modules: [mod("NeutralScale.CallbackInputs", file)],
+        functions: [],
+        events,
+      };
+      const started = performance.now();
+      const extraction = extractElixirRuntimeConventions(root, trace);
+      return { elapsed: performance.now() - started, extraction };
+    };
+    const median = (values: readonly number[]): number =>
+      [...values].sort((left, right) => left - right)[Math.floor(values.length / 2)] ?? 0;
+
+    try {
+      measure(25);
+      const series = [250, 500, 1_000, 2_000].map((count) => ({
+        count,
+        run: measure(count),
+      }));
+      for (const { count, run } of series) {
+        expect(run.extraction.dynamicDispatches).toHaveLength(count);
+        expect(run.extraction.atomFlowStats).toMatchObject({
+          producers: count,
+          joinedProducerOutcomes: count,
+          unjoinedOpaqueFallbacks: 0,
+          legacyIndexedDisagreements: 0,
+          dataSinks: 0,
+          invocationSinks: 0,
+          escapes: count,
+          summaryMatches: count,
+        });
+        expect(run.extraction.atomFlowStats.roleEdges).toBeLessThanOrEqual(count * 8);
+        expect(run.extraction.atomFlowStats.queueVisits).toBeLessThanOrEqual(count * 8);
+      }
+      const smallRuns = [measure(250), measure(250), measure(250)];
+      const largeRuns = [measure(2_000), measure(2_000), measure(2_000)];
+      const small = median(smallRuns.map((run) => run.elapsed));
+      const large = median(largeRuns.map((run) => run.elapsed));
+      expect(large).toBeLessThan(small * 16 + 10);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 15_000);
+
   it("solves shared many-producer and many-use role graphs once", () => {
     const root = mkdtempSync(join(tmpdir(), "unused-atom-role-shared-scaling-"));
     const file = "shared_atom_roles.ex";
@@ -2361,18 +2597,18 @@ describe("extractElixirRuntimeReferences", () => {
       const lines = [
         "defmodule NeutralScale.SharedAtomRoles do",
         "  def classify(values, raw) do",
-        "    computed = [",
+        "    computed = %{",
       ];
       const producerLines: number[] = [];
       for (let index = 0; index < count; index += 1) {
         producerLines.push(lines.length + 1);
-        lines.push(`      String.to_atom(raw), # producer ${index}`);
+        lines.push(`      key_${index}: String.to_atom(raw), # producer ${index}`);
       }
-      lines.push("    ]");
+      lines.push("    }");
       const consumerLines: number[] = [];
       for (let index = 0; index < count; index += 1) {
         consumerLines.push(lines.length + 1);
-        lines.push(`    _ = Enum.member?(computed, :known) # consumer ${index}`);
+        lines.push(`    _ = Map.has_key?(computed, :known) # consumer ${index}`);
       }
       lines.push("    values", "  end", "end", "");
       writeFileSync(join(root, file), lines.join("\n"));
@@ -2396,8 +2632,8 @@ describe("extractElixirRuntimeReferences", () => {
         ...consumerLines.map((line) => ({
           ...base,
           line,
-          to_mod: "Enum",
-          name: "member?",
+          to_mod: "Map",
+          name: "has_key?",
           arity: 2,
           dyn: false,
         })),
@@ -2604,4 +2840,12 @@ function dynamicApplyEvent(fromFun: string, line: number): TraceEvent {
     dyn: true,
     partition: "prod",
   };
+}
+
+function ectoHexLock(version: string): string {
+  return `%{\n  "ecto": ${ectoHexTuple(version)},\n}\n`;
+}
+
+function ectoHexTuple(version: string): string {
+  return `{:hex, :ecto, "${version}", "neutral-checksum", [:mix], [], "hexpm", "neutral-outer-checksum"}`;
 }

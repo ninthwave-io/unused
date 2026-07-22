@@ -12,22 +12,22 @@ defmodule NeutralAtomRoles.Flows do
     ArgumentError -> :invalid
   end
 
-  def reduce_explicit(entries, raw) do
-    Enum.reduce(entries, %{}, fn key, acc ->
+  def map_explicit(entries, raw) do
+    Map.new(entries, fn key ->
       pair = fn left, right -> {left, right} end
-      _ = pair.(key, acc)
-      Map.put(acc, key, String.to_existing_atom(raw))
+      _ = pair.(key, raw)
+      {key, String.to_existing_atom(raw)}
     end)
     |> Map.has_key?(:known)
   rescue
     ArgumentError -> false
   end
 
-  def reduce_piped(entries, raw) do
+  def map_piped(entries, raw) do
     entries
-    |> Enum.reduce(%{}, fn
-      {key, _value}, acc -> Map.put(acc, key, String.to_existing_atom(raw))
-      _other, acc -> Map.put(acc, :fallback, :known)
+    |> Map.new(fn
+      {key, _value} -> {key, String.to_existing_atom(raw)}
+      _other -> {:fallback, :known}
     end)
     |> Map.has_key?(:known)
   rescue

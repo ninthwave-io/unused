@@ -312,19 +312,55 @@ would exceed this arity-index correction and needs a separately reviewed
 diagnostic-evidence design. The existing unit scope, world activation, cap, and
 fail-closed behavior are unchanged.
 
-### Required Phase 1B1.2 registry audit
+### Phase 1B1.2 callback-input registry audit
 
-Before the registry is described as fully callback-validated, audit every
-summary with `callbackResults`. A computed value in any argument that the API
-can pass into its callback must remain an omitted fail-closed role until exact
-callback-input binder flow exists. The audit must at least cover the callback
-forms of `Map` and `Keyword` update/merge operations, `Map.new/2`,
-`Keyword.new/2`, `MapSet.new/2`, `Enum.map/2`, `Enum.flat_map/2`, and
-`Enum.into/3`. Acceptance requires neutral compiler-event positives for exact
-callback results, negatives for every callback-fed input position (including
-runtime-selector-shaped results), registry validation, corpus labels, bounded
-scaling evidence, and independent review. Phase 1B1.2 must not introduce local
-or interprocedural function summaries implicitly.
+Implemented as a public-semantics audit against Elixir 1.20.2 and Ecto 3.14.1.
+Every one of the 18 core summaries with an explicit callback now records the
+callback argument, every logical input position that may enter it, the result
+disposition, and a version-pinned official documentation URL. Validation
+rejects unknown result roles, result/audit mismatch, duplicate or invalid input
+positions, and any callback-fed input that retains an optimistic data or
+propagation role. Zero-arity lazy callbacks retain their precision because they
+receive no API input.
+
+Implicit callbacks and protocol boundaries use the same fail-closed contract.
+`Enum.flat_map/2` callback results are re-enumerated, `Enum.reduce/3` results
+feed the next callback accumulator, and `Enum.into/3` transform results enter
+an arbitrary collector, so all three result positions escape until those
+boundaries are proven. `Enum.into/3` also omits both its transform-fed
+enumerable and its arbitrary `Collectable` input. The one-argument `Map.new`,
+`Keyword.new`, and `MapSet.new` forms omit their `Enumerable` inputs;
+`Enum.member?/2` and `Enum.into/2` omit every input passed across their
+`Enumerable`/`Collectable` protocol boundaries. The registered Ecto provider
+records custom-type callback inputs for `Changeset.change/1,2`, `cast/3,4`,
+`put_change/3`, and
+`validate_inclusion/3,4`, plus every registered `Ecto.Type` dispatcher.
+Dynamic type positions remain invocation selectors; callback-fed values are omitted.
+Ecto entries that perform direct storage or lookup retain their reviewed roles.
+Absent lazy/get-and-update variants remain absent rather than being inferred.
+The Ecto provider activates only when `ecto` is declared and an unambiguous Hex
+entry in `mix.lock` records the audited version `3.14.1`. Missing locks,
+path/git dependencies, malformed or duplicate entries, and other versions omit
+the provider and fail closed.
+
+The established exact source proof for `Enum.map/2 |> Enum.into(%{})` remains a
+compatibility terminal: it proves both the list enumerable produced by
+`Enum.map/2` and the literal built-in map collector. Only that independently
+validated shape may satisfy an omitted implicit-protocol role; arbitrary
+enumerables and collectables still escape.
+
+Neutral compiler-event tests cover exact zero-arity callback results,
+explicit and piped callback-fed escapes, multi-clause results, Map and Keyword
+merge/new, Map get-and-update, MapSet transforms, Enum into, protocol selector
+escapes, Ecto alias/import/change/type-selector behavior, dependency/version
+gating, project-owned spoofing, and duplicate cardinality. The real Mix Map and
+Keyword fixtures end at reviewed data sinks so the former optimistic roles
+would fail the assertions; the Enum fixture remains executable-shaped. An
+event-populated 250, 500, 1,000, and 2,000-site series holds callback-input
+escape density constant, asserts role-edge and queue-visit bounds per site, and
+remains bounded by the existing indexed node/edge algorithm. This checkpoint
+adds metadata and fail-closed roles only: it does not add callback binder edges,
+local return summaries, or interprocedural propagation.
 
 ## Acceptance
 

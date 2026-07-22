@@ -508,7 +508,7 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
       .filter((hazard) => hazard.hazardClass === "elixir-computed-atom-escape");
     expect(escapeHazards).toEqual([]);
 
-    for (const name of ["reduce_explicit", "reduce_piped"]) {
+    for (const name of ["map_explicit", "map_piped"]) {
       expect(
         whyAlive({
           graph: analysis.graph,
@@ -580,6 +580,18 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
       query: "NeutralAtomEscape.Flow.genuinely_unused/0",
       hazardEvaluations: [analysis.hazardEvaluation],
     });
+    expect(
+      analysis.graph
+        .hazards()
+        .filter((hazard) => hazard.hazardClass === "elixir-computed-atom-escape")
+        .map((hazard) => hazard.carrierSymbol)
+        .sort(),
+    ).toEqual([
+      expect.stringContaining("NeutralAtomEscape.Flow.enum_callback_input/1"),
+      expect.stringContaining("NeutralAtomEscape.Flow.escaped_value/2"),
+      expect.stringContaining("NeutralAtomEscape.Flow.keyword_callback_input/1"),
+      expect.stringContaining("NeutralAtomEscape.Flow.map_callback_input/1"),
+    ]);
     expect(escaped).toMatchObject({ outcome: "dead", confidence: "medium" });
     if (escaped.outcome !== "dead") throw new Error("expected isolated escape candidate");
     expect(escaped.hazards).toContainEqual(

@@ -14,3 +14,18 @@ subjects:
     expected: dead
     minConfidence: medium
     because: The reachable value escape in this isolated unit prevents a high-confidence deletion.
+  - kind: export
+    name: NeutralAtomEscape.Flow.map_callback_input/1
+    file: lib/neutral_atom_escape/flow.ex
+    expected: alive
+    because: The application calls the function and the computed map value may enter its update callback.
+  - kind: export
+    name: NeutralAtomEscape.Flow.keyword_callback_input/1
+    file: lib/neutral_atom_escape/flow.ex
+    expected: alive
+    because: The application calls the function and the computed keyword value may enter its piped update callback.
+  - kind: export
+    name: NeutralAtomEscape.Flow.enum_callback_input/1
+    file: lib/neutral_atom_escape/flow.ex
+    expected: alive
+    because: The application calls the function and the computed enumerable element may enter a multi-clause map callback.

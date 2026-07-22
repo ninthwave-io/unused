@@ -22,31 +22,52 @@ const ectoSummary = (
   name: string,
   arity: number,
   roles: Parameters<typeof defineElixirAtomRoleSummary>[3],
-) => defineElixirAtomRoleSummary(module, name, arity, roles, { origin: ectoOrigin });
+  implicitCallbackAudit?: NonNullable<
+    Parameters<typeof defineElixirAtomRoleSummary>[4]
+  >["implicitCallbackAudit"],
+) =>
+  defineElixirAtomRoleSummary(module, name, arity, roles, {
+    origin: ectoOrigin,
+    ...(implicitCallbackAudit === undefined ? {} : { implicitCallbackAudit }),
+  });
+const ectoCallback = (inputArguments: readonly number[], documentation: `https://${string}`) => ({
+  inputArguments,
+  documentation,
+});
+const CHANGESET_CALLBACK_SOURCE =
+  "https://github.com/elixir-ecto/ecto/blob/v3.14.1/lib/ecto/changeset.ex" as const;
+const TYPE_CALLBACK_SOURCE =
+  "https://github.com/elixir-ecto/ecto/blob/v3.14.1/lib/ecto/type.ex" as const;
 
 /** Semantic summaries owned by the compiled-in Ecto convention plugin. */
 export const ectoElixirAtomRoleSummaryProvider: ElixirAtomRoleSummaryProvider = {
   id: "convention:ecto",
   dependency: "ecto",
+  auditedVersions: ["3.14.1"],
   summaries: [
-    ectoSummary("Ecto.Changeset", "change", 1, { 0: propagate }),
-    ectoSummary("Ecto.Changeset", "change", 2, { 0: propagate, 1: propagate }),
-    ectoSummary("Ecto.Changeset", "cast", 3, {
-      0: propagate,
-      1: propagate,
-      2: propagate,
-    }),
-    ectoSummary("Ecto.Changeset", "cast", 4, {
-      0: propagate,
-      1: propagate,
-      2: propagate,
-      3: propagate,
-    }),
-    ectoSummary("Ecto.Changeset", "put_change", 3, {
-      0: propagate,
-      1: propagate,
-      2: propagate,
-    }),
+    ectoSummary("Ecto.Changeset", "change", 1, {}, ectoCallback([0], CHANGESET_CALLBACK_SOURCE)),
+    ectoSummary("Ecto.Changeset", "change", 2, {}, ectoCallback([0, 1], CHANGESET_CALLBACK_SOURCE)),
+    ectoSummary(
+      "Ecto.Changeset",
+      "cast",
+      3,
+      {},
+      ectoCallback([0, 1, 2], CHANGESET_CALLBACK_SOURCE),
+    ),
+    ectoSummary(
+      "Ecto.Changeset",
+      "cast",
+      4,
+      {},
+      ectoCallback([0, 1, 2, 3], CHANGESET_CALLBACK_SOURCE),
+    ),
+    ectoSummary(
+      "Ecto.Changeset",
+      "put_change",
+      3,
+      { 1: propagate },
+      ectoCallback([0, 2], CHANGESET_CALLBACK_SOURCE),
+    ),
     ectoSummary("Ecto.Changeset", "force_change", 3, {
       0: propagate,
       1: propagate,
@@ -65,24 +86,39 @@ export const ectoElixirAtomRoleSummaryProvider: ElixirAtomRoleSummaryProvider = 
       1: consume,
       2: propagate,
     }),
-    ectoSummary("Ecto.Changeset", "validate_inclusion", 3, {
-      0: propagate,
-      1: propagate,
-      2: propagate,
-    }),
-    ectoSummary("Ecto.Changeset", "validate_inclusion", 4, {
-      0: propagate,
-      1: propagate,
-      2: propagate,
-      3: propagate,
-    }),
+    ectoSummary(
+      "Ecto.Changeset",
+      "validate_inclusion",
+      3,
+      { 1: propagate },
+      ectoCallback([0, 2], CHANGESET_CALLBACK_SOURCE),
+    ),
+    ectoSummary(
+      "Ecto.Changeset",
+      "validate_inclusion",
+      4,
+      { 1: propagate, 3: propagate },
+      ectoCallback([0, 2], CHANGESET_CALLBACK_SOURCE),
+    ),
     ectoSummary("Ecto.Changeset", "apply_changes", 1, { 0: propagate }),
-    ectoSummary("Ecto.Type", "cast", 2, { 0: selector, 1: propagate }),
-    ectoSummary("Ecto.Type", "load", 2, { 0: selector, 1: propagate }),
-    ectoSummary("Ecto.Type", "dump", 2, { 0: selector, 1: propagate }),
-    ectoSummary("Ecto.Type", "equal?", 3, { 0: selector, 1: consume, 2: consume }),
-    ectoSummary("Ecto.Type", "embed_as", 2, { 0: selector, 1: consume }),
-    ectoSummary("Ecto.Type", "type", 1, { 0: selector }),
+    ectoSummary("Ecto.Type", "cast", 2, { 0: selector }, ectoCallback([1], TYPE_CALLBACK_SOURCE)),
+    ectoSummary("Ecto.Type", "load", 2, { 0: selector }, ectoCallback([1], TYPE_CALLBACK_SOURCE)),
+    ectoSummary("Ecto.Type", "dump", 2, { 0: selector }, ectoCallback([1], TYPE_CALLBACK_SOURCE)),
+    ectoSummary(
+      "Ecto.Type",
+      "equal?",
+      3,
+      { 0: selector },
+      ectoCallback([1, 2], TYPE_CALLBACK_SOURCE),
+    ),
+    ectoSummary(
+      "Ecto.Type",
+      "embed_as",
+      2,
+      { 0: selector },
+      ectoCallback([1], TYPE_CALLBACK_SOURCE),
+    ),
+    ectoSummary("Ecto.Type", "type", 1, { 0: selector }, ectoCallback([], TYPE_CALLBACK_SOURCE)),
   ],
 };
 

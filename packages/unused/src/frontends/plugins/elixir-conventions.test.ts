@@ -14,7 +14,7 @@ const site = {
 };
 
 describe("ectoElixirConventionPlugin", () => {
-  it("owns a dependency-gated semantic-summary provider before graph emission", () => {
+  it("owns a dependency-and-version-gated semantic-summary provider before graph emission", () => {
     expect(ectoElixirConventionPlugin).toMatchObject({
       id: "convention:ecto",
       kind: "convention",
@@ -22,6 +22,7 @@ describe("ectoElixirConventionPlugin", () => {
       elixirAtomRoleSummaryProvider: ectoElixirAtomRoleSummaryProvider,
     });
     expect(ectoElixirAtomRoleSummaryProvider.summaries.length).toBeGreaterThan(0);
+    expect(ectoElixirAtomRoleSummaryProvider.auditedVersions).toEqual(["3.14.1"]);
     for (const summary of ectoElixirAtomRoleSummaryProvider.summaries) {
       expect(summary.origin).toEqual({ pluginId: "convention:ecto", dependency: "ecto" });
     }

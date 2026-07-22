@@ -2,7 +2,7 @@
   "analyzer": "elixir-reference-graph",
   "corpus": {
     "cases": 25,
-    "subjects": 78
+    "subjects": 81
   },
   "precision": 1,
   "recall": 0.9705882352941176,
@@ -99,7 +99,7 @@
     },
     {
       "case": "atom-role-escape",
-      "subjects": 2,
+      "subjects": 5,
       "deadLabels": 1,
       "precision": 1,
       "recall": 1,

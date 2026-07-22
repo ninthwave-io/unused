@@ -202,7 +202,7 @@ export function extractElixirRuntimeConventions(
   };
   const functionsByModuleName = indexFunctions(traceResult.functions);
   const atomRoleSummaryLookup = createElixirAtomRoleSummaryLookup(
-    applicableAtomRoleSummaries(traceResult, summaryProviders),
+    applicableAtomRoleSummaries(projectDir, traceResult, summaryProviders),
   );
   const contents = readProjectSources(projectDir, traceResult);
   const sources = new Map(
@@ -311,6 +311,7 @@ export function extractElixirRuntimeConventions(
 }
 
 function applicableAtomRoleSummaries(
+  projectDir: string,
   traceResult: TraceResult,
   providers: readonly ElixirAtomRoleSummaryProvider[],
 ): readonly ElixirAtomRoleSummary[] {
@@ -322,6 +323,8 @@ function applicableAtomRoleSummaries(
     }
     providerIds.add(provider.id);
     if (!traceResult.deps.includes(provider.dependency)) continue;
+    const lockedVersion = readHexDependencyVersion(projectDir, provider.dependency);
+    if (lockedVersion === undefined || !provider.auditedVersions.includes(lockedVersion)) continue;
     for (const summary of provider.summaries) {
       if (
         summary.origin.pluginId !== provider.id ||
@@ -333,6 +336,127 @@ function applicableAtomRoleSummaries(
     }
   }
   return summaries;
+}
+
+/**
+ * Read one exact Hex dependency version from the public Mix lock format.
+ * Path/git dependencies and malformed or ambiguous entries deliberately have
+ * no applicable version: a semantic provider must fail closed without audited
+ * package-version evidence.
+ */
+function readHexDependencyVersion(projectDir: string, dependency: string): string | undefined {
+  let lock: string;
+  try {
+    lock = readFileSync(join(projectDir, "mix.lock"), "utf8");
+  } catch {
+    return undefined;
+  }
+  const entries = parseMixLockEntries(lock);
+  const tuple = entries?.get(dependency);
+  if (tuple === undefined) return undefined;
+  const fields = splitTopLevelTerms(tuple.slice(1, -1));
+  if (
+    fields.length !== 8 ||
+    fields[0] !== ":hex" ||
+    fields[1] !== `:${dependency}` ||
+    !isQuotedElixirString(fields[2]) ||
+    !isQuotedElixirString(fields[3]) ||
+    !isBracketedTerm(fields[4], "[", "]") ||
+    !isBracketedTerm(fields[5], "[", "]") ||
+    !isQuotedElixirString(fields[6]) ||
+    !isQuotedElixirString(fields[7])
+  ) {
+    return undefined;
+  }
+  return fields[2]?.slice(1, -1);
+}
+
+function parseMixLockEntries(raw: string): ReadonlyMap<string, string> | undefined {
+  const lock = raw.trim();
+  if (!lock.startsWith("%{")) return undefined;
+  const mapEnd = balancedTermEnd(lock, 1);
+  if (mapEnd !== lock.length - 1) return undefined;
+  const body = lock.slice(2, -1).trim();
+  if (body === "") return new Map();
+  const entries = new Map<string, string>();
+  const terms = splitTopLevelTerms(body);
+  if (terms.at(-1) === "") terms.pop();
+  if (terms.length === 0 || terms.some((term) => term === "")) return undefined;
+  for (const term of terms) {
+    const key = /^"([^"\\]+)"[\t ]*:[\t ]*/.exec(term);
+    if (key?.[1] === undefined || entries.has(key[1])) return undefined;
+    const tuple = term.slice(key[0].length).trim();
+    if (!tuple.startsWith("{") || balancedTermEnd(tuple, 0) !== tuple.length - 1) {
+      return undefined;
+    }
+    entries.set(key[1], tuple);
+  }
+  return entries;
+}
+
+function balancedTermEnd(content: string, start: number): number | undefined {
+  const pairs: Readonly<Record<string, string>> = { "{": "}", "[": "]", "(": ")" };
+  const closing = new Set(Object.values(pairs));
+  const stack: string[] = [];
+  let quoted = false;
+  let escaped = false;
+  for (let index = start; index < content.length; index += 1) {
+    const character = content[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') quoted = false;
+      continue;
+    }
+    if (character === '"') {
+      quoted = true;
+      continue;
+    }
+    const close = character === undefined ? undefined : pairs[character];
+    if (close !== undefined) stack.push(close);
+    else if (character !== undefined && closing.has(character)) {
+      if (character !== stack.at(-1)) return undefined;
+      stack.pop();
+      if (stack.length === 0) return index;
+    }
+  }
+  return undefined;
+}
+
+function splitTopLevelTerms(content: string): string[] {
+  const terms: string[] = [];
+  let start = 0;
+  let quoted = false;
+  let escaped = false;
+  let depth = 0;
+  for (let index = 0; index < content.length; index += 1) {
+    const character = content[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') quoted = false;
+      continue;
+    }
+    if (character === '"') quoted = true;
+    else if (character === "{" || character === "[" || character === "(") depth += 1;
+    else if (character === "}" || character === "]" || character === ")") depth -= 1;
+    else if (character === "," && depth === 0) {
+      terms.push(content.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  terms.push(content.slice(start).trim());
+  return terms;
+}
+
+function isQuotedElixirString(value: string | undefined): value is string {
+  return value !== undefined && /^"(?:[^"\\]|\\.)*"$/.test(value);
+}
+
+function isBracketedTerm(value: string | undefined, open: string, close: string): boolean {
+  return (
+    value?.startsWith(open) === true && balancedTermEnd(value, 0) === value.length - close.length
+  );
 }
 
 function indexParsedApplies(
@@ -1147,7 +1271,18 @@ function expandAtomCallRole(
     addAtomCallResultEdge(graph, node, call);
     return;
   }
-  const role = summary.arguments[argument] ?? "escape";
+  const role = summary.arguments[argument];
+  if (
+    role === undefined &&
+    summary.implicitCallbackAudit?.inputArguments.includes(argument) === true &&
+    node.context.legacyTerminal
+  ) {
+    // Preserve the pre-existing exact source proof for a concrete built-in
+    // protocol shape (currently Enum.map/2 |> Enum.into(%{})). The generic
+    // summary remains fail-closed for arbitrary Enumerable/Collectable values.
+    node.terminal |= ATOM_FLOW_LEGACY_DATA;
+    return;
+  }
   if (role === "consume-data") node.terminal |= ATOM_FLOW_DATA;
   else if (role === "invocation-selector") node.terminal |= ATOM_FLOW_INVOCATION;
   else if (role === "propagate-to-result") addAtomCallResultEdge(graph, node, call);
