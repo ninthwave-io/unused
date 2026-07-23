@@ -439,9 +439,10 @@ defmodule Unused.Structure do
   end
 
   defp index_events(events) do
-    Enum.reduce(events, %{carriers: MapSet.new(), by_target: MapSet.new(), by_call: %{}}, fn
+    Enum.reduce(events, %{carriers: MapSet.new(), by_target: MapSet.new(), by_call: %{},
+                          dynamic_apply_candidates: %{}}, fn
       event = {_id, {_kind, _call_kind, file, line, column, from_mod, from_fun,
-                             to_mod, name, arity, _dyn}}, acc ->
+                             to_mod, name, arity, dyn}}, acc ->
         carrier_key = {file, from_mod, from_fun}
         carriers = MapSet.put(acc.carriers, carrier_key)
         by_target = if is_binary(name) and is_integer(arity),
@@ -451,7 +452,14 @@ defmodule Unused.Structure do
                _to_mod, _name, _arity, _dyn}} = event
         compact = {elem(event, 0), kind, call_kind, to_mod}
         by_call = Map.update(acc.by_call, call_key, [compact], &[compact | &1])
-        %{acc | carriers: carriers, by_target: by_target, by_call: by_call}
+        dynamic_apply_candidates =
+          if dyn and name == "apply" and arity == 3 and line > 0 and column > 0 and
+               kind in ["remote", "imported", "local"] and call_kind != nil and
+               to_mod in ["Kernel", ":erlang"],
+            do: Map.update(acc.dynamic_apply_candidates, carrier_key, 1, &(&1 + 1)),
+            else: acc.dynamic_apply_candidates
+        %{acc | carriers: carriers, by_target: by_target, by_call: by_call,
+          dynamic_apply_candidates: dynamic_apply_candidates}
     end)
   end
 
@@ -657,8 +665,10 @@ defmodule Unused.Structure do
       kind in ["remote", "imported", "local"] and call_kind != nil and
         to_mod in ["Kernel", ":erlang"]
     end)
+    carrier_candidates = Map.get(carrier.event_index.dynamic_apply_candidates,
+      {carrier.file, carrier.mod, carrier.fun}, 0)
     if carrier.fun == "__using__/1" and carrier.using_selector == selector and target != nil and
-         length(exact) == 1 do
+         carrier_candidates == 1 and length(exact) == 1 do
       {event_id, _kind, _call_kind, _to_mod} = hd(exact)
       add_fact(state, carrier.id, "use-dispatcher", target, target, event_id, 1, "exact")
     else

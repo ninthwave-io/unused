@@ -55,6 +55,116 @@ end
     expect(file?.facts.filter((fact) => fact.role === "use-dispatcher")).toHaveLength(1);
   }, 60_000);
 
+  it("keeps a same-carrier second dynamic apply conservative", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unused-use-dispatch-cardinality-"));
+    temporaryRoots.push(root);
+    await cp(fixture("dynamic-use-helpers"), root, { recursive: true });
+    await writeFile(
+      join(root, "lib", "neutral_use", "web.ex"),
+      `defmodule NeutralUse.Web do
+  defmacro __using__(which) when is_atom(which) do
+    selected = apply(__MODULE__, which, []); always = apply(__MODULE__, :always_live, [])
+    quote do
+      unquote(selected)
+      unquote(always)
+    end
+  end
+
+  def router do
+    quote do
+      def kind, do: :router
+    end
+  end
+
+  def controller do
+    quote do
+      def kind, do: :controller
+    end
+  end
+
+  def channel do
+    quote do
+      def kind, do: :channel
+    end
+  end
+
+  def html do
+    quote do
+      def kind, do: :html
+    end
+  end
+
+  def always_live do
+    quote do
+      def always_kind, do: :always
+    end
+  end
+  def genuinely_unused, do: :unused
+end
+
+defmodule NeutralUse.Decoy do
+  defmacro __using__(:controller) do
+    quote do
+      def kind, do: :decoy
+    end
+  end
+
+  def controller, do: :not_selected_by_the_macro
+end
+`,
+    );
+
+    const trace = runTracer(root);
+    const collapsedEvents = trace.events.filter(
+      (event) =>
+        event.from_mod === "NeutralUse.Web" &&
+        event.from_fun === "__using__/1" &&
+        event.name === "apply" &&
+        event.arity === 3 &&
+        event.dyn &&
+        (event.to_mod === "Kernel" || event.to_mod === ":erlang"),
+    );
+    expect(collapsedEvents).toHaveLength(1);
+    expect(
+      trace.structuralFiles?.flatMap((file) =>
+        file.facts.filter((fact) => fact.role === "use-dispatcher"),
+      ),
+    ).toEqual([]);
+    expect(trace.structuralSummary?.roles["use-dispatcher"] ?? 0).toBe(0);
+
+    const analysis = await analyzeElixirProjectWithGraph(root, { now: new Date(0) });
+    const alwaysLive = whyAlive({
+      graph: analysis.graph,
+      reachability: analysis.reachability,
+      claims: analysis.result.claims,
+      query: "NeutralUse.Web.always_live/0",
+      hazardEvaluations: [analysis.hazardEvaluation],
+    });
+    expect(alwaysLive).toMatchObject({
+      outcome: "dead",
+      confidence: "medium",
+      hazards: [expect.objectContaining({ hazardClass: "elixir-dynamic-dispatch" })],
+    });
+    if (alwaysLive.outcome !== "dead") throw new Error("expected conservative invoked helper");
+    expect(
+      computeDeletionPlan({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        subject: alwaysLive.subject,
+        hazardEvaluations: [analysis.hazardEvaluation],
+      }),
+    ).toMatchObject({ supported: false, stages: [] });
+
+    const unrelated = whyAlive({
+      graph: analysis.graph,
+      reachability: analysis.reachability,
+      claims: analysis.result.claims,
+      query: "lib/neutral_use/unrelated.ex",
+      hazardEvaluations: [analysis.hazardEvaluation],
+    });
+    expect(unrelated).toMatchObject({ outcome: "dead" });
+  }, 60_000);
+
   it("consumes an exact structural MFA tuple without widening its live surface", async () => {
     const root = fixture("runtime-mfa-callback");
     const trace = runTracer(root);
