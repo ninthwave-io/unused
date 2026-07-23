@@ -440,16 +440,21 @@ function buildPath(
 }
 
 /**
- * Collapse consecutive hops in the same file into one — a file hop immediately
- * followed by an export hop of that same file (the common entry → its-own-export
- * shape) reads as one line, keeping the more specific symbol/line and the
- * earliest entrypoint annotation.
+ * Collapse only a file hop immediately followed by an export hop of that same
+ * file (the common entry → its-own-export shape). Distinct same-file symbols
+ * remain separate so generated-wrapper and other intra-file provenance stays
+ * visible. The collapsed hop keeps the symbol/line and entrypoint annotation.
  */
 function collapseHops(hops: readonly WhyHop[]): WhyHop[] {
   const out: WhyHop[] = [];
   for (const hop of hops) {
     const prev = out[out.length - 1];
-    if (prev !== undefined && prev.file === hop.file) {
+    if (
+      prev !== undefined &&
+      prev.file === hop.file &&
+      prev.symbol === undefined &&
+      hop.symbol !== undefined
+    ) {
       const symbol = hop.symbol ?? prev.symbol;
       const line = hop.line ?? prev.line;
       const entrypoint = prev.entrypoint ?? hop.entrypoint;

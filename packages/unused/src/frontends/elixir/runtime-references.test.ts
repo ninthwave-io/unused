@@ -55,7 +55,16 @@ function mod(mod: string, file: string): ModuleRecord {
 }
 
 function fn(modName: string, name: string, arity: number, file: string): FunctionRecord {
-  return { k: "function", mod: modName, name, arity, file, line: 2, partition: "prod" };
+  return {
+    k: "function",
+    mod: modName,
+    name,
+    arity,
+    file,
+    line: 2,
+    defaultTargetArity: null,
+    partition: "prod",
+  };
 }
 
 function withExactPrivateModuleScaffolding(root: string, trace: TraceResult): TraceResult {
@@ -1844,6 +1853,7 @@ describe("extractElixirRuntimeReferences", () => {
           arity,
           file,
           line: index + 1,
+          defaultTargetArity: null,
           partition: "prod" as const,
         },
       ];

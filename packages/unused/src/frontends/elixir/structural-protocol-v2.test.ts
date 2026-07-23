@@ -75,7 +75,21 @@ function moduleRecord(file: string, mod: string, partition: Partition): ModuleRe
 }
 
 function functionRecord(file: string, mod: string, partition: Partition): FunctionRecord {
-  return { k: "function", mod, name: "live", arity: 0, file, line: 1, partition };
+  return {
+    k: "function",
+    mod,
+    name: "live",
+    arity: 0,
+    file,
+    line: 1,
+    defaultTargetArity: null,
+    partition,
+  };
+}
+
+function wireFunctionRecord(file: string, mod: string, partition: Partition) {
+  const { defaultTargetArity, ...record } = functionRecord(file, mod, partition);
+  return { ...record, default_target_arity: defaultTargetArity };
 }
 
 function eventRecord(
@@ -700,7 +714,7 @@ describe("Elixir structural ownership and spans", () => {
       { k: "phase", protocol: 2, phase: "test", status: "started" },
       { k: "owner", mod: "Neutral.Test", file, partition: "test" },
       moduleRecord(file, "Neutral.Test", "test"),
-      functionRecord(file, "Neutral.Test", "test"),
+      wireFunctionRecord(file, "Neutral.Test", "test"),
       {
         k: "event",
         id: 0,
@@ -774,7 +788,7 @@ describe("Elixir structural ownership and spans", () => {
         { k: "phase", protocol: 2, phase: "test", status: "started" },
         { k: "owner", mod, file, partition: "test" },
         moduleRecord(file, mod, "test"),
-        functionRecord(file, mod, "test"),
+        wireFunctionRecord(file, mod, "test"),
         {
           k: "event",
           id: event.eventId,
@@ -1061,7 +1075,7 @@ describe("Elixir structural event identity", () => {
       { k: "phase", protocol: 2, phase: "test", status: "started" },
       { k: "owner", mod, file, partition: "test" },
       moduleRecord(file, mod, "test"),
-      functionRecord(file, mod, "test"),
+      wireFunctionRecord(file, mod, "test"),
       {
         k: "event",
         id: event.eventId,

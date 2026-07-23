@@ -1,0 +1,73 @@
+case: default-argument-reachability
+description: >-
+  Compiler-generated lower-arity wrappers retain the declared function body
+  they execute, while direct maximum-arity calls do not retain unused wrappers.
+subjects:
+  - kind: export
+    name: NeutralDefaults.Actions.from_short/1
+    file: lib/neutral_defaults/actions.ex
+    expected: alive
+    because: >-
+      The application calls this compiler-generated one-arity wrapper directly.
+  - kind: export
+    name: NeutralDefaults.Actions.from_short/2
+    file: lib/neutral_defaults/actions.ex
+    expected: alive
+    because: >-
+      The reachable one-arity wrapper executes this declared two-arity body.
+  - kind: export
+    name: NeutralDefaults.Actions.direct/1
+    file: lib/neutral_defaults/actions.ex
+    expected: dead
+    minConfidence: high
+    because: >-
+      Only the declared two-arity body is called, so the generated one-arity
+      wrapper remains unused.
+  - kind: export
+    name: NeutralDefaults.Actions.direct/2
+    file: lib/neutral_defaults/actions.ex
+    expected: alive
+    because: >-
+      The application calls the declared two-arity body directly.
+  - kind: export
+    name: NeutralDefaults.Actions.ranged/1
+    file: lib/neutral_defaults/actions.ex
+    expected: alive
+    because: >-
+      The application calls this generated wrapper, which supplies two defaults.
+  - kind: export
+    name: NeutralDefaults.Actions.ranged/2
+    file: lib/neutral_defaults/actions.ex
+    expected: dead
+    minConfidence: high
+    because: >-
+      The one-arity wrapper calls the declared three-arity body directly, so the
+      separate two-arity wrapper remains unused.
+  - kind: export
+    name: NeutralDefaults.Actions.ranged/3
+    file: lib/neutral_defaults/actions.ex
+    expected: alive
+    because: >-
+      The reachable one-arity wrapper executes this multi-clause declared body.
+  - kind: export
+    name: NeutralDefaults.Worker.perform/2
+    file: lib/neutral_defaults/worker.ex
+    expected: alive
+    because: >-
+      The declared from_short/2 body calls this worker after its generated
+      one-arity wrapper reaches that body.
+  - kind: export
+    name: NeutralDefaults.Worker.unused_sibling/1
+    file: lib/neutral_defaults/worker.ex
+    expected: dead
+    minConfidence: high
+    because: >-
+      Reaching the worker file through perform/2 does not retain an unrelated
+      public sibling.
+  - kind: file
+    name: lib/neutral_defaults/worker.ex
+    file: lib/neutral_defaults/worker.ex
+    expected: alive
+    because: >-
+      The wrapper-to-body edge preserves the cross-module call that reaches this
+      separately owned worker file.

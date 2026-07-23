@@ -109,6 +109,7 @@ const OK_LINES = [
     arity: 1,
     file: "lib/app/core.ex",
     line: 2,
+    default_target_arity: null,
     partition: "prod",
   }),
   JSON.stringify({
@@ -139,9 +140,131 @@ describe("parseTraceOutput", () => {
     expect(result.deps).toEqual(["phoenix", "ecto"]);
     expect(result.modules).toHaveLength(1);
     expect(result.functions).toHaveLength(1);
+    expect(result.functions[0]?.defaultTargetArity).toBeNull();
     expect(result.events).toHaveLength(1);
     expect(result.events[0]?.to_mod).toBe("App.Core");
     expect(result.compileOk).toBe(true);
+  });
+
+  it("accepts one complete multi-default wrapper family", () => {
+    const lines = OK_LINES.split("\n");
+    const eventIndex = lines.findIndex((line) => line.includes('"k":"event"'));
+    const reflected = [
+      {
+        k: "function",
+        mod: "App.Core",
+        name: "format",
+        arity: 0,
+        file: "lib/app/core.ex",
+        line: 8,
+        default_target_arity: 2,
+        partition: "prod",
+      },
+      {
+        k: "function",
+        mod: "App.Core",
+        name: "format",
+        arity: 1,
+        file: "lib/app/core.ex",
+        line: 8,
+        default_target_arity: 2,
+        partition: "prod",
+      },
+      {
+        k: "function",
+        mod: "App.Core",
+        name: "format",
+        arity: 2,
+        file: "lib/app/core.ex",
+        line: 8,
+        default_target_arity: null,
+        partition: "prod",
+      },
+    ].map((record) => JSON.stringify(record));
+    lines.splice(eventIndex, 0, ...reflected);
+
+    expect(
+      parseTraceOutput(lines.join("\n"))
+        .functions.filter((fn) => fn.name === "format")
+        .map((fn) => [fn.arity, fn.defaultTargetArity]),
+    ).toEqual([
+      [0, 2],
+      [1, 2],
+      [2, null],
+    ]);
+  });
+
+  it.each([
+    [
+      "a missing declared target",
+      [
+        {
+          k: "function",
+          mod: "App.Core",
+          name: "format",
+          arity: 1,
+          file: "lib/app/core.ex",
+          line: 8,
+          default_target_arity: 2,
+          partition: "prod",
+        },
+      ],
+    ],
+    [
+      "a source-line mismatch",
+      [
+        {
+          k: "function",
+          mod: "App.Core",
+          name: "format",
+          arity: 1,
+          file: "lib/app/core.ex",
+          line: 8,
+          default_target_arity: 2,
+          partition: "prod",
+        },
+        {
+          k: "function",
+          mod: "App.Core",
+          name: "format",
+          arity: 2,
+          file: "lib/app/core.ex",
+          line: 9,
+          default_target_arity: null,
+          partition: "prod",
+        },
+      ],
+    ],
+    [
+      "a missing intermediate wrapper",
+      [
+        {
+          k: "function",
+          mod: "App.Core",
+          name: "format",
+          arity: 0,
+          file: "lib/app/core.ex",
+          line: 8,
+          default_target_arity: 2,
+          partition: "prod",
+        },
+        {
+          k: "function",
+          mod: "App.Core",
+          name: "format",
+          arity: 2,
+          file: "lib/app/core.ex",
+          line: 8,
+          default_target_arity: null,
+          partition: "prod",
+        },
+      ],
+    ],
+  ])("refuses default-wrapper metadata with %s", (_label, records) => {
+    const lines = OK_LINES.split("\n");
+    const eventIndex = lines.findIndex((line) => line.includes('"k":"event"'));
+    lines.splice(eventIndex, 0, ...records.map((record) => JSON.stringify(record)));
+    expect(() => parseTraceOutput(lines.join("\n"))).toThrow(/malformed phase protocol/);
   });
 
   it("refuses malformed non-JSON phase output", () => {

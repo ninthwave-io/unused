@@ -117,6 +117,30 @@ exports, behaviour shape, or BEAM container remains a production refusal or a
 bounded incomplete test partition. Test files use `compile_to_path` so their
 BEAM metadata is available inside the same temporary, non-consumer build.
 
+## Implementation amendment — default-argument wrapper reachability (2026-07-23)
+
+Elixir compiles a declaration with default arguments into one maximum-arity
+body plus public lower-arity wrapper exports. A call to a wrapper therefore
+executes the declared body even though the compiler trace contains no source
+call edge between those generated functions. Reflection now reads the EEP-48
+function entry's validated `defaults` count and carries a required nullable
+declared-target arity on every internal function record. When the documentation
+chunk is deliberately disabled, the Elixir debug-info definition table is the
+fallback authority; it is read only on that path. If neither authority can
+disambiguate a repeated-name export surface, or if a target is absent,
+cross-file, cross-partition, on a different source line, itself a wrapper, or
+part of a non-contiguous wrapper range, production refuses and tests become the
+existing bounded incomplete partition.
+
+IR emission adds one exact static edge from each wrapper to the maximum-arity
+body in the same module, file, and partition. Test wrapper edges are test-scoped.
+The relation is intentionally one-way: reaching `function/1` generated from a
+`function/2` declaration keeps `function/2` alive, but a direct `function/2`
+call does not root the unused `function/1` wrapper. The compiler record scan,
+validation, and edge emission are each linear in reflected functions. This is
+an internal lockstep trace-record extension; canonical JSON and its public
+schema are unchanged, and the structural source protocol remains version 2.
+
 ## Implementation amendment — test-scoped production edges (2026-07-22)
 
 Compiler expansion can legitimately make a production-owned module emit an

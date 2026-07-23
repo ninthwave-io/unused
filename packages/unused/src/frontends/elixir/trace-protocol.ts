@@ -59,6 +59,7 @@ interface JsonRecord extends Readonly<Record<string, unknown>> {
   readonly el?: unknown;
   readonly ec?: unknown;
   readonly def_line?: unknown;
+  readonly default_target_arity?: unknown;
   readonly event_id?: unknown;
   readonly events?: unknown;
   readonly elapsed_us?: unknown;
@@ -481,14 +482,35 @@ function decodeModuleRecord(value: JsonRecord, phase: "production" | "test"): Tr
 
 function decodeFunctionRecord(value: JsonRecord, phase: "production" | "test"): TraceRecord | null {
   const partition = phase === "production" ? "prod" : "test";
-  return exactKeys(value, ["k", "mod", "name", "arity", "file", "line", "partition"]) &&
+  return exactKeys(value, [
+    "k",
+    "mod",
+    "name",
+    "arity",
+    "file",
+    "line",
+    "default_target_arity",
+    "partition",
+  ]) &&
     boundedString(value.mod, MAX_IDENTITY_LENGTH) &&
     boundedString(value.name, MAX_IDENTITY_LENGTH) &&
     boundedInteger(value.arity, MAX_ARITY) &&
     boundedString(value.file, MAX_PATH_LENGTH) &&
     nonNegativeInteger(value.line) &&
+    (value.default_target_arity === null ||
+      (boundedInteger(value.default_target_arity, MAX_ARITY) &&
+        value.default_target_arity > value.arity)) &&
     value.partition === partition
-    ? (value as unknown as TraceRecord)
+    ? ({
+        k: "function",
+        mod: value.mod,
+        name: value.name,
+        arity: value.arity,
+        file: value.file,
+        line: value.line,
+        defaultTargetArity: value.default_target_arity,
+        partition: value.partition,
+      } as TraceRecord)
     : null;
 }
 
@@ -532,6 +554,69 @@ export function hasConflictingDefinitions(
     hasConflicts(modules, (module) => module.mod, moduleSemanticKey) ||
     hasConflicts(functions, functionIdentityKey, functionSemanticKey)
   );
+}
+
+/**
+ * Validate the complete compiler-generated default-wrapper topology in one
+ * phase. Every wrapper must target an ordinary declared body in the same
+ * module, file, partition, and source definition, and a multi-default family
+ * must contain the full contiguous arity range.
+ */
+export function hasValidDefaultArgumentTargets(functions: readonly FunctionRecord[]): boolean {
+  const byIdentity = new Map<string, FunctionRecord>();
+  for (const fn of functions) {
+    const key = defaultFunctionKey(fn.mod, fn.file, fn.partition, fn.name, fn.arity);
+    const prior = byIdentity.get(key);
+    if (prior !== undefined && functionSemanticKey(prior) !== functionSemanticKey(fn)) return false;
+    byIdentity.set(key, fn);
+  }
+
+  const wrappersByTarget = new Map<string, Set<number>>();
+  for (const wrapper of byIdentity.values()) {
+    if (wrapper.defaultTargetArity === null) continue;
+    const targetKey = defaultFunctionKey(
+      wrapper.mod,
+      wrapper.file,
+      wrapper.partition,
+      wrapper.name,
+      wrapper.defaultTargetArity,
+    );
+    const target = byIdentity.get(targetKey);
+    if (
+      target === undefined ||
+      target.defaultTargetArity !== null ||
+      target.line !== wrapper.line
+    ) {
+      return false;
+    }
+    const arities = wrappersByTarget.get(targetKey);
+    if (arities === undefined) wrappersByTarget.set(targetKey, new Set([wrapper.arity]));
+    else arities.add(wrapper.arity);
+  }
+
+  for (const [targetKey, arities] of wrappersByTarget) {
+    const target = byIdentity.get(targetKey);
+    if (target === undefined || arities.size === 0) return false;
+    const minimum = Math.min(...arities);
+    if (arities.size !== target.arity - minimum) return false;
+    for (let arity = minimum; arity < target.arity; arity += 1) {
+      const wrapper = byIdentity.get(
+        defaultFunctionKey(target.mod, target.file, target.partition, target.name, arity),
+      );
+      if (wrapper?.defaultTargetArity !== target.arity) return false;
+    }
+  }
+  return true;
+}
+
+function defaultFunctionKey(
+  mod: string,
+  file: string,
+  partition: FunctionRecord["partition"],
+  name: string,
+  arity: number,
+): string {
+  return [mod, file, partition, name, arity].join("\0");
 }
 
 /**
@@ -621,7 +706,7 @@ export function functionIdentityKey(fn: FunctionRecord): string {
 }
 
 export function functionSemanticKey(fn: FunctionRecord): string {
-  return [functionIdentityKey(fn), fn.file, fn.line].join("\0");
+  return [functionIdentityKey(fn), fn.file, fn.line, fn.defaultTargetArity ?? -1].join("\0");
 }
 
 export function eventCompatibilityKey(event: TraceEvent): string {

@@ -39,7 +39,16 @@ function mod(name: string, file: string, extra: Partial<ModuleRecord> = {}): Mod
 }
 
 function fn(name: string, arity: number, ownerFile: string, ownerMod: string): FunctionRecord {
-  return { k: "function", mod: ownerMod, name, arity, file: ownerFile, line: 2, partition: "prod" };
+  return {
+    k: "function",
+    mod: ownerMod,
+    name,
+    arity,
+    file: ownerFile,
+    line: 2,
+    defaultTargetArity: null,
+    partition: "prod",
+  };
 }
 
 function callEvent(
@@ -186,6 +195,116 @@ describe("emitElixirIR — clean scenario", () => {
     // ids are `exp_<hash>`; the hash includes the "ex" language slot, so an
     // Elixir export claim can never collide with a TS one for the same name.
     expect(c?.id.startsWith("exp_")).toBe(true);
+  });
+});
+
+describe("emitElixirIR — compiler-generated default wrappers", () => {
+  const file = "lib/app/actions.ex";
+  const lower = {
+    ...fn("from_short", 1, file, "App.Actions"),
+    line: 4,
+    defaultTargetArity: 2,
+  };
+  const body = { ...fn("from_short", 2, file, "App.Actions"), line: 4 };
+  const unusedWrapper = {
+    ...fn("direct", 1, file, "App.Actions"),
+    line: 7,
+    defaultTargetArity: 2,
+  };
+  const directBody = { ...fn("direct", 2, file, "App.Actions"), line: 7 };
+  const trace: TraceResult = {
+    appMod: "App.Application",
+    deps: [],
+    compileOk: true,
+    testPartition: "complete",
+    modules: [mod("App.Application", "lib/app/application.ex"), mod("App.Actions", file)],
+    functions: [
+      fn("start", 2, "lib/app/application.ex", "App.Application"),
+      lower,
+      body,
+      unusedWrapper,
+      directBody,
+    ],
+    events: [
+      callEvent("App.Application", "start/2", "App.Actions", "from_short", 1),
+      callEvent("App.Application", "start/2", "App.Actions", "direct", 2),
+    ],
+  };
+  const graph = emitElixirIR({ traceResult: trace, configReferencedModules: new Set() });
+  const reachability = computePartitionedReachability(graph);
+  const claims = claimsFor(trace);
+
+  it("retains the declared body from a reachable lower-arity wrapper", () => {
+    const bodyId = symbolId(file, "App.Actions.from_short/2");
+    expect(reachability.production.reachableSymbols.has(bodyId)).toBe(true);
+    expect(
+      graph
+        .edges()
+        .find(
+          (edge) =>
+            edge.kind === "references" &&
+            edge.from === symbolId(file, "App.Actions.from_short/1") &&
+            edge.to === bodyId,
+        ),
+    ).toMatchObject({
+      kind: "references",
+      referenceKind: "static",
+      name: "App.Actions.from_short/2",
+      site: { file, span: { startLine: 4, endLine: 4 } },
+    });
+    const why = whyAlive({ graph, reachability, claims, query: "App.Actions.from_short/2" });
+    expect(why).toMatchObject({ outcome: "alive", entrypointKind: "production" });
+    if (why.outcome !== "alive") throw new Error("expected default body liveness");
+    expect(why.paths[0]?.hops.map((hop) => hop.symbol)).toEqual([
+      "App.Application.start/2",
+      "App.Actions.from_short/1",
+      "App.Actions.from_short/2",
+    ]);
+    expect(computeDeletionPlan({ graph, reachability, subject: why.subject })).toMatchObject({
+      supported: false,
+      unsupportedReason:
+        "non-re-export inbound reference remains at lib/app/actions.ex:4; coordinated caller edits or deletion cohort are not modeled",
+      stages: [],
+    });
+  });
+
+  it("does not retain a lower-arity wrapper from a direct declared-body call", () => {
+    const wrapperId = symbolId(file, "App.Actions.direct/1");
+    expect(reachability.production.reachableSymbols.has(wrapperId)).toBe(false);
+    expect(claim(claims, "App.Actions.direct/1")).toMatchObject({
+      verdict: "unused",
+      confidence: "high",
+    });
+  });
+
+  it("scopes a test wrapper edge to the test partition", () => {
+    const testFile = "test/support/actions.ex";
+    const testTrace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod("App.TestActions", testFile, { partition: "test" })],
+      functions: [
+        {
+          ...fn("format", 0, testFile, "App.TestActions"),
+          partition: "test",
+          defaultTargetArity: 1,
+        },
+        { ...fn("format", 1, testFile, "App.TestActions"), partition: "test" },
+      ],
+      events: [],
+    };
+    expect(
+      emitElixirIR({ traceResult: testTrace, configReferencedModules: new Set() })
+        .edges()
+        .find(
+          (edge) =>
+            edge.kind === "references" &&
+            edge.from === symbolId(testFile, "App.TestActions.format/0") &&
+            edge.to === symbolId(testFile, "App.TestActions.format/1"),
+        )?.partitions,
+    ).toEqual(["test"]);
   });
 });
 

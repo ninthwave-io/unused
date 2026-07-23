@@ -69,6 +69,7 @@ describe("extractElixirScriptFacts", () => {
           arity: 2,
           file: "lib/target.ex",
           line: 4,
+          defaultTargetArity: null,
           partition: "prod",
         },
         {
@@ -78,6 +79,7 @@ describe("extractElixirScriptFacts", () => {
           arity: 1,
           file: "lib/target.ex",
           line: 5,
+          defaultTargetArity: null,
           partition: "prod",
         },
       ],
@@ -146,6 +148,7 @@ describe("extractElixirScriptFacts", () => {
         arity,
         file: "lib/target.ex",
         line: 10 + arity,
+        defaultTargetArity: null,
         partition: "prod" as const,
       })),
       ...[1, 2, 3].map((arity) => ({
@@ -155,6 +158,7 @@ describe("extractElixirScriptFacts", () => {
         arity,
         file: "lib/target.ex",
         line: 30 + arity,
+        defaultTargetArity: null,
         partition: "prod" as const,
       })),
       ...[1, 2, 3].map((arity) => ({
@@ -164,6 +168,7 @@ describe("extractElixirScriptFacts", () => {
         arity,
         file: "lib/target.ex",
         line: 20 + arity,
+        defaultTargetArity: null,
         partition: "prod" as const,
       })),
     ];
@@ -216,6 +221,7 @@ describe("extractElixirScriptFacts", () => {
         arity,
         file: "lib/target.ex",
         line: 40 + arity,
+        defaultTargetArity: null,
         partition: "prod" as const,
       })),
       ...[1, 2].map((arity) => ({
@@ -225,6 +231,7 @@ describe("extractElixirScriptFacts", () => {
         arity,
         file: "lib/target.ex",
         line: 50 + arity,
+        defaultTargetArity: null,
         partition: "prod" as const,
       })),
     ];
@@ -642,6 +649,7 @@ function trace(deps: readonly string[] = []): TraceResult {
         arity: 0,
         file: "lib/target.ex",
         line: 2,
+        defaultTargetArity: null,
         partition: "prod",
       },
       {
@@ -651,6 +659,7 @@ function trace(deps: readonly string[] = []): TraceResult {
         arity: 1,
         file: "lib/target.ex",
         line: 3,
+        defaultTargetArity: null,
         partition: "prod",
       },
     ],

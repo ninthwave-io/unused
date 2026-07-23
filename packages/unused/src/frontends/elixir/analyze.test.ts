@@ -32,6 +32,9 @@ const testSupportFixture = fileURLToPath(
 const onLoadFixture = fileURLToPath(
   new URL("../../../../../fixtures/elixir/on-load-beam-reflection", import.meta.url),
 );
+const defaultArgumentFixture = fileURLToPath(
+  new URL("../../../../../fixtures/elixir/default-argument-reachability", import.meta.url),
+);
 const scriptFixture = fileURLToPath(
   new URL("../../../../../fixtures/elixir/standalone-script-references", import.meta.url),
 );
@@ -360,6 +363,107 @@ describe("Elixir analysis policy", () => {
         encoding: "utf8",
       });
       expect(cohort.status, cohort.stderr + cohort.stdout).toBe(0);
+    },
+    60_000,
+  );
+
+  it.skipIf(!MIX_AVAILABLE)(
+    "retains declared default-argument bodies with exact why and deletion evidence",
+    async () => {
+      const root = await copyFixtureFrom(defaultArgumentFixture);
+      const trace = runTracer(root);
+      expect(
+        trace.functions
+          .filter((fn) => fn.mod === "NeutralDefaults.Actions")
+          .map((fn) => [fn.name, fn.arity, fn.defaultTargetArity]),
+      ).toEqual([
+        ["from_short", 1, 2],
+        ["from_short", 2, null],
+        ["direct", 1, 2],
+        ["direct", 2, null],
+        ["ranged", 1, 3],
+        ["ranged", 2, 3],
+        ["ranged", 3, null],
+      ]);
+
+      const analysis = await analyzeElixirProjectWithGraph(root, { now: new Date(0) });
+      expect(
+        analysis.result.claims.find(
+          (claim) => claim.subject.kind === "export" && claim.subject.name.endsWith("direct/1"),
+        ),
+      ).toMatchObject({ verdict: "unused", confidence: "high" });
+      expect(
+        analysis.result.claims.find(
+          (claim) => claim.subject.kind === "export" && claim.subject.name.endsWith("ranged/2"),
+        ),
+      ).toMatchObject({ verdict: "unused", confidence: "high" });
+
+      for (const target of [
+        "NeutralDefaults.Actions.from_short/2",
+        "NeutralDefaults.Actions.ranged/3",
+      ]) {
+        const why = whyAlive({
+          graph: analysis.graph,
+          reachability: analysis.reachability,
+          claims: analysis.result.claims,
+          query: target,
+        });
+        expect(why).toMatchObject({ outcome: "alive", entrypointKind: "production" });
+        if (why.outcome !== "alive") throw new Error("expected default body liveness");
+        expect(why.paths[0]?.hops.at(-2)?.symbol).toMatch(/\/(?:1)$/u);
+        expect(why.paths[0]?.hops.at(-1)?.symbol).toBe(target);
+        expect(
+          computeDeletionPlan({
+            graph: analysis.graph,
+            reachability: analysis.reachability,
+            subject: why.subject,
+          }),
+        ).toMatchObject({ supported: false, stages: [] });
+      }
+
+      const workerWhy = whyAlive({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        claims: analysis.result.claims,
+        query: "NeutralDefaults.Worker.perform/2",
+      });
+      expect(workerWhy).toMatchObject({ outcome: "alive", entrypointKind: "production" });
+      if (workerWhy.outcome !== "alive") throw new Error("expected downstream worker liveness");
+      expect(workerWhy.paths[0]?.hops.map((hop) => hop.symbol)).toEqual([
+        "NeutralDefaults.Application.start/2",
+        "NeutralDefaults.Actions.from_short/1",
+        "NeutralDefaults.Actions.from_short/2",
+        "NeutralDefaults.Worker.perform/2",
+      ]);
+      expect(
+        computeDeletionPlan({
+          graph: analysis.graph,
+          reachability: analysis.reachability,
+          subject: workerWhy.subject,
+        }),
+      ).toMatchObject({ supported: false, stages: [] });
+      const workerFileWhy = whyAlive({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        claims: analysis.result.claims,
+        query: "lib/neutral_defaults/worker.ex",
+      });
+      expect(workerFileWhy).toMatchObject({ outcome: "alive", entrypointKind: "production" });
+      if (workerFileWhy.outcome !== "alive") throw new Error("expected downstream file liveness");
+      expect(
+        computeDeletionPlan({
+          graph: analysis.graph,
+          reachability: analysis.reachability,
+          subject: workerFileWhy.subject,
+        }),
+      ).toMatchObject({ supported: false, stages: [] });
+      expect(
+        analysis.result.claims.find(
+          (claim) =>
+            claim.subject.kind === "export" &&
+            claim.subject.name === "NeutralDefaults.Worker.unused_sibling/1",
+        ),
+      ).toMatchObject({ verdict: "unused", confidence: "high" });
     },
     60_000,
   );

@@ -75,6 +75,7 @@ import {
   decodeTraceRecord,
   hasConflictingDefinitions,
   hasExactModuleOwnership,
+  hasValidDefaultArgumentTargets,
   hasValidPhase,
 } from "./trace-protocol.js";
 import { TRACER_SCRIPT } from "./tracer-script.js";
@@ -505,7 +506,8 @@ function parseProductionTraceLines(lines: Iterable<string>): TraceResult {
     appModCount > 1 ||
     compileErrorCount > 1 ||
     structuralSummaryCount !== 1 ||
-    hasConflictingDefinitions(modules, functions)
+    hasConflictingDefinitions(modules, functions) ||
+    !hasValidDefaultArgumentTargets(functions)
   ) {
     throw new ElixirCompileError(
       "cannot analyze Elixir project: the production tracer emitted an incomplete or malformed phase protocol.",
@@ -639,7 +641,8 @@ function parseTestTraceLines(lines: Iterable<string>): TestTraceResult {
   if (
     malformed ||
     !hasValidPhase(records, "test", "complete") ||
-    hasConflictingDefinitions(modules, functions)
+    hasConflictingDefinitions(modules, functions) ||
+    !hasValidDefaultArgumentTargets(functions)
   ) {
     return incompleteTestTrace(sawCompileError ? "compile" : "output");
   }

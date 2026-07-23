@@ -33,7 +33,16 @@ function mod(name: string, file: string): ModuleRecord {
 }
 
 function fn(owner: string, name: string, arity: number, file: string): FunctionRecord {
-  return { k: "function", mod: owner, name, arity, file, line: 2, partition: "prod" };
+  return {
+    k: "function",
+    mod: owner,
+    name,
+    arity,
+    file,
+    line: 2,
+    defaultTargetArity: null,
+    partition: "prod",
+  };
 }
 
 function event(

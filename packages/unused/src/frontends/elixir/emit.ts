@@ -190,6 +190,34 @@ export function emitElixirIR(input: EmitElixirInput): IRGraph {
   };
 
   const seenEdge = new Set<string>();
+
+  // EEP-48/debug-info reflection proves that each lower-arity export is a
+  // compiler-generated wrapper around the declared maximum-arity body. The
+  // direction is intentionally asymmetric: reaching a wrapper reaches the
+  // body it executes, while a direct maximum-arity call does not make an
+  // otherwise-unused wrapper live.
+  for (const wrapper of traceResult.functions) {
+    if (wrapper.defaultTargetArity === null) continue;
+    const target = fnByKey.get(`${wrapper.mod}.${wrapper.name}/${wrapper.defaultTargetArity}`);
+    if (target === undefined) continue; // rejected by trace validation; defensive only
+    const fromName = `${wrapper.mod}.${wrapper.name}/${wrapper.arity}`;
+    const toName = `${target.mod}.${target.name}/${target.arity}`;
+    const fromId = symbolId(wrapper.file, fromName);
+    const toId = symbolId(target.file, toName);
+    const dedup = `${fromId}\0${toId}`;
+    if (seenEdge.has(dedup)) continue;
+    seenEdge.add(dedup);
+    graph.addEdge({
+      kind: "references",
+      referenceKind: "static",
+      from: fromId,
+      to: toId,
+      site: siteAt(wrapper.file, wrapper.line),
+      name: toName,
+      ...(wrapper.partition === "test" ? { partitions: ["test"] as const } : {}),
+    });
+  }
+
   for (const ev of traceResult.events) {
     const target = resolveTarget(ev);
     if (target === null) continue;

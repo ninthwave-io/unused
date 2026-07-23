@@ -136,6 +136,11 @@ export interface FunctionRecord {
   readonly arity: number;
   readonly file: string;
   readonly line: number;
+  /**
+   * Declared maximum arity implemented by this compiler-generated default
+   * wrapper, or `null` when this export is an ordinary function/body.
+   */
+  readonly defaultTargetArity: number | null;
   readonly partition: Partition;
 }
 

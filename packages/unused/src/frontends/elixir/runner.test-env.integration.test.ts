@@ -401,7 +401,7 @@ end
     write(
       root,
       "lib/neutral_docs_disabled.ex",
-      "defmodule NeutralDocsDisabled do\n  def value, do: :ok\nend\n",
+      "defmodule NeutralDocsDisabled do\n  def value(argument \\\\ :neutral), do: argument\nend\n",
     );
 
     const trace = runTracer(root);
@@ -410,7 +410,22 @@ end
       expect.objectContaining({ mod: "NeutralDocsDisabled", line: 0 }),
     );
     expect(trace.functions).toContainEqual(
-      expect.objectContaining({ mod: "NeutralDocsDisabled", name: "value", arity: 0, line: 0 }),
+      expect.objectContaining({
+        mod: "NeutralDocsDisabled",
+        name: "value",
+        arity: 0,
+        line: 0,
+        defaultTargetArity: 1,
+      }),
+    );
+    expect(trace.functions).toContainEqual(
+      expect.objectContaining({
+        mod: "NeutralDocsDisabled",
+        name: "value",
+        arity: 1,
+        line: 0,
+        defaultTargetArity: null,
+      }),
     );
     expect(existsSync(join(root, "_build"))).toBe(false);
   });

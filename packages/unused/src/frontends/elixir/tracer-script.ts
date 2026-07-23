@@ -128,8 +128,8 @@ defmodule Unused.Reflect do
                     String.starts_with?(rel, "/"),
            {:ok, {behaviours, protocol, impl}} <- attributes(attrs),
            true <- is_atom(mod),
-           true <- valid_exports?(exports) do
-        {modline, flines} = docs(path)
+           true <- valid_exports?(exports),
+           {:ok, {modline, flines, default_targets}} <- docs(path, exports) do
         emit.(%{"k" => "module", "mod" => inspect(mod), "file" => rel, "line" => modline,
                 "behaviours" => behaviours,
                 "protocol" => protocol,
@@ -142,6 +142,7 @@ defmodule Unused.Reflect do
             emit.(%{"k" => "function", "mod" => inspect(mod), "name" => to_string(name),
                     "arity" => arity, "file" => rel,
                     "line" => Map.get(flines, "#{name}/#{arity}", modline),
+                    "default_target_arity" => Map.get(default_targets, {name, arity}, :null),
                     "partition" => partition})
           end
         end)
@@ -181,29 +182,123 @@ defmodule Unused.Reflect do
        when is_atom(protocol) and is_atom(target), do: {:ok, true}
   defp impl_attribute(_), do: {:error, :impl_attribute}
 
-  defp docs(path) do
+  defp docs(path, exports) do
     case Code.fetch_docs(path) do
       {:docs_v1, anno, _, _, _, module_metadata, docs} when is_list(docs) ->
-        flines =
-          Enum.reduce(docs, %{}, fn
-            {{:function, name, arity}, function_anno, _, _, metadata}, acc
-                when is_atom(name) and is_integer(arity) and is_map(metadata) ->
-              line = canonical_line(function_anno, metadata)
-              defaults = Map.get(metadata, :defaults, 0)
-              if is_integer(defaults) and defaults >= 0 and defaults <= arity do
-                Enum.reduce((arity - defaults)..arity, acc, fn actual_arity, lines ->
-                  Map.put(lines, "#{name}/#{actual_arity}", line)
-                end)
-              else
-                acc
-              end
-            _, acc ->
-              acc
-          end)
-        {canonical_line(anno, module_metadata), flines}
+        with {:ok, {flines, default_targets}} <- docs_functions(docs),
+             true <- valid_default_targets?(exports, default_targets) do
+          {:ok, {canonical_line(anno, module_metadata), flines, default_targets}}
+        else
+          _ -> {:error, :reflection}
+        end
+      {:error, _reason} ->
+        with {:ok, default_targets} <- debug_default_targets(path, exports) do
+          {:ok, {0, %{}, default_targets}}
+        end
       _ ->
-        {0, %{}}
+        {:error, :reflection}
     end
+  end
+
+  defp docs_functions(docs) do
+    Enum.reduce_while(docs, {:ok, {%{}, %{}, MapSet.new()}}, fn
+      {{:function, name, arity}, function_anno, _, _, metadata},
+      {:ok, {flines, targets, seen}}
+          when is_atom(name) and is_integer(arity) and arity >= 0 and is_map(metadata) ->
+        identity = {name, arity}
+        if MapSet.member?(seen, identity) do
+          {:halt, {:error, :reflection}}
+        else
+          defaults = Map.get(metadata, :defaults, 0)
+          if is_integer(defaults) and defaults >= 0 and defaults <= arity do
+            line = canonical_line(function_anno, metadata)
+            flines =
+              Enum.reduce((arity - defaults)..arity, flines, fn actual_arity, lines ->
+                Map.put(lines, "#{name}/#{actual_arity}", line)
+              end)
+            targets = add_default_targets(targets, name, arity, defaults)
+            {:cont, {:ok, {flines, targets, MapSet.put(seen, identity)}}}
+          else
+            {:halt, {:error, :reflection}}
+          end
+        end
+      {{kind, name, arity}, _, _, _, metadata}, acc
+          when kind in [:macro, :callback, :macrocallback, :type] and
+               is_atom(name) and is_integer(arity) and is_map(metadata) ->
+        {:cont, acc}
+      _, _acc ->
+        {:halt, {:error, :reflection}}
+    end)
+    |> case do
+      {:ok, {flines, targets, _seen}} -> {:ok, {flines, targets}}
+      error -> error
+    end
+  end
+
+  defp debug_default_targets(path, exports) do
+    case :beam_lib.chunks(String.to_charlist(path), [:debug_info]) do
+      {:ok, {_mod, [debug_info: {:debug_info_v1, :elixir_erl,
+                                {:elixir_v1, %{definitions: definitions}, _}}]}}
+          when is_list(definitions) ->
+        with {:ok, targets} <- debug_definitions(definitions),
+             true <- valid_default_targets?(exports, targets) do
+          {:ok, targets}
+        else
+          _ -> {:error, :reflection}
+        end
+      _ ->
+        if unambiguous_exports?(exports), do: {:ok, %{}}, else: {:error, :reflection}
+    end
+  end
+
+  defp debug_definitions(definitions) do
+    Enum.reduce_while(definitions, {:ok, %{}}, fn
+      {{name, arity}, :def, metadata, _clauses}, {:ok, targets}
+          when is_atom(name) and is_integer(arity) and arity >= 0 and is_list(metadata) ->
+        if Keyword.keyword?(metadata) do
+          case Keyword.fetch(metadata, :defaults) do
+            :error ->
+              {:cont, {:ok, targets}}
+            {:ok, defaults} when is_integer(defaults) and defaults >= 0 and defaults <= arity ->
+              {:cont, {:ok, add_default_targets(targets, name, arity, defaults)}}
+            _ ->
+              {:halt, {:error, :reflection}}
+          end
+        else
+          {:halt, {:error, :reflection}}
+        end
+      {{name, arity}, kind, metadata, _clauses}, {:ok, targets}
+          when kind in [:defp, :defmacro, :defmacrop] and is_atom(name) and
+               is_integer(arity) and is_list(metadata) ->
+        {:cont, {:ok, targets}}
+      _, _acc ->
+        {:halt, {:error, :reflection}}
+    end)
+  end
+
+  defp add_default_targets(targets, _name, _arity, 0), do: targets
+  defp add_default_targets(targets, name, arity, defaults) do
+    Enum.reduce((arity - defaults)..(arity - 1), targets, fn wrapper_arity, acc ->
+      Map.put(acc, {name, wrapper_arity}, arity)
+    end)
+  end
+
+  defp valid_default_targets?(exports, targets) do
+    export_set = MapSet.new(exports)
+    Enum.all?(targets, fn {{name, wrapper_arity}, target_arity} ->
+      wrapper_arity < target_arity and
+        MapSet.member?(export_set, {name, wrapper_arity}) and
+        MapSet.member?(export_set, {name, target_arity})
+    end)
+  end
+
+  defp unambiguous_exports?(exports) do
+    exports
+    |> Enum.reject(fn {name, arity} ->
+      generated?(name, arity) or String.starts_with?(to_string(name), "MACRO-")
+    end)
+    |> Enum.group_by(fn {name, _arity} -> name end)
+    |> Enum.all?(fn {_name, arities} -> length(arities) == 1 end)
   end
 
   defp canonical_line(fallback, metadata) when is_map(metadata) do
