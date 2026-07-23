@@ -16,6 +16,7 @@ import { moneyElixirConventionPlugin } from "./money-conventions.js";
 import {
   createRebaseContext,
   prefixRepositoryPath,
+  prepareOwnedGraphRebase,
   rebaseClaimInputs,
   rebaseDiagnostic,
   rebaseGraph,
@@ -31,6 +32,7 @@ import type {
   FrontendGraphFragment,
   FrontendLocalGraph,
   LanguageFrontendPlugin,
+  ProjectBoundary,
   RepositoryAnalysisContext,
 } from "./types.js";
 import { typescriptConfigCarriersConventionPlugin } from "./typescript-conventions.js";
@@ -53,7 +55,43 @@ export function createFrontendFragment(
   boundary: Parameters<LanguageFrontendPlugin["analyze"]>[1],
   analysis: FrontendLocalGraph,
 ): FrontendGraphFragment {
+  return buildFrontendFragment(pluginId, language, boundary, analysis, false);
+}
+
+/**
+ * Transfer an internal analyzer result into repository coordinates.
+ *
+ * The caller relinquishes `analysis` and every object reachable from it. The
+ * returned fragment owns the same graph records; reusing the local result after
+ * this call is unsupported. Direct analyzer APIs use `createFrontendFragment`
+ * and retain copy-on-rebase semantics.
+ */
+export function consumeFrontendLocalGraph(
+  pluginId: string,
+  language: string,
+  boundary: Parameters<LanguageFrontendPlugin["analyze"]>[1],
+  analysis: FrontendLocalGraph,
+): FrontendGraphFragment {
+  return buildFrontendFragment(pluginId, language, boundary, analysis, true);
+}
+
+function buildFrontendFragment(
+  pluginId: string,
+  language: string,
+  boundary: Parameters<LanguageFrontendPlugin["analyze"]>[1],
+  analysis: FrontendLocalGraph,
+  consume: boolean,
+): FrontendGraphFragment {
   const rebase = createRebaseContext(boundary.rootRelDir);
+  const ownedPlan = consume
+    ? prepareOwnedGraphRebase(analysis.graph, boundary.rootRelDir, rebase)
+    : undefined;
+  if (ownedPlan !== undefined) {
+    for (const contribution of analysis.deferredContributions?.values() ?? []) {
+      ownedPlan.prepareContribution(contribution);
+    }
+    for (const diagnostic of analysis.diagnostics) ownedPlan.prepareDiagnostic(diagnostic);
+  }
   const claimAnnotations = new Map(
     [...analysis.claimAnnotations].map(([key, annotation]) => {
       const [kind, file, name] = key.split("\0");
@@ -70,29 +108,37 @@ export function createFrontendFragment(
       ] as const;
     }),
   );
+  const claimInputs = rebaseClaimInputs(analysis.claimInputs, boundary.rootRelDir, rebase);
+  const deferredContributions =
+    analysis.deferredContributions === undefined
+      ? undefined
+      : new Map(
+          [...analysis.deferredContributions].map(([id, contribution]) => [
+            id,
+            rebaseGraphContribution(contribution, analysis.graph, boundary.rootRelDir, rebase),
+          ]),
+        );
+  const diagnostics = analysis.diagnostics.map((diagnostic) => ({
+    ...rebaseDiagnostic(diagnostic, boundary.rootRelDir, rebase),
+    boundaryId: boundary.id,
+  }));
+  // This is intentionally the final potentially mutating operation: every
+  // path/site/id and all metadata surfaces were validated and prepared above.
+  const graph =
+    ownedPlan === undefined
+      ? rebaseGraph(analysis.graph, boundary.rootRelDir, rebase)
+      : ownedPlan.commit();
   return {
     pluginId,
     language,
     boundary,
-    graph: rebaseGraph(analysis.graph, boundary.rootRelDir, rebase),
+    graph,
     provenance: analysis.provenance,
     metadata: analysis.metadata,
-    claimInputs: rebaseClaimInputs(analysis.claimInputs, boundary.rootRelDir, rebase),
+    claimInputs,
     claimAnnotations,
-    ...(analysis.deferredContributions === undefined
-      ? {}
-      : {
-          deferredContributions: new Map(
-            [...analysis.deferredContributions].map(([id, contribution]) => [
-              id,
-              rebaseGraphContribution(contribution, analysis.graph, boundary.rootRelDir, rebase),
-            ]),
-          ),
-        }),
-    diagnostics: analysis.diagnostics.map((diagnostic) => ({
-      ...rebaseDiagnostic(diagnostic, boundary.rootRelDir, rebase),
-      boundaryId: boundary.id,
-    })),
+    ...(deferredContributions === undefined ? {} : { deferredContributions }),
+    diagnostics,
   };
 }
 
@@ -123,7 +169,7 @@ export const typescriptLanguagePlugin: LanguageFrontendPlugin = {
       deferConfigSymbolEntrypoints: true,
       deferredConventions: ["github-actions-run", "taskfile-command", "native-config-script"],
     });
-    return createFrontendFragment(this.id, this.language, boundary, analysis);
+    return consumeMeasuredFrontendLocalGraph(this.id, this.language, boundary, analysis, context);
   },
 };
 
@@ -156,7 +202,7 @@ export const elixirLanguagePlugin: LanguageFrontendPlugin = {
       atomRoleSummaryProviders: context.elixirAtomRoleSummaryProviders ?? [],
       elixirSourceFiles: filesWithinBoundary(boundary.rootDir, context.manifests.elixirSourceFiles),
     });
-    return createFrontendFragment(this.id, this.language, boundary, analysis);
+    return consumeMeasuredFrontendLocalGraph(this.id, this.language, boundary, analysis, context);
   },
 };
 
@@ -187,7 +233,7 @@ export const rustLanguagePlugin: LanguageFrontendPlugin = {
       deferConfigSymbolEntrypoints: true,
       sourceFiles: context.manifests.rustSourceFiles,
     });
-    return createFrontendFragment(this.id, this.language, boundary, analysis);
+    return consumeMeasuredFrontendLocalGraph(this.id, this.language, boundary, analysis, context);
   },
 };
 
@@ -215,4 +261,17 @@ function filesWithinBoundary(rootDir: string, files: readonly string[]): string[
     const rel = relative(rootDir, file).split(sep).join("/");
     return rel !== ".." && !rel.startsWith("../") && !rel.startsWith("/");
   });
+}
+
+function consumeMeasuredFrontendLocalGraph(
+  pluginId: string,
+  language: string,
+  boundary: ProjectBoundary,
+  analysis: FrontendLocalGraph,
+  context: RepositoryAnalysisContext,
+): FrontendGraphFragment {
+  const started = context.performance?.now();
+  const fragment = consumeFrontendLocalGraph(pluginId, language, boundary, analysis);
+  if (started !== undefined) context.performance?.finish("graph-construction", started);
+  return fragment;
 }

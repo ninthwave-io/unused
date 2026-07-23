@@ -67,7 +67,15 @@ The measured Rust compiler/tooling boundary is
   paths are canonicalized across nodes, edges, hazards, claim inputs,
   contributions, and diagnostics; absolute or boundary-escaping paths are an
   internal refusal. Shared provenance sites retain object identity after
-  rebasing.
+  rebasing. Nested language adapters explicitly consume their private local
+  graph: every path and rewritten identity is validated before mutation, then
+  nodes, edges, hazards, and sites transfer in place. The old-key node index
+  resolves edge endpoints to their already-rebased node objects and is rebuilt
+  only after edges change, avoiding an old-to-new identity table. A bounded set
+  validates destination entrypoint ids because their target-bearing wire
+  grammar is delimiter-based; file/symbol injectivity follows from exact local
+  identity plus the canonical-path collision proof. Copy rebasing remains
+  available for caller-owned graphs and never mutates its input.
 - Opt-in `--performance` events include current RSS, heap, external/array-buffer
   memory, and current-process maximum RSS at every phase boundary. Counters are
   cumulative across fragments. Diagnostics remain stderr-only, so canonical

@@ -153,11 +153,106 @@ workspace package attribution to nested file/test claims where the former
 adapter omitted it. That package field is an intentional additive correctness
 fix; direct and nested workspace analysis now agree.
 
-It is not the final memory acceptance. At 3,000 files, nested-mixed peak RSS is
-496.8 MiB versus 399.6 MiB direct (24.3% overhead), above the provisional 15%
-target. The remaining P1 is ownership-transfer/in-place repository rebasing so
-the boundary-local graph and repository-relative clone do not coexist at peak.
-Private consuming-project reruns remain blocked until that slice is measured.
+### P1 ownership transfer
+
+The first correction still copied a nested boundary's complete local graph into
+repository coordinates. At 3,000 files that meant approximately 90,000 node
+records, 251,000 edge records, their provenance sites, and both graph indexes
+could coexist until a major collection. Deferred convention rebasing also
+walked the complete owner graph even when a contribution referenced only a few
+nodes.
+
+Nested language adapters now explicitly consume their internal local result.
+Preparation validates every canonical path, rewritten identity, provenance
+site, mutability requirement, and path-normalization collision before the first
+mutation. Because a fixed repository prefix is injective, it is sufficient to
+prove the unique raw-to-canonical source-path mapping is injective; dependency
+and endpoint identities do not change. Target-bearing entrypoint ids use a
+delimiter grammar where prefixing can otherwise create an ambiguity, so the
+much smaller entrypoint set receives an exact destination-id collision check.
+During transfer, node records receive their repository identities while the
+graph still has its old-key index. Edges and hazards resolve an old endpoint to
+that already-mutated node object, then the graph rebuilds its new index. There
+is no whole-graph old-to-new id map and no graph-wide old-to-new
+provenance-site map.
+Deferred contributions resolve only the owner ids they actually reference.
+
+The copy API remains immutable. The ownership API is internal, single-use, and
+tested for graph/record/site identity, cross-role aliases, canonical collisions,
+escaping paths, non-mutable records, nested effect accessors, frozen readonly
+graph views, diagnostics, annotations, and deferred contributions. Every
+failure case is detected before mutation. The mutation capability is not part
+of the package export or public `IRGraph` declaration surface.
+
+Fresh final-diff median-of-three results on the same machine and identical
+generated artifacts follow. Direct and nested runs alternated; the
+many-boundary control ran afterward. Every run used a fresh process. Wall is
+seconds and RSS is MiB. The complete P0 size curve remains above; only the
+freshly preserved 3,000-file P1 acceptance set is reported here.
+
+| Topology | Files | P0 wall | P1 wall | P1 CPU | P0 RSS | P1 RSS |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| direct | 3,000 | 1.97 | 1.91 | 2.77 | 399.6 | 401.4 |
+| nested-mixed | 3,000 | 2.31 | 2.69 | 3.66 | 496.8 | 449.6 |
+| many-boundary | 3,000 | 1.87 | 2.29 | 3.31 | 367.4 | 385.8 |
+
+Three candidate-diff acceptance attempts were retained rather than discarded
+while the validation index was corrected. Artifact
+`unused-p1-final-evidence-20260723.0ClJYi`
+(code-diff SHA-256 `335f2321…`) measured 22.3518% nested overhead with one
+WeakMap covering every node, edge, hazard, and site. Artifact
+`unused-p1-final-evidence-20260723.CyUgkQ`
+(`e623be38…`) removed the site-role entries but retained node/edge/hazard
+WeakSets and measured 19.0570%. Artifact
+`unused-p1-final-evidence-20260723.iam9MA` (`a73e5d57…`) recognized the closed
+edge shape intrinsically, removed the approximately 251,000-entry edge set, and
+measured 15.0734%. The accepted
+`unused-p1-final-evidence-20260723.X3ECE5` artifact
+(`7dcf5f5e…`) also recognized the closed node shape intrinsically and removed
+the approximately 90,500-entry node set. A small hazard identity set remains
+because hazards have no exclusive structural discriminator. Each step retained
+the same alias-refusal tests and fixture density.
+
+The alternating sample's exact median RSS values are 401.4375 MiB direct and
+449.609375 MiB nested-mixed. Direct runs ranged from 398.750 to 402.906 MiB;
+nested runs ranged from 449.484 to 451.344 MiB. Nested RSS overhead is therefore
+11.999844%, below the 15% provisional acceptance. The approximately 41% wall
+overhead is real and is not hidden by the memory acceptance: the nested path
+must validate and rewrite every repository-relative identity and provenance
+site and rebuild indexes. A median instrumented run attributed 584 ms to
+ownership transfer and 28 ms to fragment merge. Both are linear in real nodes
+plus edges. Direct wall and RSS remain within measurement noise of P0. The
+many-boundary control's 5% RSS increase is bounded and does not recreate the
+former boundary multiplier.
+
+All three runs in each group have identical counters. Nested-mixed records
+3,001 files, 90,505 symbols, 251,450 edges, 21,172 claims, six workspaces, 7,612
+resolution attempts, 263 graph walks, one fixed-point iteration, and zero
+deletion-plan simulations. Direct differs only by the one synthetic Rust file,
+symbol, two edges, and workspace. The many-boundary control records 3,000 files,
+89,592 symbols, 244,336 edges, 5,176 claims, 32 workspaces, 2,776 resolution
+attempts, 227 graph walks, 32 fixed-point iterations, and zero deletion-plan
+simulations. No fixture density changed.
+
+This completes the P1 memory acceptance. A private consuming-project rerun can
+proceed separately after this public slice passes all quality gates and review.
+
+Final P1 verification used the pinned Elixir 1.20.2 / OTP 28.5 toolchain. One
+full-suite process completed 1,532/1,532 tests across 98 files with 385/385
+suites and no failed or pending tests; the final focused
+dispatch/rebase/builtins/package set passed 40 tests with three existing
+environment skips. Typecheck, the
+established lint baseline (two warnings and 57 informational findings), the
+946-module / 2,196-dependency boundary check, generated-assumption sync, build,
+diff hygiene, and privacy scan passed. Corpus gates remained at precision 1
+with zero false positives, confidence regressions, or unlabelled claims:
+TypeScript 52 cases / 237 subjects (recall 0.8265306), Elixir 35 / 121
+(0.9777778), Rust 4 / 12 (0.8333333), and polyglot 1 / 4 (recall 1). Elixir
+reported no skipped corpus cases. The installed tarball contained
+367 entries (650,961 bytes packed; 2,926,206 unpacked) and emitted one-claim,
+diagnostic-free schema 1.4.0 JSON against a neutral fixture. Package exports and
+the emitted root declaration exclude the internal ownership-transfer
+capability.
 
 A separate pre-existing modular-config NO-GO also remains intentionally outside
 this atomic performance correction: nested local `entrySymbols`, repository
@@ -175,5 +270,7 @@ graph work with Θ(`B × (V + E)`) architecture, corrected to shared indexing an
 owned linear scans. After correction the profile is led by the native
 Rust-backed Oxc parser. Moving bounded claim/hazard selection across an FFI
 boundary would add graph serialization, duplicate contracts, and maintenance
-cost while targeting a small residual. The next performance work is eliminating
-the graph clone/ownership overlap, not translating the same algorithm to Rust.
+cost while targeting a small residual. Further work on the measured nested
+validation/index constant is warranted only if a later profile makes it
+release-dominant. The current NO-GO priority is the separate modular-config
+correctness slice, not translating the corrected graph algorithm to Rust.

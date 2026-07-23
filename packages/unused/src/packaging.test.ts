@@ -14,10 +14,18 @@ import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import type { AnalyzeWithGraph } from "./index.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = resolve(HERE, "..");
 const REPO_ROOT = resolve(PACKAGE_ROOT, "../..");
+type PublicGraphTransferKey = Extract<
+  keyof AnalyzeWithGraph["graph"],
+  "assertOwnedTransferSource" | "transferOwned"
+>;
+const PUBLIC_GRAPH_EXCLUDES_OWNED_TRANSFER: [PublicGraphTransferKey] extends [never]
+  ? true
+  : false = true;
 
 function read(path: string): string {
   return readFileSync(path, "utf8");
@@ -71,6 +79,11 @@ describe("packaging — package.json metadata (T9.1 acceptance)", () => {
     const exp = pkg.exports?.["."] as { types?: string; default?: string } | undefined;
     expect(exp?.default).toBe("./dist/index.js");
     expect(exp?.types).toBe("./dist/index.d.ts");
+  });
+
+  it("keeps the owned-transfer capability outside the package API", () => {
+    expect(Object.keys(pkg.exports ?? {}).sort()).toEqual([".", "./package.json"]);
+    expect(PUBLIC_GRAPH_EXCLUDES_OWNED_TRANSFER).toBe(true);
   });
 
   it("files allowlist excludes test output and includes schemas/README/LICENSE", () => {

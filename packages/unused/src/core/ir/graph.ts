@@ -126,3 +126,77 @@ export class IRGraph {
     return this.hazardList;
   }
 }
+
+interface OwnedGraphStorage {
+  readonly nodesById: Map<string, IRNode>;
+  readonly edgeList: IREdge[];
+  readonly hazardList: HazardAnnotation[];
+  readonly outIndex: Map<string, IREdge[]>;
+}
+
+interface OwnedGraphTransfer {
+  readonly node: (node: IRNode) => void;
+  readonly edge: (edge: IREdge) => void;
+  readonly hazard: (hazard: HazardAnnotation) => void;
+}
+
+function ownedStorage(graph: IRGraph): OwnedGraphStorage {
+  return graph as unknown as OwnedGraphStorage;
+}
+
+/** @internal Validate the source index before an exclusive owned-storage transfer. */
+export function assertOwnedGraphTransferSource(graph: IRGraph): void {
+  for (const [key, node] of ownedStorage(graph).nodesById) {
+    if (key !== node.id) {
+      throw new Error(
+        `owned graph transfer source index is stale: key ${key}, node identity ${node.id}`,
+      );
+    }
+  }
+}
+
+/**
+ * Rewrite exclusively owned graph storage without cloning it.
+ *
+ * @internal This module is not a package export. The caller must validate that
+ * all transforms are total and non-throwing before calling this function.
+ */
+export function transferOwnedGraph(graph: IRGraph, options: OwnedGraphTransfer): IRGraph {
+  const storage = ownedStorage(graph);
+  const nodes = [...storage.nodesById.values()];
+  for (const node of nodes) {
+    options.node(node);
+  }
+
+  // Keep the old-key node index until edges and hazards have been rewritten.
+  // Their callbacks can resolve an old endpoint id to the already-mutated
+  // node object and read its new id without allocating an old→new id table.
+  storage.outIndex.clear();
+  for (let index = 0; index < storage.edgeList.length; index += 1) {
+    const edge = storage.edgeList[index];
+    if (edge === undefined) continue;
+    options.edge(edge);
+    if (edge.site === undefined) {
+      throw new Error(
+        `IR edge ${edge.kind} ${edge.from} -> ${edge.to} has no site (span required)`,
+      );
+    }
+    const bucket = storage.outIndex.get(edge.from);
+    if (bucket === undefined) storage.outIndex.set(edge.from, [edge]);
+    else bucket.push(edge);
+  }
+
+  for (let index = 0; index < storage.hazardList.length; index += 1) {
+    const hazard = storage.hazardList[index];
+    if (hazard !== undefined) options.hazard(hazard);
+  }
+
+  storage.nodesById.clear();
+  for (const node of nodes) {
+    if (storage.nodesById.has(node.id)) {
+      throw new Error(`owned graph transfer produced duplicate node id: ${node.id}`);
+    }
+    storage.nodesById.set(node.id, node);
+  }
+  return graph;
+}
