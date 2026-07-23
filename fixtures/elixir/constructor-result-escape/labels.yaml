@@ -1,0 +1,21 @@
+case: constructor-result-escape
+description: >-
+  Publicly audited Money and Ecto constructors propagate computed atoms into
+  returned values, so an opaque downstream boundary retains deletion caution.
+subjects:
+  - kind: export
+    name: NeutralConstructorEscape.Flow.money_currency/1
+    file: lib/neutral_constructor_escape/flow.ex
+    expected: alive
+    because: The application calls the Money constructor result flow.
+  - kind: export
+    name: NeutralConstructorEscape.Flow.error_key/2
+    file: lib/neutral_constructor_escape/flow.ex
+    expected: alive
+    because: The application calls the Ecto changeset result flow.
+  - kind: export
+    name: NeutralConstructorEscape.Flow.genuinely_unused/0
+    file: lib/neutral_constructor_escape/flow.ex
+    expected: dead
+    minConfidence: medium
+    because: The propagated value reaches an opaque boundary, so deletion remains conservative.

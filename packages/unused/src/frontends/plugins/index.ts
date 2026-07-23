@@ -13,6 +13,11 @@ export {
 } from "./elixir-conventions.js";
 export { collectElixirAtomRoleSummaryProviders } from "./elixir-role-summary-providers.js";
 export {
+  MONEY_AUDITED_VERSIONS,
+  moneyElixirAtomRoleSummaryProvider,
+  moneyElixirConventionPlugin,
+} from "./money-conventions.js";
+export {
   prefixRepositoryPath,
   rebaseClaimInputs,
   rebaseGraph,

@@ -19,7 +19,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Claim } from "../../core/claims/types.js";
-import { analyzeElixirProject } from "../../frontends/elixir/index.js";
+import { analyzeProjectAuto } from "../../frontends/dispatch.js";
 import type { Analyzer } from "./analyzer.js";
 import { type LabelCase, loadLabelCases } from "./labels.js";
 
@@ -36,11 +36,12 @@ export function elixirScoreboardPath(): string {
   return path.join(elixirFixturesRoot(), "..", "scoreboard.elixir.json");
 }
 
-/** The real Elixir reference-graph analyzer over one fixture mini-project. */
+/** The production registry-driven Elixir analyzer over one fixture mini-project. */
 export const elixirAnalyzer: Analyzer = {
   name: ELIXIR_ANALYZER_NAME,
   async analyze(fixtureDir: string): Promise<Claim[]> {
-    const run = await analyzeElixirProject(fixtureDir, { now: FIXED_CLOCK });
+    // Exercise the same pre-graph semantic-provider inventory as the CLI.
+    const run = await analyzeProjectAuto(fixtureDir, { now: FIXED_CLOCK });
     return [...run.claims];
   },
 };

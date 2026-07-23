@@ -1,0 +1,21 @@
+case: constructor-result-data
+description: >-
+  Publicly audited Money and Ecto constructor results propagate computed atoms
+  into returned values before a separate proven data terminal consumes them.
+subjects:
+  - kind: export
+    name: NeutralConstructorData.Flow.money_currency/1
+    file: lib/neutral_constructor_data/flow.ex
+    expected: alive
+    because: The application calls the Money constructor result flow.
+  - kind: export
+    name: NeutralConstructorData.Flow.error_key/2
+    file: lib/neutral_constructor_data/flow.ex
+    expected: alive
+    because: The application calls the Ecto changeset result flow.
+  - kind: export
+    name: NeutralConstructorData.Flow.genuinely_unused/0
+    file: lib/neutral_constructor_data/flow.ex
+    expected: dead
+    minConfidence: high
+    because: The isolated export has no caller and remains independently claimable.

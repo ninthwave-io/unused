@@ -35,6 +35,7 @@ describe("built-in language plugins", () => {
       "convention:ecto",
       "convention:elixir-runtime",
       "convention:elixir-scripts",
+      "convention:money",
       "convention:rustler-elixir",
       "convention:rustler-rust",
       "convention:typescript-config-carriers",

@@ -1081,6 +1081,97 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
     ).toMatchObject({ supported: false, stages: [] });
   }, 60_000);
 
+  it("explains constructor results that reach proven data terminals and supports deletion", async () => {
+    const analysis = await analyzeProjectAutoWithGraph(fixture("constructor-result-data"), {
+      now: new Date(0),
+    });
+    expect(
+      analysis.graph
+        .hazards()
+        .filter((hazard) => hazard.hazardClass === "elixir-computed-atom-escape"),
+    ).toEqual([]);
+
+    for (const query of [
+      "NeutralConstructorData.Flow.money_currency/1",
+      "NeutralConstructorData.Flow.error_key/2",
+    ]) {
+      expect(
+        whyAlive({
+          graph: analysis.graph,
+          reachability: analysis.reachability,
+          claims: analysis.result.claims,
+          query,
+          hazardEvaluations: analysis.hazardEvaluations,
+        }),
+      ).toMatchObject({ outcome: "alive", entrypointKind: "production" });
+    }
+
+    const dead = whyAlive({
+      graph: analysis.graph,
+      reachability: analysis.reachability,
+      claims: analysis.result.claims,
+      query: "NeutralConstructorData.Flow.genuinely_unused/0",
+      hazardEvaluations: analysis.hazardEvaluations,
+    });
+    expect(dead).toMatchObject({ outcome: "dead", confidence: "high", hazards: [] });
+    if (dead.outcome !== "dead") throw new Error("expected isolated constructor data control");
+    expect(
+      computeDeletionPlan({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        subject: dead.subject,
+        hazardEvaluations: analysis.hazardEvaluations,
+      }),
+    ).toMatchObject({ supported: true });
+  }, 60_000);
+
+  it("explains propagated constructor-result escapes and refuses deletion", async () => {
+    const analysis = await analyzeProjectAutoWithGraph(fixture("constructor-result-escape"), {
+      now: new Date(0),
+    });
+    expect(
+      analysis.graph
+        .hazards()
+        .filter((hazard) => hazard.hazardClass === "elixir-computed-atom-escape")
+        .map((hazard) => hazard.site.file),
+    ).toEqual(["lib/neutral_constructor_escape/flow.ex", "lib/neutral_constructor_escape/flow.ex"]);
+
+    const dead = whyAlive({
+      graph: analysis.graph,
+      reachability: analysis.reachability,
+      claims: analysis.result.claims,
+      query: "NeutralConstructorEscape.Flow.genuinely_unused/0",
+      hazardEvaluations: analysis.hazardEvaluations,
+    });
+    expect(dead).toMatchObject({
+      outcome: "dead",
+      confidence: "medium",
+      hazards: [
+        expect.objectContaining({
+          hazardClass: "elixir-computed-atom-escape",
+          site: "lib/neutral_constructor_escape/flow.ex:3",
+        }),
+        expect.objectContaining({
+          hazardClass: "elixir-computed-atom-escape",
+          site: "lib/neutral_constructor_escape/flow.ex:8",
+        }),
+      ],
+    });
+    if (dead.outcome !== "dead") throw new Error("expected constructor escape control");
+    expect(
+      computeDeletionPlan({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        subject: dead.subject,
+        hazardEvaluations: analysis.hazardEvaluations,
+      }),
+    ).toMatchObject({
+      supported: false,
+      stages: [],
+      unsupportedReason: expect.stringContaining("computed atom escapes analysis"),
+    });
+  }, 60_000);
+
   it.each([
     "dynamic-use-helpers",
     "dynamic-local-dispatch",

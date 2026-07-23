@@ -4,6 +4,7 @@ import {
   type ElixirAtomRoleSummaryProvider,
   validateElixirAtomRoleSummaryProviders,
 } from "../elixir/atom-role-summaries.js";
+import { BUILT_IN_PLUGINS } from "./builtins.js";
 import { collectElixirAtomRoleSummaryProviders } from "./elixir-role-summary-providers.js";
 import type { ConventionPlugin } from "./types.js";
 
@@ -41,6 +42,16 @@ function convention(
 }
 
 describe("Elixir atom role summary provider inventory", () => {
+  it("validates the complete built-in provider inventory without canonical collisions", () => {
+    const conventions = BUILT_IN_PLUGINS.filter(
+      (plugin): plugin is ConventionPlugin => plugin.kind === "convention",
+    );
+    expect(collectElixirAtomRoleSummaryProviders(conventions)).toMatchObject([
+      { id: "convention:ecto", dependency: "ecto" },
+      { id: "convention:money", dependency: "money" },
+    ]);
+  });
+
   it("collects an immutable inventory in plugin-id order independent of registration order", () => {
     const later = providerWith("convention:zeta", "zeta_dep", "Neutral.Zeta");
     const actual = collectElixirAtomRoleSummaryProviders([

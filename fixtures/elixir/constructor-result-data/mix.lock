@@ -1,0 +1,4 @@
+%{
+  "ecto": {:hex, :ecto, "3.14.1", "neutral-checksum", [:mix], [], "hexpm", "neutral-outer-checksum"},
+  "money": {:hex, :money, "1.15.0", "neutral-checksum", [:mix], [], "hexpm", "neutral-outer-checksum"},
+}

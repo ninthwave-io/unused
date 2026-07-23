@@ -26,6 +26,21 @@ describe("ectoElixirConventionPlugin", () => {
     for (const summary of ectoElixirAtomRoleSummaryProvider.summaries) {
       expect(summary.origin).toEqual({ pluginId: "convention:ecto", dependency: "ecto" });
     }
+    expect(
+      ectoElixirAtomRoleSummaryProvider.summaries
+        .filter((summary) => summary.name === "add_error")
+        .map((summary) => [summary.arity, summary.arguments]),
+    ).toEqual([
+      [3, { 0: "propagate-to-result", 1: "propagate-to-result" }],
+      [
+        4,
+        {
+          0: "propagate-to-result",
+          1: "propagate-to-result",
+          3: "propagate-to-result",
+        },
+      ],
+    ]);
   });
 });
 

@@ -627,6 +627,80 @@ only by `use`, including a generated private carrier, remain conservatively
 unindexed and activate carrier-scoped escape/deletion refusal; no final
 generated-clause provenance is claimed.
 
+### Phase 1B2B.4 audited dependency constructor-result checkpoint
+
+Phase 1B2B.4 adds two sparse constructor-result families to the pre-graph
+semantic-provider inventory. They classify only computed-atom flow through
+successful calls; they do not claim that every argument accepted by the public
+API is an atom, and they do not turn storing a value into a `consume-data`
+terminal.
+
+The existing `convention:ecto` provider at exact Hex version `3.14.1` now owns
+`Ecto.Changeset.add_error/3` roles `{0: propagate, 1: propagate}` and
+`add_error/4` roles `{0: propagate, 1: propagate, 3: propagate}`. The successful
+clause retains the incoming changeset and prepends `{key, {message, keys}}` to
+the returned errors. The binary-guarded message position is deliberately
+omitted: a direct computed atom there cannot reach a successful result.
+Non-changesets and non-binary messages raise `FunctionClauseError`. The path
+has no callback, protocol, `apply`, or dynamic-MFA behavior.
+
+A new provider-only `convention:money` plugin owns only `Money.new/2` role
+`{1: propagate}` for Hex package `money`. On success the integer-guarded amount
+is stored as `amount`; the currency passes through `Money.Currency.to_atom/1`,
+is validated, and is stored in the returned `%Money{}`. Atom currency conversion
+is identity, including configured custom currencies. The integer position is
+omitted because an atom there cannot satisfy the guard. An invalid currency
+raises `ArgumentError`; a non-integer amount raises `FunctionClauseError`. This
+path likewise has no callback or dynamic invocation.
+
+The exact Money release inventory is:
+
+`1.0.0-beta`, `1.0.0`, `1.1.0`, `1.1.1`, `1.1.2`, `1.1.3`, `1.2.0`,
+`1.2.1`, `1.3.0`, `1.3.1`, `1.3.2`, `1.4.0`, `1.5.0`, `1.5.1`, `1.6.0`,
+`1.6.1`, `1.7.0`, `1.8.0`, `1.9.0`, `1.10.0`, `1.11.0`, `1.12.0`,
+`1.12.1`, `1.12.2`, `1.12.3`, `1.12.4`, `1.13.0`, `1.13.1`, `1.14.0`,
+and `1.15.0`.
+
+Every listed release was semantically audited from its exact published Hex
+archive. `0.0.1-dev` is excluded because its overload and validation surface is
+materially different; future versions remain excluded until separately
+audited. The current `1.15.0` archive is byte-identical to upstream tag
+`v1.15.0` for `lib/money.ex` (SHA-256
+`572da818b1b7a07aa51589ab0682bf20653dd634bd9bef05b40a63a25df61aac`) and
+`lib/money/currency.ex` (SHA-256
+`c6b5874cff82cd143a235ec6eb237fef80e78689dac0fc1f1dec0cb40f80b143`).
+The Hex package checksum is
+`25a0400bd518a0dab4166563f3bd8625376b69da23563070b67fadf363663533`.
+
+Ecto `3.14.1` `lib/ecto/changeset.ex` is byte-identical between its Hex archive
+and upstream tag `v3.14.1` at SHA-256
+`46d8e3e7445ead10cf33811e22af773edfafa80e0e992e91bc48777b0649500d`;
+the Hex package checksum is
+`24b991956796700f467d0a3ef3d303138a3ef9ddddf8b98f43758ee067b20a30`.
+Primary evidence is the [Money release inventory](https://hex.pm/api/packages/money),
+[`Money.new/2` documentation](https://hexdocs.pm/money/1.15.0/Money.html#new/2),
+[tagged Money constructor](https://github.com/elixirmoney/money/blob/v1.15.0/lib/money.ex#L62-L83),
+[tagged currency conversion](https://github.com/elixirmoney/money/blob/v1.15.0/lib/money/currency.ex#L295-L336),
+[Ecto release inventory](https://hex.pm/api/packages/ecto),
+[`add_error/4` documentation](https://hexdocs.pm/ecto/3.14.1/Ecto.Changeset.html#add_error/4),
+and the [tagged Ecto implementation](https://github.com/elixir-ecto/ecto/blob/v3.14.1/lib/ecto/changeset.ex).
+
+Both providers inherit the Phase 1B2B.3 fail-closed contract: exact compiler
+dependency identity plus one structurally valid Hex lock entry at an audited
+version, unique source and compiler-event cardinality, and no project-owned
+module spoof. Missing, malformed, path/git, package-mismatched, development,
+future, or otherwise unaudited lock evidence omits the summary silently.
+
+Neutral real-Mix fixtures prove compiler-confirmed static result propagation to
+a later data terminal, result escape through an opaque downstream call, exact `why` evidence,
+supported deletion of an isolated high-confidence control, and zero-stage
+deletion refusal under the propagated escape. The Elixir corpus invokes the
+production registry-driven analyzer so provider behavior is corpus-locked;
+switching from the low-level direct frontend changes no pre-existing case.
+Generated 250/500/1,000/2,000-site series retain three role-summary matches per
+producer with bounded role-edge and queue work. No graph pass, public JSON
+schema, claim rule, or deletion rule changes.
+
 ### Phase 1B2B.2 local-cause and caller-eligibility checkpoint
 
 This instrumentation-only checkpoint adds two diagnostic masks that are

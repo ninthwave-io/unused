@@ -91,6 +91,15 @@ without a diagnostic on canonical JSON stdout. Keep the summary surface sparse:
 an omitted argument role remains an escape, and project-owned modules must not
 inherit dependency semantics merely by using the same canonical name.
 
+A convention may be provider-only. `convention:money` is the reference shape:
+it exposes one static `elixirAtomRoleSummaryProvider`, returns `false` from its
+graph-phase `applies`, and returns an empty graph contribution from `analyze`.
+Register and export it normally; do not add an orchestrator conditional merely
+because it contributes before graph construction. Constructor summaries stay
+sparse: register only argument positions whose computed atoms can enter a
+successful result, omit guard-impossible positions, and retain propagation
+until a separate audited terminal actually consumes the value.
+
 Computed or ambiguous runtime identity requires a registered hazard with the
 narrowest truthful scope. A convention must never invent an edge just to gain
 recall. A bridge should join exact endpoint keys and keep unmatched externally

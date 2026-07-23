@@ -101,6 +101,15 @@ export const ectoElixirAtomRoleSummaryProvider: ElixirAtomRoleSummaryProvider = 
       ectoCallback([0, 2], CHANGESET_CALLBACK_SOURCE),
     ),
     ectoSummary("Ecto.Changeset", "apply_changes", 1, { 0: propagate }),
+    ectoSummary("Ecto.Changeset", "add_error", 3, {
+      0: propagate,
+      1: propagate,
+    }),
+    ectoSummary("Ecto.Changeset", "add_error", 4, {
+      0: propagate,
+      1: propagate,
+      3: propagate,
+    }),
     ectoSummary("Ecto.Type", "cast", 2, { 0: selector }, ectoCallback([1], TYPE_CALLBACK_SOURCE)),
     ectoSummary("Ecto.Type", "load", 2, { 0: selector }, ectoCallback([1], TYPE_CALLBACK_SOURCE)),
     ectoSummary("Ecto.Type", "dump", 2, { 0: selector }, ectoCallback([1], TYPE_CALLBACK_SOURCE)),
