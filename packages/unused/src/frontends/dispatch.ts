@@ -3,6 +3,7 @@
 import { basename, resolve } from "node:path";
 import {
   computePartitionedReachability,
+  createClaimEmissionContext,
   createHazardEvaluationContext,
   emitClaims,
   evaluateHazards,
@@ -18,7 +19,8 @@ import {
 import { entrypointId, IRGraph, type IRNode } from "../core/ir/index.js";
 import { applyConfigSymbolEntrypoints } from "./config-symbol-entrypoints.js";
 import { analyzeElixirProjectWithGraph } from "./elixir/index.js";
-import { BUILT_IN_PLUGINS, claimAnnotationKey } from "./plugins/builtins.js";
+import { BUILT_IN_PLUGINS } from "./plugins/builtins.js";
+import { claimAnnotationKey } from "./plugins/claim-annotations.js";
 import { collectElixirAtomRoleSummaryProviders } from "./plugins/elixir-role-summary-providers.js";
 import { PluginRegistry } from "./plugins/registry.js";
 import {
@@ -265,6 +267,7 @@ export async function analyzeProjectAutoWithGraph(
 
   const reachability = computePartitionedReachability(graph, options.performance);
   const hazardContext = createHazardEvaluationContext(graph);
+  const claimContext = createClaimEmissionContext(graph);
   const hazardEvaluations = fragments.map((fragment) =>
     evaluateHazards({
       graph,
@@ -286,6 +289,7 @@ export async function analyzeProjectAutoWithGraph(
       language: fragment.language,
       ...fragment.claimInputs,
       hazardEvaluation,
+      context: claimContext,
       ...(options.performance === undefined ? {} : { performance: options.performance }),
     }).map((claim) => applyClaimAnnotation(claim, fragment));
   });
@@ -471,19 +475,41 @@ function applyClaimAnnotation(claim: Claim, fragment: FrontendGraphFragment): Cl
       "name" in claim.subject ? claim.subject.name : undefined,
     ),
   );
-  if (annotation === undefined) return claim;
+  const packageName = packageForClaim(fragment, claim);
+  if (annotation === undefined && packageName === undefined) return claim;
   return {
     ...claim,
-    ...(annotation.suppression === undefined ? {} : { suppression: annotation.suppression }),
-    ...(annotation.evidence === undefined ? {} : { evidence: annotation.evidence }),
+    ...(claim.suppression !== undefined || annotation?.suppression === undefined
+      ? {}
+      : { suppression: annotation.suppression }),
+    ...(annotation?.evidence === undefined ? {} : { evidence: annotation.evidence }),
     subject: {
       ...claim.subject,
       loc: {
         ...claim.subject.loc,
-        ...(annotation.package === undefined ? {} : { package: annotation.package }),
+        ...(annotation?.package === undefined && packageName === undefined
+          ? {}
+          : { package: annotation?.package ?? packageName }),
       },
     },
   } as Claim;
+}
+
+function packageForClaim(fragment: FrontendGraphFragment, claim: Claim): string | undefined {
+  if (fragment.claimInputs.units.length <= 1) return undefined;
+  const file = claim.subject.loc.file;
+  let owner: FrontendGraphFragment["claimInputs"]["units"][number] | undefined;
+  for (const unit of fragment.claimInputs.units) {
+    if (
+      unit.rootRelDir !== "" &&
+      file !== unit.rootRelDir &&
+      !file.startsWith(`${unit.rootRelDir}/`)
+    ) {
+      continue;
+    }
+    if (owner === undefined || unit.rootRelDir.length > owner.rootRelDir.length) owner = unit;
+  }
+  return owner?.name ?? undefined;
 }
 
 function byClaimId(a: Claim, b: Claim): number {

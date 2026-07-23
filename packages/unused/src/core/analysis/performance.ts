@@ -41,6 +41,29 @@ export interface PerformancePhaseEvent {
   readonly phase: PerformancePhase;
   readonly durationMs: number;
   readonly counters: Readonly<PerformanceCounters>;
+  readonly memory: PerformanceMemorySnapshot;
+}
+
+export interface PerformanceMemorySnapshot {
+  readonly rssBytes: number;
+  readonly heapUsedBytes: number;
+  readonly heapTotalBytes: number;
+  readonly externalBytes: number;
+  readonly arrayBuffersBytes: number;
+  /** Current-process high-water mark; child processes are deliberately excluded. */
+  readonly maxRssKiB: number;
+}
+
+export function performanceMemorySnapshot(): PerformanceMemorySnapshot {
+  const memory = process.memoryUsage();
+  return {
+    rssBytes: memory.rss,
+    heapUsedBytes: memory.heapUsed,
+    heapTotalBytes: memory.heapTotal,
+    externalBytes: memory.external,
+    arrayBuffersBytes: memory.arrayBuffers,
+    maxRssKiB: process.resourceUsage().maxRSS,
+  };
 }
 
 type CounterName = keyof PerformanceCounters;
@@ -83,12 +106,13 @@ export class PerformanceTracker {
 
   addDuration(phase: PerformancePhase, durationMs: number, emit = false): void {
     this.phases[phase] += durationMs;
-    if (emit) {
+    if (emit && this.onPhase !== undefined) {
       this.onPhase?.({
         event: "phase",
         phase,
         durationMs,
         counters: { ...this.counts },
+        memory: performanceMemorySnapshot(),
       });
     }
   }
@@ -100,11 +124,13 @@ export class PerformanceTracker {
   }
 
   emitAccumulated(phase: PerformancePhase, durationMs: number): void {
+    if (this.onPhase === undefined) return;
     this.onPhase?.({
       event: "phase",
       phase,
       durationMs,
       counters: { ...this.counts },
+      memory: performanceMemorySnapshot(),
     });
   }
 

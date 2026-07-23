@@ -258,11 +258,16 @@ describe("unused CLI — --json is schema-valid and stdout-clean", () => {
           JSON.parse(line.slice("unused performance ".length)) as {
             event: string;
             counters?: { deletionPlanSimulations: number };
+            memory?: { rssBytes: number; maxRssKiB: number };
           },
       );
-    expect(diagnostics.some((diagnostic) => diagnostic.event === "phase")).toBe(true);
+    const phase = diagnostics.find((diagnostic) => diagnostic.event === "phase");
+    expect(phase?.memory?.rssBytes).toBeGreaterThan(0);
+    expect(phase?.memory?.maxRssKiB).toBeGreaterThan(0);
     expect(diagnostics.at(-1)?.event).toBe("summary");
     expect(diagnostics.at(-1)?.counters?.deletionPlanSimulations).toBe(0);
+    expect(diagnostics.at(-1)?.memory?.rssBytes).toBeGreaterThan(0);
+    expect(diagnostics.at(-1)?.memory?.maxRssKiB).toBeGreaterThan(0);
   });
 });
 

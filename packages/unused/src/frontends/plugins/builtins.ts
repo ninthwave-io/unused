@@ -1,11 +1,11 @@
 /** Built-in language adapters proving ADR 0013's internal plugin contracts. */
 
 import { relative, sep } from "node:path";
-import type { Evidence, Suppression } from "../../core/claims/index.js";
-import { analyzeElixirProjectWithGraph } from "../elixir/index.js";
-import { analyzeRustProjectWithGraph } from "../rust/index.js";
-import { type AnalyzeOptions, analyzeProjectWithGraph } from "../ts/analyze.js";
+import { analyzeElixirProjectFragment } from "../elixir/index.js";
+import { analyzeRustProjectFragment } from "../rust/index.js";
+import { type AnalyzeOptions, analyzeProjectFragment } from "../ts/analyze.js";
 import { selectProjectBoundaries } from "./boundaries.js";
+import { claimAnnotationKey } from "./claim-annotations.js";
 import {
   ectoElixirConventionPlugin,
   elixirRuntimeConventionPlugin,
@@ -14,8 +14,10 @@ import {
 import { exMoneyElixirConventionPlugin } from "./ex-money-conventions.js";
 import { moneyElixirConventionPlugin } from "./money-conventions.js";
 import {
+  createRebaseContext,
   prefixRepositoryPath,
   rebaseClaimInputs,
+  rebaseDiagnostic,
   rebaseGraph,
   rebaseGraphContribution,
 } from "./rebase.js";
@@ -27,11 +29,10 @@ import {
 import type {
   AnalyzerPlugin,
   FrontendGraphFragment,
-  GraphContribution,
+  FrontendLocalGraph,
   LanguageFrontendPlugin,
   RepositoryAnalysisContext,
 } from "./types.js";
-import { requireAnalyzerBoundaryMetadata } from "./types.js";
 import { typescriptConfigCarriersConventionPlugin } from "./typescript-conventions.js";
 
 const PLUGIN_VERSION = "0.1.0";
@@ -46,52 +47,37 @@ function analyzeOptions(context: RepositoryAnalysisContext): AnalyzeOptions {
   };
 }
 
-function fragment(
+export function createFrontendFragment(
   pluginId: string,
   language: string,
   boundary: Parameters<LanguageFrontendPlugin["analyze"]>[1],
-  analysis: Awaited<ReturnType<typeof analyzeProjectWithGraph>> & {
-    readonly deferredContributions?: ReadonlyMap<string, GraphContribution>;
-  },
+  analysis: FrontendLocalGraph,
 ): FrontendGraphFragment {
-  const localBoundary = requireAnalyzerBoundaryMetadata(analysis.result.run.boundaries, pluginId);
-  const claimAnnotations = new Map<
-    string,
-    {
-      readonly suppression?: Suppression;
-      readonly package?: string;
-      readonly evidence?: readonly Evidence[];
-    }
-  >();
-  for (const claim of analysis.result.claims) {
-    claimAnnotations.set(
-      claimAnnotationKey(
-        claim.subject.kind,
-        prefixRepositoryPath(boundary.rootRelDir, claim.subject.loc.file),
-        "name" in claim.subject ? claim.subject.name : undefined,
-      ),
-      {
-        ...(claim.suppression === undefined ? {} : { suppression: claim.suppression }),
-        ...(claim.subject.loc.package === undefined ? {} : { package: claim.subject.loc.package }),
-        ...(claim.evidence[0]?.source === "reference-graph" ? {} : { evidence: claim.evidence }),
-      },
-    );
-  }
+  const rebase = createRebaseContext(boundary.rootRelDir);
+  const claimAnnotations = new Map(
+    [...analysis.claimAnnotations].map(([key, annotation]) => {
+      const [kind, file, name] = key.split("\0");
+      if (kind === undefined || file === undefined || name === undefined) {
+        throw new Error(`invalid frontend claim annotation key: ${key}`);
+      }
+      const rebasedName =
+        kind === "file" || kind === "test"
+          ? prefixRepositoryPath(boundary.rootRelDir, name)
+          : name || undefined;
+      return [
+        claimAnnotationKey(kind, prefixRepositoryPath(boundary.rootRelDir, file), rebasedName),
+        annotation,
+      ] as const;
+    }),
+  );
   return {
     pluginId,
     language,
     boundary,
-    graph: rebaseGraph(analysis.graph, boundary.rootRelDir),
+    graph: rebaseGraph(analysis.graph, boundary.rootRelDir, rebase),
     provenance: analysis.provenance,
-    metadata: {
-      projectName: analysis.result.repoName,
-      fileCount: analysis.result.fileCount,
-      workspaceCount: analysis.result.workspaceCount,
-      configHash: analysis.result.run.configHash,
-      gateThreshold: analysis.result.gateThreshold,
-      completeness: localBoundary.partitions,
-    },
-    claimInputs: rebaseClaimInputs(analysis.claimInputs, boundary.rootRelDir),
+    metadata: analysis.metadata,
+    claimInputs: rebaseClaimInputs(analysis.claimInputs, boundary.rootRelDir, rebase),
     claimAnnotations,
     ...(analysis.deferredContributions === undefined
       ? {}
@@ -99,19 +85,15 @@ function fragment(
           deferredContributions: new Map(
             [...analysis.deferredContributions].map(([id, contribution]) => [
               id,
-              rebaseGraphContribution(contribution, analysis.graph, boundary.rootRelDir),
+              rebaseGraphContribution(contribution, analysis.graph, boundary.rootRelDir, rebase),
             ]),
           ),
         }),
-    diagnostics: (analysis.result.diagnostics ?? []).map((diagnostic) => ({
-      ...diagnostic,
+    diagnostics: analysis.diagnostics.map((diagnostic) => ({
+      ...rebaseDiagnostic(diagnostic, boundary.rootRelDir, rebase),
       boundaryId: boundary.id,
     })),
   };
-}
-
-export function claimAnnotationKey(kind: string, file: string, name?: string): string {
-  return `${kind}\0${file}\0${name ?? ""}`;
 }
 
 export const typescriptLanguagePlugin: LanguageFrontendPlugin = {
@@ -136,12 +118,12 @@ export const typescriptLanguagePlugin: LanguageFrontendPlugin = {
     });
   },
   async analyze(context, boundary) {
-    const analysis = await analyzeProjectWithGraph(boundary.rootDir, analyzeOptions(context), {
+    const analysis = await analyzeProjectFragment(boundary.rootDir, analyzeOptions(context), {
       emitConfigMatchWarnings: false,
       deferConfigSymbolEntrypoints: true,
       deferredConventions: ["github-actions-run", "taskfile-command", "native-config-script"],
     });
-    return fragment(this.id, this.language, boundary, analysis);
+    return createFrontendFragment(this.id, this.language, boundary, analysis);
   },
 };
 
@@ -167,21 +149,14 @@ export const elixirLanguagePlugin: LanguageFrontendPlugin = {
     });
   },
   async analyze(context, boundary) {
-    const analysis = await analyzeElixirProjectWithGraph(
-      boundary.rootDir,
-      analyzeOptions(context),
-      {
-        emitConfigMatchWarnings: false,
-        deferConfigSymbolEntrypoints: true,
-        deferredConventions: ["elixir-runtime", "elixir-scripts"],
-        atomRoleSummaryProviders: context.elixirAtomRoleSummaryProviders ?? [],
-        elixirSourceFiles: filesWithinBoundary(
-          boundary.rootDir,
-          context.manifests.elixirSourceFiles,
-        ),
-      },
-    );
-    return fragment(this.id, this.language, boundary, analysis);
+    const analysis = await analyzeElixirProjectFragment(boundary.rootDir, analyzeOptions(context), {
+      emitConfigMatchWarnings: false,
+      deferConfigSymbolEntrypoints: true,
+      deferredConventions: ["elixir-runtime", "elixir-scripts"],
+      atomRoleSummaryProviders: context.elixirAtomRoleSummaryProviders ?? [],
+      elixirSourceFiles: filesWithinBoundary(boundary.rootDir, context.manifests.elixirSourceFiles),
+    });
+    return createFrontendFragment(this.id, this.language, boundary, analysis);
   },
 };
 
@@ -207,12 +182,12 @@ export const rustLanguagePlugin: LanguageFrontendPlugin = {
     });
   },
   async analyze(context, boundary) {
-    const analysis = await analyzeRustProjectWithGraph(boundary.rootDir, analyzeOptions(context), {
+    const analysis = await analyzeRustProjectFragment(boundary.rootDir, analyzeOptions(context), {
       emitConfigMatchWarnings: false,
       deferConfigSymbolEntrypoints: true,
       sourceFiles: context.manifests.rustSourceFiles,
     });
-    return fragment(this.id, this.language, boundary, analysis);
+    return createFrontendFragment(this.id, this.language, boundary, analysis);
   },
 };
 

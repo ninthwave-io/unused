@@ -87,7 +87,7 @@ import type {
   TestClaim,
   TestSubject,
 } from "../claims/types.js";
-import { fileId, type IRGraph } from "../ir/index.js";
+import { fileId, type IRGraph, type IRNode } from "../ir/index.js";
 import {
   type AppliedHazardCap,
   evaluateHazards,
@@ -212,6 +212,63 @@ export interface EmitClaimsInput {
   readonly performance?: PerformanceTracker;
   /** Precomputed once for this graph/fragment and reusable by why/deletion planning. */
   readonly hazardEvaluation?: HazardEvaluation;
+  /** Graph-wide immutable indexes shared by repository fragment emissions. */
+  readonly context?: ClaimEmissionContext;
+}
+
+export interface ClaimEmissionContext {
+  readonly graph: IRGraph;
+  readonly claimNodes: readonly IRNode[];
+  readonly claimNodesByFile: ReadonlyMap<string, readonly IRNode[]>;
+  readonly entrypoints: ReturnType<IRGraph["entrypoints"]>;
+  readonly testEntrypointsByFile: ReadonlyMap<
+    string,
+    readonly ReturnType<IRGraph["entrypoints"]>[number][]
+  >;
+  readonly entrypointFiles: ReadonlySet<string>;
+  readonly surfaceEntrypointFiles: ReadonlySet<string>;
+  readonly exportedSymbolIds: ReadonlySet<string>;
+  readonly hazardsBySiteFile: ReadonlyMap<
+    string,
+    readonly ReturnType<IRGraph["hazards"]>[number][]
+  >;
+}
+
+/** Build immutable graph indexes once for one or many claim scopes. */
+export function createClaimEmissionContext(graph: IRGraph): ClaimEmissionContext {
+  const claimNodes: IRNode[] = [];
+  const claimNodesByFile = new Map<string, IRNode[]>();
+  for (const node of graph.nodes()) {
+    if (node.kind !== "file" && node.kind !== "symbol") continue;
+    claimNodes.push(node);
+    addToList(claimNodesByFile, node.kind === "file" ? node.path : node.file, node);
+  }
+  const entrypoints = graph.entrypoints();
+  const testEntrypointsByFile = new Map<string, ReturnType<IRGraph["entrypoints"]>[number][]>();
+  const entrypointFiles = new Set<string>();
+  const surfaceEntrypointFiles = new Set<string>();
+  for (const entry of entrypoints) {
+    entrypointFiles.add(fileId(entry.file));
+    if (entry.targetSymbol === undefined) surfaceEntrypointFiles.add(fileId(entry.file));
+    if (entry.entryKind === "test") addToList(testEntrypointsByFile, entry.file, entry);
+  }
+  const exportedSymbolIds = new Set<string>();
+  for (const edge of graph.edges()) {
+    if (edge.kind === "exports") exportedSymbolIds.add(edge.to);
+  }
+  const hazardsBySiteFile = new Map<string, ReturnType<IRGraph["hazards"]>[number][]>();
+  for (const hazard of graph.hazards()) addToList(hazardsBySiteFile, hazard.site.file, hazard);
+  return {
+    graph,
+    claimNodes,
+    claimNodesByFile,
+    entrypoints,
+    testEntrypointsByFile,
+    entrypointFiles,
+    surfaceEntrypointFiles,
+    exportedSymbolIds,
+    hazardsBySiteFile,
+  };
 }
 
 /**
@@ -244,6 +301,9 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
   const evidenceBefore = input.performance?.phaseTotal("shortest-path-evidence") ?? 0;
   const { graph, reachability } = input;
   const { production, config, test } = reachability;
+  const context =
+    input.context?.graph === graph ? input.context : createClaimEmissionContext(graph);
+  const scopedClaimNodes = claimNodesForScope(context, input.analysisFiles);
 
   // --- no production entrypoint ⇒ nothing anchors liveness -------------------
   // With zero production roots the reference graph has no basis to prove ANY
@@ -253,7 +313,7 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
   // root" case. This also gates `test-only`: without a production baseline we
   // cannot tell "reachable only in the test world" from "the whole project". Emit
   // nothing; the caller surfaces "no entrypoints detected".
-  if (!hasProductionAnchor(graph, production, input.analysisFiles)) return [];
+  if (!hasProductionAnchor(production, input.analysisFiles)) return [];
 
   // --- registry-driven hazard caps ------------------------------------------
   // `fileCap[F]`   caps F's file claim AND F's export claims (directory-subtree,
@@ -279,18 +339,7 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
 
   // Every root file (production, config, or test) — never itself flagged as a
   // file or export; a test root can only surface as a zombie `test` claim.
-  const entrypointFiles = new Set<string>();
-  const surfaceEntrypointFiles = new Set<string>();
-  for (const entry of graph.entrypoints()) {
-    entrypointFiles.add(fileId(entry.file));
-    if (entry.targetSymbol === undefined) surfaceEntrypointFiles.add(fileId(entry.file));
-  }
-  const exportedSymbolIds = new Set(
-    graph
-      .edges()
-      .filter((edge) => edge.kind === "exports")
-      .map((edge) => edge.to),
-  );
+  const { entrypointFiles, surfaceEntrypointFiles, exportedSymbolIds } = context;
 
   const aliveFile = (id: string): boolean =>
     production.reachableFiles.has(id) || config.reachableFiles.has(id);
@@ -300,7 +349,7 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
   // Per-file classification, precomputed so the symbol pass can subsume exports
   // by their file's class regardless of node iteration order.
   const fileClass = new Map<string, FileClass>();
-  for (const node of graph.nodes()) {
+  for (const node of scopedClaimNodes) {
     if (node.kind !== "file") continue;
     if (!isInScope(node.path, input.analysisFiles)) continue;
     if (isDeclarationFile(node.path)) continue; // ambient/declaration — never classified/claimed
@@ -312,7 +361,7 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
 
   const claims: Claim[] = [];
 
-  for (const node of graph.nodes()) {
+  for (const node of scopedClaimNodes) {
     if (node.kind === "file") {
       if (!isInScope(node.path, input.claimableFiles)) continue;
       const cls = fileClass.get(node.id);
@@ -401,7 +450,7 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
   // A test file that exercises nothing production-alive is a zombie: everything
   // it reaches is itself test-only or dead. Conservative — if it reaches ANY
   // production/config-reachable subject it is kept (not a zombie).
-  claims.push(...emitZombieTestClaims(graph, reachability, fileCap, input));
+  claims.push(...emitZombieTestClaims(graph, reachability, fileCap, input, context));
 
   // --- dependency claims (T4.1, T5.2 point 4) -------------------------------
   // The frontend already excluded referenced / kept-alive dependencies and
@@ -437,20 +486,31 @@ function isInScope(file: string, scope: ReadonlySet<string> | undefined): boolea
  * graph is deliberately insufficient.
  */
 function hasProductionAnchor(
-  graph: IRGraph,
   production: Reachability,
   analysisFiles: ReadonlySet<string> | undefined,
 ): boolean {
   if (analysisFiles === undefined) return production.productionEntrypointFiles.size > 0;
-  for (const id of production.productionEntrypointFiles) {
-    const node = graph.getNode(id);
-    if (node?.kind === "file" && analysisFiles.has(node.path)) return true;
-  }
-  for (const id of production.reachableFiles) {
-    const node = graph.getNode(id);
-    if (node?.kind === "file" && analysisFiles.has(node.path)) return true;
+  for (const file of analysisFiles) {
+    const id = fileId(file);
+    if (production.productionEntrypointFiles.has(id) || production.reachableFiles.has(id)) {
+      return true;
+    }
   }
   return false;
+}
+
+function claimNodesForScope(
+  context: ClaimEmissionContext,
+  analysisFiles: ReadonlySet<string> | undefined,
+): readonly IRNode[] {
+  if (analysisFiles === undefined) return context.claimNodes;
+  return [...analysisFiles].flatMap((file) => context.claimNodesByFile.get(file) ?? []);
+}
+
+function addToList<T>(map: Map<string, T[]>, key: string, value: T): void {
+  const values = map.get(key);
+  if (values === undefined) map.set(key, [value]);
+  else values.push(value);
 }
 
 function finishClaimPerformance(
@@ -524,16 +584,16 @@ function emitZombieTestClaims(
   reachability: PartitionedReachability,
   fileCap: ReadonlyMap<string, AppliedCap>,
   input: EmitClaimsInput,
+  context: ClaimEmissionContext,
 ): TestClaim[] {
   const { production, config } = reachability;
   // The production ∪ config alive surface (files + symbols): reaching any of
   // these disqualifies a test from being a zombie.
-  const aliveNodes = new Set<string>([
-    ...production.reachableFiles,
-    ...production.reachableSymbols,
-    ...config.reachableFiles,
-    ...config.reachableSymbols,
-  ]);
+  const isAliveNode = (id: string): boolean =>
+    production.reachableFiles.has(id) ||
+    production.reachableSymbols.has(id) ||
+    config.reachableFiles.has(id) ||
+    config.reachableSymbols.has(id);
 
   // --- zombie hardening (T5.5): exempt tests whose visible reach can't be
   // trusted complete (degrade toward alive) ----------------------------------
@@ -543,9 +603,13 @@ function emitZombieTestClaims(
   //     way we cannot prove the test exercises nothing production-alive, so it is
   //     NOT a confident zombie — no wrong zombie survives these shapes.
   const filesWithUnresolvableImport = new Set<string>();
-  for (const hz of graph.hazards()) {
-    if (hz.hazardClass === "unresolvable-import" && isInScope(hz.site.file, input.analysisFiles)) {
-      filesWithUnresolvableImport.add(hz.file);
+  const scopedHazards =
+    input.analysisFiles === undefined
+      ? [...context.hazardsBySiteFile.values()].flat()
+      : [...input.analysisFiles].flatMap((file) => context.hazardsBySiteFile.get(file) ?? []);
+  for (const hazard of scopedHazards) {
+    if (hazard.hazardClass === "unresolvable-import") {
+      filesWithUnresolvableImport.add(hazard.file);
     }
   }
   const selfDeps = input.selfDependencyIds ?? EMPTY_ID_SET;
@@ -566,9 +630,11 @@ function emitZombieTestClaims(
   };
 
   const claims: TestClaim[] = [];
-  for (const entry of graph.entrypoints()) {
-    if (entry.entryKind !== "test") continue;
-    if (!isInScope(entry.file, input.analysisFiles)) continue;
+  const testEntrypoints =
+    input.analysisFiles === undefined
+      ? context.entrypoints.filter((entry) => entry.entryKind === "test")
+      : [...input.analysisFiles].flatMap((file) => context.testEntrypointsByFile.get(file) ?? []);
+  for (const entry of testEntrypoints) {
     if (!isInScope(entry.file, input.claimableFiles)) continue;
     const testFileId = fileId(entry.file);
     if (graph.outEdges(testFileId).length === 0) continue; // imports nothing ⇒ not a zombie
@@ -584,7 +650,7 @@ function emitZombieTestClaims(
       ...(input.performance === undefined ? {} : { performance: input.performance }),
       stopWhen: (nodeId) => {
         if (nodeId === testFileId) return false;
-        if (aliveNodes.has(nodeId)) return true;
+        if (isAliveNode(nodeId)) return true;
         const node = graph.getNode(nodeId);
         return (
           node?.kind === "file" &&
@@ -599,7 +665,7 @@ function emitZombieTestClaims(
     for (const fid of reach.reachableFiles) {
       if (fid === testFileId) continue; // its own file is the seed, not "exercised"
       reachedOther = true;
-      if (aliveNodes.has(fid)) {
+      if (isAliveNode(fid)) {
         reachesAlive = true;
         break;
       }
@@ -609,7 +675,7 @@ function emitZombieTestClaims(
         const sym = graph.getNode(sid);
         if (sym?.kind === "symbol" && sym.file === entry.file) continue; // its own export
         reachedOther = true;
-        if (aliveNodes.has(sid)) {
+        if (isAliveNode(sid)) {
           reachesAlive = true;
           break;
         }

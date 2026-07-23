@@ -37,7 +37,13 @@ import {
   applyConfigSymbolEntrypoints,
   graphSymbolLanguages,
 } from "../config-symbol-entrypoints.js";
-import type { FrontendClaimInputs, GraphContribution, PluginDiagnostic } from "../plugins/types.js";
+import { collectFrontendClaimAnnotations } from "../plugins/claim-annotations.js";
+import type {
+  FrontendClaimInputs,
+  FrontendLocalGraph,
+  GraphContribution,
+  PluginDiagnostic,
+} from "../plugins/types.js";
 import type { AnalyzeInternalOptions, AnalyzeOptions, AnalyzeResult } from "../ts/analyze.js";
 import {
   applyConfigSuppressions,
@@ -103,6 +109,29 @@ export async function analyzeElixirProjectWithGraph(
   options: AnalyzeOptions = {},
   internal: AnalyzeElixirInternalOptions = {},
 ): Promise<AnalyzeElixirWithGraph> {
+  return (await analyzeElixirProjectGraph(
+    rootDir,
+    options,
+    internal,
+    false,
+  )) as AnalyzeElixirWithGraph;
+}
+
+/** Graph-only frontend path used before repository-wide reachability and claims. */
+export async function analyzeElixirProjectFragment(
+  rootDir: string,
+  options: AnalyzeOptions = {},
+  internal: AnalyzeElixirInternalOptions = {},
+): Promise<FrontendLocalGraph> {
+  return (await analyzeElixirProjectGraph(rootDir, options, internal, true)) as FrontendLocalGraph;
+}
+
+async function analyzeElixirProjectGraph(
+  rootDir: string,
+  options: AnalyzeOptions,
+  internal: AnalyzeElixirInternalOptions,
+  fragmentOnly: boolean,
+): Promise<AnalyzeElixirWithGraph | FrontendLocalGraph> {
   const start = Date.now();
   const now = options.now ?? new Date();
   const version = options.toolVersion ?? DEFAULT_TOOL_VERSION;
@@ -114,6 +143,8 @@ export async function analyzeElixirProjectWithGraph(
     throw new ElixirFrontendError(`not an Elixir project: no mix.exs found in ${rootDir}.`);
   }
   const config = await loadConfig(project.projectDir, options.configPath);
+  if (fragmentOnly) performance?.increment("workspaces");
+  else performance?.set("workspaces", 1);
   if (workspaceStarted !== undefined) {
     performance?.finish("workspace-config-detection", workspaceStarted);
   }
@@ -189,6 +220,15 @@ export async function analyzeElixirProjectWithGraph(
   } else {
     addGraphContribution(graph, scriptContribution);
   }
+  const symbolCount = graph.nodes().filter((node) => node.kind === "symbol").length;
+  const edgeCount = graph.edges().length;
+  if (fragmentOnly) {
+    performance?.increment("symbols", symbolCount);
+    performance?.increment("edges", edgeCount);
+  } else {
+    performance?.set("symbols", symbolCount);
+    performance?.set("edges", edgeCount);
+  }
   if (graphStarted !== undefined) performance?.finish("graph-construction", graphStarted);
 
   // Per-file line counts for `file`-claim spans (core does no file I/O).
@@ -202,6 +242,8 @@ export async function analyzeElixirProjectWithGraph(
     options.gitignore === false
       ? [...distinctFiles]
       : await filterGitignoredRelativePaths(project.projectDir, [...distinctFiles]);
+  if (fragmentOnly) performance?.increment("files", analyzedFiles.length);
+  else performance?.set("files", analyzedFiles.length);
   if (discoveryStarted !== undefined) {
     performance?.finish("discovery-gitignore", discoveryStarted);
   }
@@ -230,10 +272,6 @@ export async function analyzeElixirProjectWithGraph(
     }
   }
 
-  performance?.set("files", analyzedFiles.length);
-  performance?.set("symbols", graph.nodes().filter((node) => node.kind === "symbol").length);
-  performance?.set("edges", graph.edges().length);
-  performance?.set("workspaces", 1);
   if (internal.deferConfigSymbolEntrypoints !== true) {
     applyConfigSymbolEntrypoints({
       graph,
@@ -243,7 +281,6 @@ export async function analyzeElixirProjectWithGraph(
       ...(performance === undefined ? {} : { performance }),
     });
   }
-  const reachability = computePartitionedReachability(graph, performance);
   const provenance: Provenance = {
     analyzer: ANALYZER_NAME,
     version,
@@ -255,6 +292,38 @@ export async function analyzeElixirProjectWithGraph(
     analysisFiles: analyzedFileSet,
     claimableFiles: new Set(analyzedFiles.filter((file) => isClaimable(file, config, configUnits))),
   };
+
+  const diagnostics =
+    traceResult.testPartition === "complete" ? [] : [incompleteTestPartitionDiagnostic("ex:.")];
+  if (fragmentOnly) {
+    return {
+      graph,
+      provenance,
+      claimInputs,
+      claimAnnotations: collectFrontendClaimAnnotations({
+        graph,
+        config,
+        units: configUnits,
+        claimInputs,
+      }),
+      metadata: {
+        projectName: appName,
+        fileCount: analyzedFiles.length,
+        workspaceCount: 1,
+        configHash: computeConfigHash(config),
+        gateThreshold: config.gate?.threshold ?? "high",
+        completeness: {
+          production: "complete",
+          config: "complete",
+          test: traceResult.testPartition,
+        },
+      },
+      ...(deferredContributions.size === 0 ? {} : { deferredContributions }),
+      diagnostics,
+    };
+  }
+
+  const reachability = computePartitionedReachability(graph, performance);
 
   const hazardEvaluation = evaluateHazards({
     graph,
@@ -321,9 +390,7 @@ export async function analyzeElixirProjectWithGraph(
     repoName: appName,
     units: [{ rootRelDir: "", name: appName }],
     gateThreshold: config.gate?.threshold ?? "high",
-    ...(traceResult.testPartition === "complete"
-      ? {}
-      : { diagnostics: [incompleteTestPartitionDiagnostic("ex:.")] }),
+    ...(diagnostics.length === 0 ? {} : { diagnostics }),
   };
   return {
     result,

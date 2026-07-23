@@ -15,9 +15,13 @@ import {
   type Site,
   symbolId,
 } from "../ir/index.js";
-import { type DependencyClaimInput, emitClaims } from "./claims.js";
+import { createClaimEmissionContext, type DependencyClaimInput, emitClaims } from "./claims.js";
 import { computeDeletionPlan } from "./deletion-plan.js";
-import { effectsForSubject, evaluateHazards } from "./hazard-evaluation.js";
+import {
+  createHazardEvaluationContext,
+  effectsForSubject,
+  evaluateHazards,
+} from "./hazard-evaluation.js";
 import { PerformanceTracker } from "./performance.js";
 import { computePartitionedReachability } from "./reachability.js";
 import { whyAlive } from "./why.js";
@@ -1708,4 +1712,53 @@ describe("exact symbol entrypoint claims", () => {
       ]);
     },
   );
+});
+
+describe("repository-scoped emission indexes", () => {
+  it("does not rescan the merged graph for each disjoint frontend scope", () => {
+    const graph = new IRGraph();
+    for (const root of ["one", "two"]) {
+      addEntry(graph, `${root}/src/index.ts`);
+      addFile(graph, `${root}/src/dead.ts`);
+    }
+    const reachability = computePartitionedReachability(graph);
+    const hazardContext = createHazardEvaluationContext(graph);
+    const claimContext = createClaimEmissionContext(graph);
+    const nodes = vi.spyOn(graph, "nodes");
+    const edges = vi.spyOn(graph, "edges");
+    const entrypoints = vi.spyOn(graph, "entrypoints");
+    const hazards = vi.spyOn(graph, "hazards");
+
+    const claims = ["one", "two"].flatMap((root) => {
+      const analysisFiles = new Set([`${root}/src/index.ts`, `${root}/src/dead.ts`]);
+      const units = [{ rootRelDir: root }];
+      const hazardEvaluation = evaluateHazards({
+        graph,
+        reachability,
+        context: hazardContext,
+        analysisFiles,
+        units,
+      });
+      return emitClaims({
+        graph,
+        reachability,
+        provenance: PROVENANCE,
+        language: "ts",
+        analysisFiles,
+        claimableFiles: analysisFiles,
+        units,
+        hazardEvaluation,
+        context: claimContext,
+      });
+    });
+
+    expect(claims.map((claim) => claim.subject.loc.file)).toEqual([
+      "one/src/dead.ts",
+      "two/src/dead.ts",
+    ]);
+    expect(nodes).not.toHaveBeenCalled();
+    expect(edges).not.toHaveBeenCalled();
+    expect(entrypoints).not.toHaveBeenCalled();
+    expect(hazards).not.toHaveBeenCalled();
+  });
 });

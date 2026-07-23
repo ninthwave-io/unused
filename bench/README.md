@@ -36,10 +36,20 @@ to the operating-system temporary directory and are not committed.
 
 ```sh
 pnpm build
-node bench/generate-scaling-fixtures.mjs --out /tmp/unused-scaling-fixtures
+node bench/generate-scaling-fixtures.mjs --out /tmp/unused-scaling-fixtures --variants
 node packages/unused/dist/cli/index.js --performance --json \
   --cwd /tmp/unused-scaling-fixtures/files-2000 > /tmp/unused.json
 ```
+
+`--variants` adds three orchestration shapes for every requested size: a root
+TypeScript workspace plus a neutral Rust boundary, the same TypeScript project
+nested beside Rust, and a many-boundary TypeScript layout (5, 10, 20, then 32
+independent boundaries). Fixture roots are asserted unique. Root/nested retain
+the direct TypeScript workload exactly. Many-boundary retains its own stable
+test/config/hazard topology and is valid only for identical before/after
+comparison; its symbols, edges, and claims are deliberately reported rather
+than treated as cross-topology equivalents. Together these variants expose
+work accidentally multiplied by languages, nesting, or boundary count.
 
 To exercise ignored-tree scaling without changing the tracked source count,
 add `--ignored-json 5000`. This creates a neutral generated-cache tree covered
@@ -49,7 +59,10 @@ the bounded discovery inventory instead of traversing ignored artifacts.
 On macOS, prefix the analyzer command with `/usr/bin/time -lp` for wall/CPU/RSS
 evidence. Add `--cpu-prof --enable-source-maps` to Node for a CPU profile. The
 `--performance` stream is newline-delimited JSON on stderr; canonical JSON
-stdout remains diagnostic-free.
+stdout remains diagnostic-free. Each phase event includes current RSS, heap
+used/total, external and array-buffer bytes, and the current process's RSS
+high-water mark. `/usr/bin/time -lp` remains authoritative for external peak RSS
+and physical-footprint evidence, including platform accounting differences.
 
 ## What it measures
 

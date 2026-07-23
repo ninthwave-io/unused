@@ -16,10 +16,14 @@ Status: APPROVED at the Phase 2 gate (2026-07-18). Build contract, kept delibera
 discover (workspaces, tsconfig, package.json, presets) → parse + bind → extract references + hazards → **IR graph** → partition entrypoints (production | test | config) → reachability per partition → claims (verdict + confidence via hazard rules) → reporters / MCP; file-level results cached (§5).
 
 ADR 0013 extends this into a repository-level polyglot pass: language plugins
-emit repository-relative graph fragments, convention plugins enrich them,
-bridge plugins add cross-language edges, and only then does core compute one
-global reachability and claim set. TypeScript, Elixir, Rust, and Rustler/NIF are
-the proving set. The resumable delivery ledger is
+emit repository-relative graph fragments plus bounded claim annotations;
+fragment mode does not allocate local reachability partitions, hazard closures,
+claims, summaries, or predecessor maps. Convention plugins enrich the merged
+graph, bridge plugins add cross-language edges, and only then does core compute
+global reachability. Hazard and claim work retains fragment-specific policy and
+provenance through shared graph indexes: disjoint fragments together scan each
+owned file/symbol once instead of rescanning the merged graph per boundary.
+TypeScript, Elixir, Rust, and Rustler/NIF are the proving set. The resumable delivery ledger is
 `docs/delivery/polyglot-first-class.md`.
 Implementation and fixture rules for these internal contracts live in
 `docs/design/plugin-authoring.md`.
@@ -59,6 +63,15 @@ The measured Rust compiler/tooling boundary is
 - Incremental mode = cache warm-hit path; no daemon, no watcher in v1.
 - **Sequencing (red-team)**: the v1 milestones ship the cold path only; the warm-path cache lands after extractor correctness is proven on the corpus — a stale cache is false-positive surface, and correctness beats speed here too. Conscious debt, recorded.
 - Targets per PRD §8 (cold <60s at ~5k modules, warm <10s) — measured from the first analyzer milestone (phasing M3) onwards, revisited with data.
+- Repository-coordinate rebasing uses one context per fragment. POSIX-normalized
+  paths are canonicalized across nodes, edges, hazards, claim inputs,
+  contributions, and diagnostics; absolute or boundary-escaping paths are an
+  internal refusal. Shared provenance sites retain object identity after
+  rebasing.
+- Opt-in `--performance` events include current RSS, heap, external/array-buffer
+  memory, and current-process maximum RSS at every phase boundary. Counters are
+  cumulative across fragments. Diagnostics remain stderr-only, so canonical
+  JSON stdout is unchanged.
 
 ## 6. Plugin interface (sketched now, internal-only in v1)
 Three plugin kinds, all internal modules behind interfaces in v1 (external loading deferred):

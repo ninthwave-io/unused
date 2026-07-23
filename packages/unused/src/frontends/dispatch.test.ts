@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { type PerformancePhaseEvent, PerformanceTracker } from "../core/analysis/index.js";
 import { fileId } from "../core/ir/index.js";
 import { isMixAvailable } from "../testing/corpus/elixir-corpus.js";
 import {
@@ -249,6 +250,182 @@ describe("nested-boundary dispatch", () => {
         fileId("services/web/src/index.ts"),
       ),
     ).toBe(true);
+  });
+
+  it("performs one repository reachability pass across TypeScript boundaries", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unused-multi-ts-dispatch-"));
+    temporaryProjects.push(root);
+    for (const name of ["alpha", "beta"]) {
+      const project = join(root, "services", name);
+      await mkdir(join(project, "src"), { recursive: true });
+      await writeFile(
+        join(project, "package.json"),
+        JSON.stringify({
+          name: `neutral-${name}`,
+          type: "module",
+          main: "src/index.ts",
+          ...(name === "alpha" ? { dependencies: { "neutral-unused": "1.0.0" } } : {}),
+        }),
+      );
+      await writeFile(join(project, "src", "index.ts"), "export const live = true;\n");
+      await writeFile(join(project, "src", "dead.ts"), "export const dead = true;\n");
+      if (name === "alpha") {
+        await mkdir(join(project, "node_modules", "neutral-unused"), { recursive: true });
+        await writeFile(
+          join(project, "node_modules", "neutral-unused", "package.json"),
+          JSON.stringify({ name: "neutral-unused", version: "1.0.0" }),
+        );
+        await writeFile(
+          join(project, "unused.config.json"),
+          JSON.stringify({
+            suppressions: [
+              {
+                files: ["src/dead.ts"],
+                kinds: ["file"],
+                reason: "local file policy",
+              },
+              {
+                files: ["package.json"],
+                kinds: ["dependency"],
+                reason: "local dependency policy",
+              },
+            ],
+          }),
+        );
+      }
+    }
+    const performance = new PerformanceTracker();
+
+    const analysis = await analyzeProjectAutoWithGraph(root, {
+      now: new Date(0),
+      performance,
+    });
+
+    expect(analysis.result.claims.map((claim) => claim.subject.loc.file).sort()).toEqual([
+      "services/alpha/package.json",
+      "services/alpha/src/dead.ts",
+      "services/beta/src/dead.ts",
+    ]);
+    expect(
+      analysis.result.claims.find(
+        (claim) => claim.subject.loc.file === "services/alpha/src/dead.ts",
+      )?.suppression,
+    ).toMatchObject({ reason: "local file policy", source: "config" });
+    expect(
+      analysis.result.claims.find((claim) => claim.subject.kind === "dependency")?.suppression,
+    ).toMatchObject({ reason: "local dependency policy", source: "config" });
+    expect(performance.snapshot().counters.graphWalks).toBe(3);
+  });
+
+  it("reports monotonic cumulative counters across five 50-file boundaries", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unused-counter-dispatch-"));
+    temporaryProjects.push(root);
+    for (let boundary = 0; boundary < 5; boundary += 1) {
+      const project = join(root, "services", `unit-${boundary}`);
+      await mkdir(join(project, "src"), { recursive: true });
+      await writeFile(
+        join(project, "package.json"),
+        JSON.stringify({
+          name: `@neutral/unit-${boundary}`,
+          type: "module",
+          main: "src/index.ts",
+        }),
+      );
+      await writeFile(join(project, "src", "index.ts"), "export const live = true;\n");
+      await Promise.all(
+        Array.from({ length: 49 }, (_, file) =>
+          writeFile(
+            join(project, "src", `dead-${file}.ts`),
+            `export const dead${file} = ${file};\n`,
+          ),
+        ),
+      );
+    }
+    const events: PerformancePhaseEvent[] = [];
+    const performance = new PerformanceTracker((event) => events.push(event));
+
+    const analysis = await analyzeProjectAutoWithGraph(root, {
+      now: new Date(0),
+      performance,
+    });
+
+    const files = events.map((event) => event.counters.files);
+    const resolutions = events.map((event) => event.counters.resolutionAttempts);
+    expect(files).toEqual([...files].sort((a, b) => a - b));
+    expect(resolutions).toEqual([...resolutions].sort((a, b) => a - b));
+    expect(new Set(files)).toEqual(new Set([0, 50, 100, 150, 200, 250]));
+    expect(events.every((event) => event.counters.deletionPlanSimulations === 0)).toBe(true);
+    expect(performance.snapshot().counters).toMatchObject({
+      files: 250,
+      workspaces: 5,
+      deletionPlanSimulations: 0,
+    });
+    expect(analysis.result).toMatchObject({ fileCount: 250, workspaceCount: 5 });
+  });
+
+  it("preserves workspace package attribution when the same project is nested", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unused-package-parity-"));
+    temporaryProjects.push(root);
+    const project = join(root, "services", "web");
+    const unit = join(project, "packages", "unit");
+    await mkdir(join(project, "src"), { recursive: true });
+    await mkdir(join(unit, "src"), { recursive: true });
+    await writeFile(
+      join(project, "package.json"),
+      JSON.stringify({
+        name: "neutral-root",
+        private: true,
+        type: "module",
+        main: "src/index.ts",
+        workspaces: ["packages/*"],
+      }),
+    );
+    await writeFile(join(project, "src", "index.ts"), "export const live = true;\n");
+    await writeFile(
+      join(unit, "package.json"),
+      JSON.stringify({ name: "@neutral/unit", type: "module", main: "src/index.ts" }),
+    );
+    await writeFile(join(unit, "src", "index.ts"), "export const entry = true;\n");
+    await writeFile(join(unit, "src", "dead.ts"), "export const dead = true;\n");
+    await writeFile(join(unit, "src", "test-helper.ts"), "export const helper = true;\n");
+    await writeFile(
+      join(unit, "src", "case.test.ts"),
+      'import { helper } from "./test-helper.js";\nexport const observed = helper;\n',
+    );
+
+    const direct = await analyzeProjectAuto(project, { now: new Date(0) });
+    const nested = await analyzeProjectAuto(root, { now: new Date(0) });
+    const select = (claims: typeof direct.claims, prefix: string) =>
+      claims
+        .filter(
+          (claim) =>
+            claim.subject.loc.file.endsWith("packages/unit/src/dead.ts") ||
+            (claim.subject.kind === "test" &&
+              claim.subject.loc.file.endsWith("packages/unit/src/case.test.ts")),
+        )
+        .map((claim) => ({
+          kind: claim.subject.kind,
+          file: claim.subject.loc.file.slice(prefix.length),
+          package: claim.subject.loc.package,
+          verdict: claim.verdict,
+        }))
+        .sort((a, b) => a.kind.localeCompare(b.kind));
+
+    expect(select(direct.claims, "")).toEqual([
+      {
+        kind: "file",
+        file: "packages/unit/src/dead.ts",
+        package: "@neutral/unit",
+        verdict: "unused",
+      },
+      {
+        kind: "test",
+        file: "packages/unit/src/case.test.ts",
+        package: "@neutral/unit",
+        verdict: "test-only",
+      },
+    ]);
+    expect(select(nested.claims, "services/web/")).toEqual(select(direct.claims, ""));
   });
 
   it("analyzes a nested Cargo project and rebases compiler evidence", async () => {

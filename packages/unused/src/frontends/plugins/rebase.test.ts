@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { dependencyId, entrypointId, fileId, IRGraph, symbolId } from "../../core/ir/index.js";
 import {
+  createRebaseContext,
   prefixRepositoryPath,
   rebaseClaimInputs,
+  rebaseDiagnostic,
   rebaseGraph,
   rebaseGraphContribution,
 } from "./rebase.js";
@@ -62,7 +64,8 @@ describe("rebaseGraph", () => {
       },
     });
 
-    const rebased = rebaseGraph(graph, "apps/backend");
+    const context = createRebaseContext("apps/backend");
+    const rebased = rebaseGraph(graph, "apps/backend", context);
     expect(rebased.nodes()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -104,6 +107,8 @@ describe("rebaseGraph", () => {
         worlds: ["test"],
       },
     });
+    expect(rebased.edges()[0]?.site).toBe(rebased.hazards()[0]?.site);
+    expect(context.paths.size).toBeLessThanOrEqual(2);
   });
 
   it("returns the original graph at the repository root and rejects escaping paths", () => {
@@ -113,6 +118,78 @@ describe("rebaseGraph", () => {
     expect(() => prefixRepositoryPath("../outside", "lib/a.ex")).toThrow(
       "path must be repository-relative",
     );
+    expect(() => prefixRepositoryPath("apps/backend", "inside/../../outside.ts")).toThrow(
+      "path must be repository-relative",
+    );
+    expect(() => prefixRepositoryPath("apps/backend", "C:\\outside.ts")).toThrow(
+      "path must be repository-relative",
+    );
+  });
+
+  it("canonicalizes internal dot segments consistently across every fragment surface", () => {
+    const graph = new IRGraph();
+    graph.addNode({ kind: "file", id: fileId("src/../lib/a.ex"), path: "src/../lib/a.ex" });
+    graph.addNode({ kind: "dependency", id: dependencyId("neutral"), packageName: "neutral" });
+    graph.addEdge({
+      kind: "references",
+      referenceKind: "static",
+      from: fileId("src/../lib/a.ex"),
+      to: dependencyId("neutral"),
+      site: { ...SITE, file: "./lib/a.ex" },
+      name: "neutral",
+    });
+    const context = createRebaseContext("apps/./backend");
+    const rebased = rebaseGraph(graph, "apps/./backend", context);
+    const inputs = rebaseClaimInputs(
+      {
+        fileLineCounts: new Map([[fileId("src/../lib/a.ex"), 3]]),
+        units: [{ rootRelDir: "nested/..", name: "neutral" }],
+        analysisFiles: new Set(["src/../lib/a.ex", "lib/./a.ex"]),
+        claimableFiles: new Set(["lib/a.ex"]),
+      },
+      "apps/./backend",
+      context,
+    );
+    const contribution = rebaseGraphContribution(
+      {
+        diagnostics: [
+          {
+            pluginId: "neutral",
+            severity: "warning",
+            code: "neutral-path",
+            message: "neutral",
+            site: { ...SITE, file: "lib/./a.ex" },
+          },
+        ],
+      },
+      graph,
+      "apps/./backend",
+      context,
+    );
+
+    expect(rebased.nodes()[0]).toMatchObject({
+      id: fileId("apps/backend/lib/a.ex"),
+      path: "apps/backend/lib/a.ex",
+    });
+    expect(rebased.edges()[0]?.site.file).toBe("apps/backend/lib/a.ex");
+    expect([...inputs.analysisFiles]).toEqual(["apps/backend/lib/a.ex"]);
+    expect([...inputs.fileLineCounts]).toEqual([[fileId("apps/backend/lib/a.ex"), 3]]);
+    expect(inputs.units).toEqual([{ rootRelDir: "apps/backend", name: "neutral" }]);
+    expect(contribution.diagnostics?.[0]?.site?.file).toBe("apps/backend/lib/a.ex");
+    expect(
+      rebaseDiagnostic(
+        {
+          pluginId: "neutral",
+          severity: "warning",
+          code: "neutral-path",
+          message: "neutral",
+          site: { ...SITE, file: "x/../lib/a.ex" },
+        },
+        "apps/./backend",
+        context,
+      ).site?.file,
+    ).toBe("apps/backend/lib/a.ex");
+    expect(context.paths.size).toBe(2);
   });
 
   it.each(["file", "unit"] as const)("preserves an explicit %s effect while rebasing", (kind) => {

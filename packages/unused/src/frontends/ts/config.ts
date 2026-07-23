@@ -58,7 +58,7 @@
 import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { join, resolve as resolvePath } from "node:path";
-import type { Claim, SubjectKind } from "../../core/claims/index.js";
+import type { Claim, SubjectKind, Suppression } from "../../core/claims/index.js";
 import { globToRegExp } from "./glob.js";
 import { stripJsonComments } from "./jsonc.js";
 
@@ -779,21 +779,46 @@ interface CompiledSuppression {
   matchedClaim: boolean;
 }
 
+export interface ConfigSuppressionCandidate {
+  readonly key: string;
+  readonly kind: SubjectKind;
+  readonly file: string;
+}
+
 /**
- * Apply structured config suppressions after graph analysis. Suppression never
- * removes a file, node, or edge: it only marks matching emitted claims. Inline
- * declaration suppressions already attached by the frontend take precedence.
- * Mixed-language dispatch disables per-frontend warnings, then invokes this
- * once over the merged claims/files so a rule matching either language is not
- * falsely reported as stale by the other frontend.
+ * Resolve local config policy for graph candidates without first constructing
+ * reachability, claims, evidence, or summaries. Repository orchestration uses
+ * this to preserve nested-boundary suppression semantics in its single global
+ * claim pass.
  */
-export function applyConfigSuppressions(
-  claims: readonly Claim[],
+export function collectConfigSuppressionAnnotations(
+  candidates: readonly ConfigSuppressionCandidate[],
   config: UnusedConfig,
   units: readonly ConfigUnit[],
-  analyzedFiles: readonly string[],
-  options: { readonly emitWarnings?: boolean } = {},
-): Claim[] {
+): ReadonlyMap<string, Suppression> {
+  const compiled = compileSuppressions(config, units);
+  const annotations = new Map<string, Suppression>();
+  for (const candidate of candidates) {
+    const matches = compiled.flatMap((item) => {
+      if (!item.rule.kinds.includes(candidate.kind)) return [];
+      const pattern = matchedSuppressionPattern(item, candidate.file, units);
+      return pattern === undefined ? [] : [{ item, pattern }];
+    });
+    const selected = matches.find((match) => match.item.unitIndex !== undefined) ?? matches[0];
+    if (selected === undefined) continue;
+    annotations.set(candidate.key, {
+      reason: selected.item.rule.reason,
+      source: "config",
+      pattern: selected.pattern,
+    });
+  }
+  return annotations;
+}
+
+function compileSuppressions(
+  config: UnusedConfig,
+  units: readonly ConfigUnit[],
+): CompiledSuppression[] {
   const compiled: CompiledSuppression[] = config.suppressions.map((rule, index) => ({
     label: `suppressions[${index}]`,
     rule,
@@ -817,6 +842,25 @@ export function applyConfigSuppressions(
       });
     });
   }
+  return compiled;
+}
+
+/**
+ * Apply structured config suppressions after graph analysis. Suppression never
+ * removes a file, node, or edge: it only marks matching emitted claims. Inline
+ * declaration suppressions already attached by the frontend take precedence.
+ * Mixed-language dispatch disables per-frontend warnings, then invokes this
+ * once over the merged claims/files so a rule matching either language is not
+ * falsely reported as stale by the other frontend.
+ */
+export function applyConfigSuppressions(
+  claims: readonly Claim[],
+  config: UnusedConfig,
+  units: readonly ConfigUnit[],
+  analyzedFiles: readonly string[],
+  options: { readonly emitWarnings?: boolean } = {},
+): Claim[] {
+  const compiled = compileSuppressions(config, units);
 
   if (compiled.length === 0) return [...claims];
 

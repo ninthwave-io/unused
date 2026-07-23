@@ -102,6 +102,37 @@ export interface FrontendClaimInputs {
   readonly claimableFiles: ReadonlySet<string>;
 }
 
+/** Frontend-owned claim metadata that core cannot derive from the shared graph. */
+export interface FrontendClaimAnnotation {
+  readonly suppression?: Suppression;
+  readonly package?: string;
+  readonly evidence?: readonly Evidence[];
+}
+
+/**
+ * A language frontend's graph-complete result before repository reachability.
+ *
+ * Repository orchestration consumes this shape so a frontend does not first
+ * allocate local partition predecessor maps, hazard indexes, claims, and a
+ * summary that the repository-wide pass would immediately replace.
+ */
+export interface FrontendLocalGraph {
+  readonly graph: IRGraph;
+  readonly provenance: Provenance;
+  readonly metadata: {
+    readonly projectName: string;
+    readonly fileCount: number;
+    readonly workspaceCount: number;
+    readonly configHash: string;
+    readonly gateThreshold: "high" | "medium" | "low";
+    readonly completeness: AnalysisPartitionCompletion;
+  };
+  readonly claimInputs: FrontendClaimInputs;
+  readonly claimAnnotations: ReadonlyMap<string, FrontendClaimAnnotation>;
+  readonly deferredContributions?: ReadonlyMap<string, GraphContribution>;
+  readonly diagnostics: readonly PluginDiagnostic[];
+}
+
 /**
  * A complete repository-relative frontend result before global reachability.
  * Bridge plugins can add edges to this graph before claims are emitted.
@@ -123,14 +154,7 @@ export interface FrontendGraphFragment {
   };
   readonly claimInputs: FrontendClaimInputs;
   /** Stable-id metadata reapplied after repository-wide claim emission. */
-  readonly claimAnnotations: ReadonlyMap<
-    string,
-    {
-      readonly suppression?: Suppression;
-      readonly package?: string;
-      readonly evidence?: readonly Evidence[];
-    }
-  >;
+  readonly claimAnnotations: ReadonlyMap<string, FrontendClaimAnnotation>;
   /** Precomputed facts activated by their owning convention plugin phase. */
   readonly deferredContributions?: ReadonlyMap<string, GraphContribution>;
   readonly diagnostics: readonly PluginDiagnostic[];

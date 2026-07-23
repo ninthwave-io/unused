@@ -64,6 +64,7 @@ export interface HazardEvaluationContext {
   readonly graph: IRGraph;
   readonly fileNodes: readonly FileNode[];
   readonly fileNodeByPath: ReadonlyMap<string, FileNode>;
+  readonly symbolIdsByFile: ReadonlyMap<string, readonly string[]>;
   readonly hazards: readonly HazardAnnotation[];
   readonly hazardsByCarrierPath: ReadonlyMap<string, readonly HazardAnnotation[]>;
   readonly executableSymbolEdges: ReadonlyMap<string, readonly string[]>;
@@ -90,8 +91,8 @@ interface RangeCap {
 
 /** Build graph-wide indexes once when several frontend fragments share a graph. */
 export function createHazardEvaluationContext(graph: IRGraph): HazardEvaluationContext {
-  const fileNodes = graph
-    .nodes()
+  const nodes = graph.nodes();
+  const fileNodes = nodes
     .filter(
       (node): node is Extract<ReturnType<IRGraph["nodes"]>[number], { kind: "file" }> =>
         node.kind === "file",
@@ -104,10 +105,15 @@ export function createHazardEvaluationContext(graph: IRGraph): HazardEvaluationC
   for (const hazard of hazards) {
     addToList(hazardsByCarrierPath, filePathById.get(hazard.file) ?? hazard.site.file, hazard);
   }
+  const symbolIdsByFile = new Map<string, string[]>();
+  for (const node of nodes) {
+    if (node.kind === "symbol") addToList(symbolIdsByFile, node.file, node.id);
+  }
   return {
     graph,
     fileNodes,
     fileNodeByPath: new Map(fileNodes.map((file) => [file.path, file])),
+    symbolIdsByFile,
     hazards,
     hazardsByCarrierPath,
     executableSymbolEdges: buildExecutableSymbolEdges(graph),
@@ -205,14 +211,7 @@ export function evaluateHazards(input: HazardEvaluationInput): HazardEvaluation 
   // preserves the existing unioned activation behavior. Phase 4 will evaluate
   // worlds independently; until then, filtering here could make a previously
   // protected subject claimable and would violate this checkpoint's rollback.
-  const reachableCarrierNodes = new Set<string>([
-    ...reachability.production.reachableFiles,
-    ...reachability.production.reachableSymbols,
-    ...reachability.config.reachableFiles,
-    ...reachability.config.reachableSymbols,
-    ...reachability.test.reachableFiles,
-    ...reachability.test.reachableSymbols,
-  ]);
+  const reachableCarrierNodes = reachableCarriers(context, reachability, analysisFiles);
   const queue: Array<{ readonly carrier: string; readonly source?: HazardAnnotation }> = [
     ...reachableCarrierNodes,
   ].map((carrier) => ({ carrier }));
@@ -815,6 +814,51 @@ function stableEffects(effects: readonly AppliedHazardCap[]): AppliedHazardCap[]
       a.hazardClass.localeCompare(b.hazardClass) ||
       a.detail.localeCompare(b.detail),
   );
+}
+
+/**
+ * Seed one fragment's hazard closure without cloning every repository-wide
+ * reachability set. The context indexes graph subjects by their owning file,
+ * so disjoint fragments together inspect each file/symbol once.
+ */
+function reachableCarriers(
+  context: HazardEvaluationContext,
+  reachability: PartitionedReachability,
+  analysisFiles: ReadonlySet<string> | undefined,
+): Set<string> {
+  const { production, config, test } = reachability;
+  if (analysisFiles === undefined) {
+    return new Set([
+      ...production.reachableFiles,
+      ...production.reachableSymbols,
+      ...config.reachableFiles,
+      ...config.reachableSymbols,
+      ...test.reachableFiles,
+      ...test.reachableSymbols,
+    ]);
+  }
+  const reachable = new Set<string>();
+  for (const file of analysisFiles) {
+    const fileNode = context.fileNodeByPath.get(file);
+    if (
+      fileNode !== undefined &&
+      (production.reachableFiles.has(fileNode.id) ||
+        config.reachableFiles.has(fileNode.id) ||
+        test.reachableFiles.has(fileNode.id))
+    ) {
+      reachable.add(fileNode.id);
+    }
+    for (const symbolId of context.symbolIdsByFile.get(file) ?? []) {
+      if (
+        production.reachableSymbols.has(symbolId) ||
+        config.reachableSymbols.has(symbolId) ||
+        test.reachableSymbols.has(symbolId)
+      ) {
+        reachable.add(symbolId);
+      }
+    }
+  }
+  return reachable;
 }
 
 function isInScope(file: string, scope: ReadonlySet<string> | undefined): boolean {

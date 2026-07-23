@@ -4,6 +4,7 @@ export type {
 } from "./analyze.js";
 export {
   analyzeRustProject,
+  analyzeRustProjectFragment,
   analyzeRustProjectWithGraph,
 } from "./analyze.js";
 export type { CompilerDeadFunction } from "./compiler.js";

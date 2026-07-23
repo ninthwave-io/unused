@@ -14,7 +14,13 @@ export {
   type GlobalAssumption,
   renderAssumptionSet,
 } from "./assumption-set.js";
-export { type DependencyClaimInput, type EmitClaimsInput, emitClaims } from "./claims.js";
+export {
+  type ClaimEmissionContext,
+  createClaimEmissionContext,
+  type DependencyClaimInput,
+  type EmitClaimsInput,
+  emitClaims,
+} from "./claims.js";
 export {
   type ComputeDeletionPlanInput,
   computeDeletionPlan,
@@ -50,10 +56,12 @@ export {
 export {
   PERFORMANCE_PHASES,
   type PerformanceCounters,
+  type PerformanceMemorySnapshot,
   type PerformancePhase,
   type PerformancePhaseEvent,
   type PerformanceSnapshot,
   PerformanceTracker,
+  performanceMemorySnapshot,
 } from "./performance.js";
 export {
   type ComputeReachabilityOptions,

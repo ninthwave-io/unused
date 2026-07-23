@@ -20,7 +20,11 @@ import {
   applyConfigSymbolEntrypoints,
   graphSymbolLanguages,
 } from "../config-symbol-entrypoints.js";
-import type { FrontendClaimInputs } from "../plugins/types.js";
+import {
+  claimAnnotationKey,
+  collectFrontendClaimAnnotations,
+} from "../plugins/claim-annotations.js";
+import type { FrontendClaimInputs, FrontendLocalGraph } from "../plugins/types.js";
 import type { AnalyzeInternalOptions, AnalyzeOptions, AnalyzeResult } from "../ts/analyze.js";
 import {
   applyConfigSuppressions,
@@ -72,11 +76,29 @@ export async function analyzeRustProjectWithGraph(
   options: AnalyzeOptions = {},
   internal: RustAnalyzeInternalOptions = {},
 ): Promise<AnalyzeRustWithGraph> {
+  return (await analyzeRustProjectMode(rootDir, options, internal, false)) as AnalyzeRustWithGraph;
+}
+
+/** Graph-only frontend path used before repository-wide reachability and claims. */
+export async function analyzeRustProjectFragment(
+  rootDir: string,
+  options: AnalyzeOptions = {},
+  internal: RustAnalyzeInternalOptions = {},
+): Promise<FrontendLocalGraph> {
+  return (await analyzeRustProjectMode(rootDir, options, internal, true)) as FrontendLocalGraph;
+}
+
+async function analyzeRustProjectMode(
+  rootDir: string,
+  options: AnalyzeOptions,
+  internal: RustAnalyzeInternalOptions,
+  fragmentOnly: boolean,
+): Promise<AnalyzeRustWithGraph | FrontendLocalGraph> {
   const root = realpathSync(resolve(rootDir));
   const cargo = createCargoExecutionContext(root, internal.cargoTargetParentDir);
   let primaryFailure: unknown;
   try {
-    return await analyzeRustProjectWithIsolatedCargo(root, options, internal, cargo);
+    return await analyzeRustProjectWithIsolatedCargo(root, options, internal, cargo, fragmentOnly);
   } catch (error) {
     primaryFailure = error;
     throw error;
@@ -90,7 +112,8 @@ async function analyzeRustProjectWithIsolatedCargo(
   options: AnalyzeOptions,
   internal: RustAnalyzeInternalOptions,
   cargo: CargoExecutionContext,
-): Promise<AnalyzeRustWithGraph> {
+  fragmentOnly: boolean,
+): Promise<AnalyzeRustWithGraph | FrontendLocalGraph> {
   const started = Date.now();
   const now = options.now ?? new Date();
   const version = options.toolVersion ?? DEFAULT_TOOL_VERSION;
@@ -101,18 +124,22 @@ async function analyzeRustProjectWithIsolatedCargo(
     execution: cargo,
   });
   const config = await loadConfig(root, options.configPath);
+  const units = cargoUnits(root, metadata);
+  const configUnits = units.map((unit) => ({ rootRelDir: unit.rootRelDir, name: unit.name }));
+  if (fragmentOnly) performance?.increment("workspaces", units.length);
+  else performance?.set("workspaces", units.length);
   if (workspaceStarted !== undefined) {
     performance?.finish("workspace-config-detection", workspaceStarted);
   }
   const discoveryStarted = performance?.now();
   const sourceFiles = await rustSources(root, options, internal.sourceFiles);
   const files = sourceFiles.map((file) => toPosixRel(root, realpathSync(file))).sort();
+  if (fragmentOnly) performance?.increment("files", files.length);
+  else performance?.set("files", files.length);
   if (discoveryStarted !== undefined) {
     performance?.finish("discovery-gitignore", discoveryStarted);
   }
   const fileSet = new Set(files);
-  const units = cargoUnits(root, metadata);
-  const configUnits = units.map((unit) => ({ rootRelDir: unit.rootRelDir, name: unit.name }));
   const graph = new IRGraph();
   const fileLineCounts = new Map<string, number>();
   const sources = new Map<string, string>();
@@ -196,14 +223,18 @@ async function analyzeRustProjectWithIsolatedCargo(
       name: fact.name,
     });
   }
+  const symbolCount = graph.nodes().filter((node) => node.kind === "symbol").length;
+  const edgeCount = graph.edges().length;
+  if (fragmentOnly) {
+    performance?.increment("symbols", symbolCount);
+    performance?.increment("edges", edgeCount);
+  } else {
+    performance?.set("symbols", symbolCount);
+    performance?.set("edges", edgeCount);
+  }
   if (compilerGraphStarted !== undefined) {
     performance?.finish("graph-construction", compilerGraphStarted);
   }
-
-  performance?.set("files", files.length);
-  performance?.set("symbols", graph.nodes().filter((node) => node.kind === "symbol").length);
-  performance?.set("edges", graph.edges().length);
-  performance?.set("workspaces", units.length);
   if (internal.deferConfigSymbolEntrypoints !== true) {
     applyConfigSymbolEntrypoints({
       graph,
@@ -213,7 +244,6 @@ async function analyzeRustProjectWithIsolatedCargo(
       ...(performance === undefined ? {} : { performance }),
     });
   }
-  const reachability = computePartitionedReachability(graph, performance);
   const provenance: Provenance = {
     analyzer: ANALYZER_NAME,
     version,
@@ -226,6 +256,37 @@ async function analyzeRustProjectWithIsolatedCargo(
     analysisFiles: fileSet,
     claimableFiles,
   };
+  if (fragmentOnly) {
+    const evidence = new Map(
+      uniqueFacts.map((fact) => [
+        claimAnnotationKey("export", fact.file, fact.name),
+        rustcEvidence(fact.name, fact.file, fact.site.span.startLine),
+      ]),
+    );
+    return {
+      graph,
+      provenance,
+      claimInputs,
+      claimAnnotations: collectFrontendClaimAnnotations({
+        graph,
+        config,
+        units: configUnits,
+        claimInputs,
+        evidence,
+      }),
+      metadata: {
+        projectName: repositoryName(root, metadata),
+        fileCount: files.length,
+        workspaceCount: units.length,
+        configHash: computeConfigHash(config),
+        gateThreshold: config.gate?.threshold ?? "high",
+        completeness: { production: "complete", config: "complete", test: "complete" },
+      },
+      diagnostics: [],
+    };
+  }
+
+  const reachability = computePartitionedReachability(graph, performance);
   const rustcFacts = new Set(uniqueFacts.map((fact) => `${fact.file}\0${fact.name}`));
   const hazardEvaluation = evaluateHazards({
     graph,
@@ -313,16 +374,20 @@ function annotateRustPackages(
 function withRustcEvidence(claim: Claim): Claim {
   return {
     ...claim,
-    evidence: [
-      {
-        type: "static-reachability",
-        detail:
-          `rustc emitted dead_code for private function \`${claim.subject.name}\` at ` +
-          `${claim.subject.loc.file}:${claim.subject.loc.span[0]} in both default and all-features all-target compilations.`,
-        source: "rustc-dead-code",
-      },
-    ],
+    evidence: rustcEvidence(claim.subject.name, claim.subject.loc.file, claim.subject.loc.span[0]),
   };
+}
+
+function rustcEvidence(name: string, file: string, line: number): Claim["evidence"] {
+  return [
+    {
+      type: "static-reachability",
+      detail:
+        `rustc emitted dead_code for private function \`${name}\` at ` +
+        `${file}:${line} in both default and all-features all-target compilations.`,
+      source: "rustc-dead-code",
+    },
+  ];
 }
 
 function addEntrypoint(

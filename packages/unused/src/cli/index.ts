@@ -72,6 +72,7 @@ import {
   createDeletionPlanningContext,
   type PerformancePhaseEvent,
   PerformanceTracker,
+  performanceMemorySnapshot,
   whyAlive,
 } from "../core/analysis/index.js";
 import {
@@ -388,6 +389,7 @@ function finishPerformance(performance: PerformanceTracker | undefined): void {
     ]),
   );
   const usage = process.resourceUsage();
+  const memory = performanceMemorySnapshot();
   process.stderr.write(
     `unused performance ${JSON.stringify({
       event: "summary",
@@ -395,6 +397,7 @@ function finishPerformance(performance: PerformanceTracker | undefined): void {
       counters: snapshot.counters,
       cpu: { userMicros: usage.userCPUTime, systemMicros: usage.systemCPUTime },
       maxRssKiB: usage.maxRSS,
+      memory,
     })}\n`,
   );
 }

@@ -84,7 +84,12 @@ import {
   applyConfigSymbolEntrypoints,
   graphSymbolLanguages,
 } from "../config-symbol-entrypoints.js";
-import type { FrontendClaimInputs, PluginDiagnostic } from "../plugins/types.js";
+import { collectFrontendClaimAnnotations } from "../plugins/claim-annotations.js";
+import type {
+  FrontendClaimInputs,
+  FrontendLocalGraph,
+  PluginDiagnostic,
+} from "../plugins/types.js";
 import {
   applyConfigSuppressions,
   type ConfigUnit,
@@ -305,6 +310,24 @@ export async function analyzeProjectWithGraph(
   options: AnalyzeOptions = {},
   internal: AnalyzeInternalOptions = {},
 ): Promise<AnalyzeWithGraph> {
+  return (await analyzeProjectGraph(rootDir, options, internal, false)) as AnalyzeWithGraph;
+}
+
+/** Graph-only frontend path used before repository-wide reachability and claims. */
+export async function analyzeProjectFragment(
+  rootDir: string,
+  options: AnalyzeOptions = {},
+  internal: AnalyzeInternalOptions = {},
+): Promise<FrontendLocalGraph> {
+  return (await analyzeProjectGraph(rootDir, options, internal, true)) as FrontendLocalGraph;
+}
+
+async function analyzeProjectGraph(
+  rootDir: string,
+  options: AnalyzeOptions,
+  internal: AnalyzeInternalOptions,
+  fragmentOnly: boolean,
+): Promise<AnalyzeWithGraph | FrontendLocalGraph> {
   const start = Date.now();
   const now = options.now ?? new Date();
   const version = options.toolVersion ?? DEFAULT_TOOL_VERSION;
@@ -333,7 +356,8 @@ export async function analyzeProjectWithGraph(
   // workspace member classifies internal (its source), never external (T4.2).
   const workspacePackages = isWorkspace ? buildWorkspaceMap(units) : undefined;
   const configUnits: ConfigUnit[] = units.map((u) => ({ rootRelDir: u.rootRelDir, name: u.name }));
-  performance?.set("workspaces", units.length);
+  if (fragmentOnly) performance?.increment("workspaces", units.length);
+  else performance?.set("workspaces", units.length);
   if (workspaceStarted !== undefined) {
     performance?.finish("workspace-config-detection", workspaceStarted);
   }
@@ -373,7 +397,8 @@ export async function analyzeProjectWithGraph(
       return rel === "" || !isUnderExcluded(`${rel}/`, excludedPrefixes);
     }),
   );
-  performance?.set("files", files.length);
+  if (fragmentOnly) performance?.increment("files", files.length);
+  else performance?.set("files", files.length);
   if (discoveryStarted !== undefined) performance?.finish("discovery-gitignore", discoveryStarted);
   const parsingStarted = performance?.now();
   const contents = await Promise.all(files.map((f) => readFile(f, "utf8")));
@@ -709,11 +734,18 @@ export async function analyzeProjectWithGraph(
     configTokens: configScan.configTokens,
     testFiles: testFileRels,
   }).filter((dep) => !isIgnoredDependency(dep.packageName, config));
+  const symbolCount = graph.nodes().filter((node) => node.kind === "symbol").length;
+  const edgeCount = graph.edges().length;
+  if (fragmentOnly) {
+    performance?.increment("symbols", symbolCount);
+    performance?.increment("edges", edgeCount);
+  } else {
+    performance?.set("symbols", symbolCount);
+    performance?.set("edges", edgeCount);
+  }
   if (conventionStarted !== undefined) {
     performance?.finish("convention-config-roots", conventionStarted);
   }
-  performance?.set("symbols", graph.nodes().filter((node) => node.kind === "symbol").length);
-  performance?.set("edges", graph.edges().length);
 
   // partitioned reachability → claims (T5.1: production/config/test partitions).
   if (internal.deferConfigSymbolEntrypoints !== true) {
@@ -725,7 +757,6 @@ export async function analyzeProjectWithGraph(
       ...(performance === undefined ? {} : { performance }),
     });
   }
-  const reachability = computePartitionedReachability(graph, performance);
   const provenance: Provenance = {
     analyzer: ANALYZER_NAME,
     version,
@@ -754,6 +785,31 @@ export async function analyzeProjectWithGraph(
     analysisFiles: new Set(filesRel),
     claimableFiles: new Set(filesRel.filter((file) => isClaimable(file, config, configUnits))),
   };
+
+  if (fragmentOnly) {
+    return {
+      graph,
+      provenance,
+      claimInputs,
+      claimAnnotations: collectFrontendClaimAnnotations({
+        graph,
+        config,
+        units: configUnits,
+        claimInputs,
+      }),
+      metadata: {
+        projectName: nameOfPackage(rootPkg) ?? basename(root),
+        fileCount: files.length,
+        workspaceCount: units.length,
+        configHash: computeConfigHash(config),
+        gateThreshold: config.gate?.threshold ?? "high",
+        completeness: { production: "complete", config: "complete", test: "complete" },
+      },
+      diagnostics: [],
+    };
+  }
+
+  const reachability = computePartitionedReachability(graph, performance);
 
   const hazardEvaluation = evaluateHazards({
     graph,

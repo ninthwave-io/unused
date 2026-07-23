@@ -2,10 +2,12 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { fileId } from "../../core/ir/index.js";
+import { PerformanceTracker } from "../../core/analysis/index.js";
+import { fileId, IRGraph } from "../../core/ir/index.js";
 import {
   BUILT_IN_LANGUAGE_PLUGINS,
   BUILT_IN_PLUGINS,
+  createFrontendFragment,
   typescriptLanguagePlugin,
 } from "./builtins.js";
 import { PluginRegistry } from "./registry.js";
@@ -55,6 +57,7 @@ describe("built-in language plugins", () => {
     );
     await writeFile(join(project, "src", "index.ts"), "export const live = true;\n");
     await writeFile(join(project, "src", "dead.ts"), "export const dead = true;\n");
+    const performance = new PerformanceTracker();
     const context: RepositoryAnalysisContext = {
       rootDir: root,
       gitignore: true,
@@ -67,6 +70,7 @@ describe("built-in language plugins", () => {
       },
       now: new Date(0),
       toolVersion: "0.1.0",
+      performance,
     };
 
     const boundaries = await typescriptLanguagePlugin.discover(context);
@@ -85,5 +89,71 @@ describe("built-in language plugins", () => {
       { rootRelDir: "services/web", name: "neutral-web" },
     ]);
     expect(fragment.metadata).toMatchObject({ projectName: "neutral-web", fileCount: 2 });
+    expect(performance.snapshot()).toMatchObject({
+      phasesMs: {
+        "reachability-partitioning": 0,
+        "hazard-activation": 0,
+        "claim-generation": 0,
+      },
+      counters: { graphWalks: 0, claims: 0 },
+    });
+  });
+
+  it("rebases site-bearing analyzer diagnostics with the fragment context", () => {
+    const graph = new IRGraph();
+    const fragment = createFrontendFragment(
+      "language:typescript",
+      "ts",
+      {
+        id: "ts:services/web",
+        language: "ts",
+        rootDir: "/neutral/services/web",
+        rootRelDir: "services/web",
+        manifest: "services/web/package.json",
+        projectKind: "npm",
+      },
+      {
+        graph,
+        provenance: {
+          analyzer: "neutral",
+          version: "0.0.0",
+          generatedAt: new Date(0).toISOString(),
+        },
+        metadata: {
+          projectName: "neutral",
+          fileCount: 0,
+          workspaceCount: 1,
+          configHash: "neutral",
+          gateThreshold: "high",
+          completeness: { production: "complete", config: "complete", test: "complete" },
+        },
+        claimInputs: {
+          fileLineCounts: new Map(),
+          units: [{ rootRelDir: "", name: "neutral" }],
+          analysisFiles: new Set(),
+          claimableFiles: new Set(),
+        },
+        claimAnnotations: new Map(),
+        diagnostics: [
+          {
+            pluginId: "language:typescript",
+            severity: "warning",
+            code: "neutral-site",
+            message: "neutral",
+            site: {
+              file: "src/./index.ts",
+              span: { start: 0, end: 1, startLine: 1, endLine: 1 },
+            },
+          },
+        ],
+      },
+    );
+
+    expect(fragment.diagnostics).toEqual([
+      expect.objectContaining({
+        boundaryId: "ts:services/web",
+        site: expect.objectContaining({ file: "services/web/src/index.ts" }),
+      }),
+    ]);
   });
 });

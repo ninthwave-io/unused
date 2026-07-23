@@ -7,7 +7,11 @@
  * contract.
  */
 
-export { analyzeElixirProject, analyzeElixirProjectWithGraph } from "./analyze.js";
+export {
+  analyzeElixirProject,
+  analyzeElixirProjectFragment,
+  analyzeElixirProjectWithGraph,
+} from "./analyze.js";
 export type {
   ElixirAtomArgumentRole,
   ElixirAtomRoleSummary,
