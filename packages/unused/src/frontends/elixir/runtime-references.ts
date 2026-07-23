@@ -23,6 +23,7 @@ import {
   type ElixirAtomRoleSummary,
   type ElixirAtomRoleSummaryLookup,
   type ElixirAtomRoleSummaryProvider,
+  validateElixirAtomRoleSummaryProviders,
 } from "./atom-role-summaries.js";
 import type { FunctionRecord, ModuleRecord, TraceEvent, TraceResult } from "./events.js";
 
@@ -805,36 +806,26 @@ function applicableAtomRoleSummaries(
   traceResult: TraceResult,
   providers: readonly ElixirAtomRoleSummaryProvider[],
 ): readonly ElixirAtomRoleSummary[] {
+  validateElixirAtomRoleSummaryProviders(providers);
   const summaries: ElixirAtomRoleSummary[] = [];
-  const providerIds = new Set<string>();
+  const dependencies = new Set(traceResult.deps);
+  const lockedVersions = readHexDependencyVersions(projectDir);
   for (const provider of providers) {
-    if (providerIds.has(provider.id)) {
-      throw new Error(`duplicate Elixir atom role summary provider: ${provider.id}`);
-    }
-    providerIds.add(provider.id);
-    if (!traceResult.deps.includes(provider.dependency)) continue;
-    const lockedVersion = readHexDependencyVersion(projectDir, provider.dependency);
+    if (!dependencies.has(provider.dependency)) continue;
+    const lockedVersion = lockedVersions?.get(provider.dependency);
     if (lockedVersion === undefined || !provider.auditedVersions.includes(lockedVersion)) continue;
-    for (const summary of provider.summaries) {
-      if (
-        summary.origin.pluginId !== provider.id ||
-        summary.origin.dependency !== provider.dependency
-      ) {
-        throw new Error(`Elixir atom role summary is not owned by provider ${provider.id}`);
-      }
-      summaries.push(summary);
-    }
+    summaries.push(...provider.summaries);
   }
   return summaries;
 }
 
 /**
- * Read one exact Hex dependency version from the public Mix lock format.
+ * Read exact Hex dependency versions from the public Mix lock format once.
  * Path/git dependencies and malformed or ambiguous entries deliberately have
  * no applicable version: a semantic provider must fail closed without audited
  * package-version evidence.
  */
-function readHexDependencyVersion(projectDir: string, dependency: string): string | undefined {
+function readHexDependencyVersions(projectDir: string): ReadonlyMap<string, string> | undefined {
   let lock: string;
   try {
     lock = readFileSync(join(projectDir, "mix.lock"), "utf8");
@@ -842,8 +833,16 @@ function readHexDependencyVersion(projectDir: string, dependency: string): strin
     return undefined;
   }
   const entries = parseMixLockEntries(lock);
-  const tuple = entries?.get(dependency);
-  if (tuple === undefined) return undefined;
+  if (entries === undefined) return undefined;
+  const versions = new Map<string, string>();
+  for (const [dependency, tuple] of entries) {
+    const version = hexDependencyVersion(dependency, tuple);
+    if (version !== undefined) versions.set(dependency, version);
+  }
+  return versions;
+}
+
+function hexDependencyVersion(dependency: string, tuple: string): string | undefined {
   const fields = splitTopLevelTerms(tuple.slice(1, -1));
   if (
     fields.length !== 8 ||

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { ectoElixirAtomRoleSummaryProvider } from "../plugins/elixir-conventions.js";
+import type { ElixirAtomRoleSummaryProvider } from "./atom-role-summaries.js";
 import type { FunctionRecord, ModuleRecord, TraceEvent, TraceResult } from "./events.js";
 import {
   type AtomFlowEscapeCause,
@@ -882,6 +883,95 @@ describe("extractElixirRuntimeReferences", () => {
           summaryProviders,
         ).dynamicDispatches.find((fact) => fact.fromFun === "map_key/2"),
       ).toMatchObject({ factKind: "computed-atom", flow: "escape", kind: "opaque" });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("activates a generic provider only for exact dependency and Hex-lock evidence", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-neutral-role-provider-"));
+    const file = "neutral_provider.ex";
+    const provider: ElixirAtomRoleSummaryProvider = {
+      id: "convention:neutral",
+      dependency: "neutral_dep",
+      auditedVersions: ["1.2.3"],
+      summaries: [
+        {
+          module: "Neutral.Dependency",
+          name: "consume",
+          arity: 1,
+          arguments: { 0: "consume-data" },
+          origin: { pluginId: "convention:neutral", dependency: "neutral_dep" },
+        },
+      ],
+    };
+    const events: TraceEvent[] = [
+      {
+        k: "event",
+        kind: "remote",
+        file,
+        line: 2,
+        from_mod: "Neutral.Provider",
+        from_fun: "run/1",
+        to_mod: "String",
+        name: "to_atom",
+        arity: 1,
+        dyn: true,
+        partition: "prod",
+      },
+      {
+        k: "event",
+        kind: "remote",
+        file,
+        line: 2,
+        from_mod: "Neutral.Provider",
+        from_fun: "run/1",
+        to_mod: "Neutral.Dependency",
+        name: "consume",
+        arity: 1,
+        dyn: false,
+        partition: "prod",
+      },
+    ];
+    const trace: TraceResult = {
+      appMod: null,
+      deps: ["neutral_dep"],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod("Neutral.Provider", file)],
+      functions: [],
+      events,
+    };
+
+    try {
+      writeFileSync(
+        join(root, file),
+        "defmodule Neutral.Provider do\n  def run(raw), do: Neutral.Dependency.consume(String.to_atom(raw))\nend\n",
+      );
+      writeFileSync(join(root, "mix.lock"), hexLock("neutral_dep", "1.2.3"));
+      expect(
+        extractElixirRuntimeConventions(root, trace, [provider]).dynamicDispatches,
+      ).toMatchObject([{ factKind: "computed-atom", flow: "data", kind: "exact" }]);
+
+      for (const variant of [
+        { trace: { ...trace, deps: [] }, lock: hexLock("neutral_dep", "1.2.3") },
+        { trace, lock: hexLock("neutral_dep", "1.2.2") },
+        { trace, lock: `%{\n  "neutral_dep": {:path, "deps/neutral_dep"}\n}\n` },
+      ]) {
+        writeFileSync(join(root, "mix.lock"), variant.lock);
+        expect(
+          extractElixirRuntimeConventions(root, variant.trace, [provider]).dynamicDispatches,
+        ).toMatchObject([{ factKind: "computed-atom", flow: "escape", kind: "opaque" }]);
+      }
+
+      writeFileSync(join(root, "mix.lock"), hexLock("neutral_dep", "1.2.3"));
+      expect(
+        extractElixirRuntimeConventions(
+          root,
+          { ...trace, modules: [...trace.modules, mod("Neutral.Dependency", file)] },
+          [provider],
+        ).dynamicDispatches,
+      ).toMatchObject([{ factKind: "computed-atom", flow: "escape", kind: "opaque" }]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -7566,4 +7656,8 @@ function ectoHexLock(version: string): string {
 
 function ectoHexTuple(version: string): string {
   return `{:hex, :ecto, "${version}", "neutral-checksum", [:mix], [], "hexpm", "neutral-outer-checksum"}`;
+}
+
+function hexLock(dependency: string, version: string): string {
+  return `%{\n  "${dependency}": {:hex, :${dependency}, "${version}", "neutral-checksum", [:mix], [], "hexpm", "neutral-outer-checksum"},\n}\n`;
 }

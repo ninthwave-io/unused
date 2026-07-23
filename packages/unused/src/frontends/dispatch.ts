@@ -19,8 +19,10 @@ import { entrypointId, IRGraph, type IRNode } from "../core/ir/index.js";
 import { applyConfigSymbolEntrypoints } from "./config-symbol-entrypoints.js";
 import { analyzeElixirProjectWithGraph } from "./elixir/index.js";
 import { BUILT_IN_PLUGINS, claimAnnotationKey } from "./plugins/builtins.js";
+import { collectElixirAtomRoleSummaryProviders } from "./plugins/elixir-role-summary-providers.js";
 import { PluginRegistry } from "./plugins/registry.js";
 import {
+  type AnalyzerPlugin,
   executePluginOperation,
   type FrontendGraphFragment,
   type GraphContribution,
@@ -51,6 +53,11 @@ export interface AnalyzeAutoWithGraph {
 
 export type BoundaryRunMetadata = AnalysisBoundary;
 
+interface AnalyzeAutoInternalOptions {
+  /** Test seam for proving registry-driven topology parity; not a runtime loading API. */
+  readonly plugins?: readonly AnalyzerPlugin[];
+}
+
 export async function analyzeProjectAuto(
   rootDir: string,
   options: AnalyzeOptions = {},
@@ -66,6 +73,7 @@ export async function analyzeProjectAuto(
 export async function analyzeProjectAutoWithGraph(
   rootDir: string,
   options: AnalyzeOptions = {},
+  internal: AnalyzeAutoInternalOptions = {},
 ): Promise<AnalyzeAutoWithGraph> {
   const started = Date.now();
   const root = resolve(rootDir);
@@ -76,6 +84,10 @@ export async function analyzeProjectAutoWithGraph(
   if (discoveryStarted !== undefined) {
     options.performance?.finish("discovery-gitignore", discoveryStarted);
   }
+  const registry = new PluginRegistry(internal.plugins ?? BUILT_IN_PLUGINS);
+  const elixirAtomRoleSummaryProviders = collectElixirAtomRoleSummaryProviders(
+    registry.conventionPlugins(),
+  );
   const context: RepositoryAnalysisContext = {
     rootDir: root,
     gitignore: options.gitignore !== false,
@@ -88,10 +100,10 @@ export async function analyzeProjectAutoWithGraph(
     },
     now: options.now ?? new Date(),
     toolVersion: options.toolVersion ?? "0.1.0",
+    elixirAtomRoleSummaryProviders,
     ...(options.configPath === undefined ? {} : { configPath: resolve(root, options.configPath) }),
     ...(options.performance === undefined ? {} : { performance: options.performance }),
   };
-  const registry = new PluginRegistry(BUILT_IN_PLUGINS);
   const workspaceStarted = options.performance?.now();
   const discovered = (
     await Promise.all(
@@ -139,6 +151,7 @@ export async function analyzeProjectAutoWithGraph(
     const selected = discovered[0];
     const analysis = await (selected.plugin.language === "ex"
       ? analyzeElixirProjectWithGraph(root, options, {
+          atomRoleSummaryProviders: elixirAtomRoleSummaryProviders,
           elixirSourceFiles: inventory.elixirSourceFiles,
         })
       : analyzeProjectWithGraph(root, options));

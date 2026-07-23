@@ -71,6 +71,26 @@ deferred edges against the complete owning graph with
 `rebaseGraphContribution`. This is an ownership hand-off, not permission to
 parse, trace, or compile twice.
 
+An Elixir convention may also own an `elixirAtomRoleSummaryProvider`. This is a
+pre-graph semantic input, not a graph contribution and not a third-party
+loading surface. The repository dispatcher collects all such providers from
+the deterministic convention registry before analyzing any boundary, validates
+the complete inventory including collisions with language-owned summaries,
+and passes the same frozen inventory to root, nested, and mixed analysis. Do
+not gate this inventory on the convention's graph-phase `applies` callback;
+the Elixir frontend performs its own fail-closed dependency and exact-version
+applicability check against compiler facts and one parsed `mix.lock`.
+
+Provider ids must equal their owning `convention:*` plugin id. Their Hex
+dependency names and exact audited versions are data, not ranges; every summary
+origin must repeat that plugin/dependency ownership. A malformed, duplicate,
+colliding, or wrongly owned compiled-in provider is a registry defect and must
+abort before analysis. An absent dependency, missing or non-Hex lock entry, or
+unaudited version is environmental non-applicability and must omit the provider
+without a diagnostic on canonical JSON stdout. Keep the summary surface sparse:
+an omitted argument role remains an escape, and project-owned modules must not
+inherit dependency semantics merely by using the same canonical name.
+
 Computed or ambiguous runtime identity requires a registered hazard with the
 narrowest truthful scope. A convention must never invent an edge just to gain
 recall. A bridge should join exact endpoint keys and keep unmatched externally

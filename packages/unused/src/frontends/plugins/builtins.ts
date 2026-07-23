@@ -172,7 +172,7 @@ export const elixirLanguagePlugin: LanguageFrontendPlugin = {
         emitConfigMatchWarnings: false,
         deferConfigSymbolEntrypoints: true,
         deferredConventions: ["elixir-runtime", "elixir-scripts"],
-        atomRoleSummaryProviders: [ectoElixirConventionPlugin.elixirAtomRoleSummaryProvider],
+        atomRoleSummaryProviders: context.elixirAtomRoleSummaryProviders ?? [],
         elixirSourceFiles: filesWithinBoundary(
           boundary.rootDir,
           context.manifests.elixirSourceFiles,

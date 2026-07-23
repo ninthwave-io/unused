@@ -559,6 +559,46 @@ group had no supported indexed source call; it does not infer a specific source
 syntax. Module-safety rejection flags form a separate overlapping record because
 one unsafe target can contain more than one construct.
 
+### Phase 1B2B.3 semantic-provider inventory checkpoint
+
+Convention-owned atom-role summaries are now supplied through one generic,
+validated pre-graph inventory rather than being wired directly into the Elixir
+language plugin. A convention provider has a namespaced `convention:*` id, one
+valid Hex dependency name, one or more exact audited semantic versions, and
+one or more summaries whose origin exactly matches the owning plugin and
+dependency. The inventory rejects malformed or duplicate providers, invalid
+versions and roles, ownership mismatches, and canonical callee collisions with
+either the language registry or another provider before any project boundary
+is analyzed. Registry defects therefore fail loudly; environmental
+non-applicability remains a conservative omission.
+
+The repository dispatcher constructs this immutable inventory once from the
+same deterministic built-in convention registry used after graph construction.
+It passes the exact inventory to root-only Elixir analysis and through the
+shared repository context to nested and mixed-boundary analysis. Provider
+availability is consequently independent of repository topology and of a
+convention's later graph-phase `applies` result. Neutral real-compiler coverage
+locks this parity across root, nested, and mixed TypeScript/Elixir layouts. The
+same coverage schema-validates the one-line canonical JSON projection, proves
+supported deletion with an applicable provider, and proves `why` evidence plus
+deletion refusal when an unaudited version conservatively restores the escape.
+
+Runtime applicability remains deliberately narrower than registration. The
+Elixir frontend builds one dependency set from compiler facts, parses
+`mix.lock` once into exact Hex versions, and activates only providers whose
+declared dependency is present at an audited version. Missing or malformed
+locks, path/git dependencies, unaudited versions, and absent dependencies omit
+the provider and retain the existing escape hazard. Project-owned modules
+continue to defeat dependency-summary matching, so a project cannot spoof a
+reviewed dependency callee. Sparse summaries also remain fail closed: omitted
+argument roles escape rather than acquiring optimistic semantics.
+
+This checkpoint changes no report or JSON schema, claim rule, hazard effect,
+or deletion-plan rule. A provider can only classify value-flow roles; it cannot
+emit or suppress claims. Applicability costs O(lock bytes + dependencies +
+providers + summaries), with one lock parse per Elixir boundary and no
+per-provider filesystem read.
+
 Escaping computed-atom producers receive diagnostic attribution without
 retaining per-producer decision sets. A finite reason bitmask is propagated
 beside the existing semantic bitmask through the same value graph, public and

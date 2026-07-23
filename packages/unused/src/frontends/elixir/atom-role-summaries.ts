@@ -6,6 +6,12 @@ export type ElixirAtomArgumentRole =
   | "invocation-selector"
   | "escape";
 
+export type ElixirConventionPluginId = `convention:${string}`;
+
+export type ElixirAtomRoleSummaryOrigin =
+  | { readonly pluginId: "language:elixir" }
+  | { readonly pluginId: ElixirConventionPluginId; readonly dependency: string };
+
 export interface ElixirAtomRoleSummary {
   readonly module: string;
   readonly name: string;
@@ -30,13 +36,11 @@ export interface ElixirAtomRoleSummary {
     readonly inputArguments: readonly number[];
     readonly documentation: `https://${string}`;
   };
-  readonly origin:
-    | { readonly pluginId: "language:elixir" }
-    | { readonly pluginId: "convention:ecto"; readonly dependency: "ecto" };
+  readonly origin: ElixirAtomRoleSummaryOrigin;
 }
 
 export interface ElixirAtomRoleSummaryProvider {
-  readonly id: "convention:ecto";
+  readonly id: ElixirConventionPluginId;
   readonly dependency: string;
   /** Exact dependency versions whose public semantics were audited. */
   readonly auditedVersions: readonly string[];
@@ -47,6 +51,17 @@ const core = { pluginId: "language:elixir" } as const;
 const consume = "consume-data" as const;
 const propagate = "propagate-to-result" as const;
 const ELIXIR_DOCS = "https://hexdocs.pm/elixir/1.20.2" as const;
+const CONVENTION_PLUGIN_ID_RE = /^convention:[a-z][a-z0-9]*(?:[-.:][a-z0-9]+)*$/u;
+const HEX_DEPENDENCY_RE = /^[a-z][a-z0-9_]*$/u;
+const EXACT_SEMVER_RE =
+  /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
+const MAX_CALLEE_IDENTITY_LENGTH = 255;
+const ARGUMENT_ROLES = new Set<ElixirAtomArgumentRole>([
+  "consume-data",
+  "propagate-to-result",
+  "invocation-selector",
+  "escape",
+]);
 
 export const defineElixirAtomRoleSummary = (
   module: string,
@@ -229,15 +244,21 @@ export const ELIXIR_ATOM_ROLE_SUMMARIES: readonly ElixirAtomRoleSummary[] = [
 export function validateElixirAtomRoleSummaries(summaries: readonly ElixirAtomRoleSummary[]): void {
   const keys = new Set<string>();
   for (const entry of summaries) {
+    validateCalleeIdentityComponent(entry.module, "module");
+    validateCalleeIdentityComponent(entry.name, "function");
     const key = `${entry.module}\0${entry.name}\0${entry.arity}`;
     if (keys.has(key)) throw new Error(`duplicate Elixir atom role summary: ${key}`);
     keys.add(key);
     if (!Number.isInteger(entry.arity) || entry.arity < 0) {
       throw new Error(`invalid Elixir atom role arity ${entry.arity} for ${key}`);
     }
-    for (const index of Object.keys(entry.arguments).map(Number)) {
+    for (const [rawIndex, role] of Object.entries(entry.arguments)) {
+      const index = Number(rawIndex);
       if (!Number.isInteger(index) || index < 0 || index >= entry.arity) {
         throw new Error(`invalid Elixir atom role argument ${index} for ${key}`);
+      }
+      if (!ARGUMENT_ROLES.has(role as ElixirAtomArgumentRole)) {
+        throw new Error(`invalid Elixir atom argument role for ${key}`);
       }
     }
     const callbackResultIndexes = Object.keys(entry.callbackResults ?? {})
@@ -265,12 +286,94 @@ export function validateElixirAtomRoleSummaries(summaries: readonly ElixirAtomRo
       validateCallbackAudit(entry, key, audit, index);
     }
     for (const index of callbackResultIndexes) {
+      if (entry.callbackResults?.[index] !== "propagate-to-result") {
+        throw new Error(`invalid callback result role for ${key}`);
+      }
       if (!callbackAuditIndexes.includes(index)) {
         throw new Error(`callback result/audit mismatch for ${key}`);
       }
     }
     if (entry.implicitCallbackAudit !== undefined)
       validateCallbackAudit(entry, key, entry.implicitCallbackAudit);
+    validateSummaryOrigin(entry, key);
+  }
+}
+
+function validateCalleeIdentityComponent(value: string, component: "module" | "function"): void {
+  if (
+    typeof value !== "string" ||
+    value === "" ||
+    value !== value.trim() ||
+    value.length > MAX_CALLEE_IDENTITY_LENGTH ||
+    [...value].some((character) => {
+      const codePoint = character.codePointAt(0);
+      return codePoint !== undefined && (codePoint <= 31 || codePoint === 127);
+    })
+  ) {
+    throw new Error(`invalid Elixir atom role summary ${component} identity`);
+  }
+}
+
+/** Validate every compiled-in provider before dependency/version applicability is considered. */
+export function validateElixirAtomRoleSummaryProviders(
+  providers: readonly ElixirAtomRoleSummaryProvider[],
+): void {
+  const providerIds = new Set<string>();
+  const allSummaries = [...ELIXIR_ATOM_ROLE_SUMMARIES];
+  for (const provider of providers) {
+    if (!CONVENTION_PLUGIN_ID_RE.test(provider.id)) {
+      throw new Error(`invalid Elixir atom role summary provider id: ${provider.id}`);
+    }
+    if (providerIds.has(provider.id)) {
+      throw new Error(`duplicate Elixir atom role summary provider: ${provider.id}`);
+    }
+    providerIds.add(provider.id);
+    if (!HEX_DEPENDENCY_RE.test(provider.dependency)) {
+      throw new Error(`invalid Elixir atom role summary dependency for ${provider.id}`);
+    }
+    if (provider.auditedVersions.length === 0) {
+      throw new Error(`Elixir atom role summary provider ${provider.id} has no audited versions`);
+    }
+    const versions = new Set<string>();
+    for (const version of provider.auditedVersions) {
+      if (!EXACT_SEMVER_RE.test(version)) {
+        throw new Error(`invalid audited Elixir dependency version for ${provider.id}: ${version}`);
+      }
+      if (versions.has(version)) {
+        throw new Error(
+          `duplicate audited Elixir dependency version for ${provider.id}: ${version}`,
+        );
+      }
+      versions.add(version);
+    }
+    if (provider.summaries.length === 0) {
+      throw new Error(`Elixir atom role summary provider ${provider.id} has no summaries`);
+    }
+    for (const summary of provider.summaries) {
+      if (
+        summary.origin.pluginId !== provider.id ||
+        !("dependency" in summary.origin) ||
+        summary.origin.dependency !== provider.dependency
+      ) {
+        throw new Error(`Elixir atom role summary is not owned by provider ${provider.id}`);
+      }
+      allSummaries.push(summary);
+    }
+  }
+  validateElixirAtomRoleSummaries(allSummaries);
+}
+
+function validateSummaryOrigin(entry: ElixirAtomRoleSummary, key: string): void {
+  const origin = entry.origin;
+  if (origin.pluginId === "language:elixir") {
+    if ("dependency" in origin) throw new Error(`invalid language-owned summary origin for ${key}`);
+    return;
+  }
+  if (
+    !CONVENTION_PLUGIN_ID_RE.test(origin.pluginId) ||
+    !HEX_DEPENDENCY_RE.test(origin.dependency)
+  ) {
+    throw new Error(`invalid convention-owned summary origin for ${key}`);
   }
 }
 
@@ -280,8 +383,11 @@ function validateCallbackAudit(
   audit: NonNullable<ElixirAtomRoleSummary["implicitCallbackAudit"]>,
   callbackArgument?: number,
 ): void {
-  if (!audit.documentation.startsWith("https://")) {
+  if (typeof audit.documentation !== "string" || !audit.documentation.startsWith("https://")) {
     throw new Error(`invalid callback documentation for ${key}`);
+  }
+  if (!Array.isArray(audit.inputArguments)) {
+    throw new Error(`invalid callback inputs for ${key}`);
   }
   const inputs = new Set(audit.inputArguments);
   if (inputs.size !== audit.inputArguments.length) {

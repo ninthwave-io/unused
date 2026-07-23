@@ -11,6 +11,7 @@ export {
   ectoElixirConventionPlugin,
   elixirRuntimeConventionPlugin,
 } from "./elixir-conventions.js";
+export { collectElixirAtomRoleSummaryProviders } from "./elixir-role-summary-providers.js";
 export {
   prefixRepositoryPath,
   rebaseClaimInputs,

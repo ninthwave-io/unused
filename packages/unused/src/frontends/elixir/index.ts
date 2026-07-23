@@ -11,7 +11,9 @@ export { analyzeElixirProject, analyzeElixirProjectWithGraph } from "./analyze.j
 export type {
   ElixirAtomArgumentRole,
   ElixirAtomRoleSummary,
+  ElixirAtomRoleSummaryOrigin,
   ElixirAtomRoleSummaryProvider,
+  ElixirConventionPluginId,
 } from "./atom-role-summaries.js";
 export {
   createElixirAtomRoleSummaryLookup,
@@ -19,6 +21,7 @@ export {
   ELIXIR_ATOM_ROLE_SUMMARIES,
   lookupElixirAtomRoleSummary,
   validateElixirAtomRoleSummaries,
+  validateElixirAtomRoleSummaryProviders,
 } from "./atom-role-summaries.js";
 export { detectElixirProject, isElixirProject } from "./detect.js";
 export {

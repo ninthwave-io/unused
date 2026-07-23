@@ -51,6 +51,8 @@ export interface RepositoryAnalysisContext {
   readonly manifests: RepositoryManifestInventory;
   readonly now: Date;
   readonly toolVersion: string;
+  /** Validated static semantic providers collected before language analysis. */
+  readonly elixirAtomRoleSummaryProviders?: readonly ElixirAtomRoleSummaryProvider[];
   readonly configPath?: string;
   readonly performance?: PerformanceTracker;
 }
