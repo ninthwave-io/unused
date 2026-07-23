@@ -603,7 +603,11 @@ defmodule Unused.Structure do
       {{:., _dot_meta, [_receiver, name]}, meta, args} when is_atom(name) and is_list(args) ->
         walk_call(node, meta, name, length(args), args, carrier, state, depth, 0, node_span(node))
       {name, meta, args} when is_atom(name) and is_list(meta) and is_list(args) ->
-        walk_call(node, meta, name, length(args), args, carrier, state, depth, 0, node_span(node))
+        if Macro.special_form?(name, length(args)) do
+          Enum.reduce(args, state, fn value, acc -> walk(value, carrier, acc, depth + 1) end)
+        else
+          walk_call(node, meta, name, length(args), args, carrier, state, depth, 0, node_span(node))
+        end
       {_left, _meta, args} when is_list(args) ->
         Enum.reduce(args, state, fn value, acc -> walk(value, carrier, acc, depth + 1) end)
       values when is_list(values) ->
@@ -611,7 +615,7 @@ defmodule Unused.Structure do
           child = if match?({_key, _value}, value), do: elem(value, 1), else: value
           walk(child, carrier, acc, depth + 1)
         end)
-      tuple when is_tuple(tuple) ->
+      tuple when is_tuple(tuple) and tuple_size(tuple) == 2 ->
         tuple
         |> Tuple.to_list()
         |> Enum.reduce(state, fn value, acc -> walk(value, carrier, acc, depth + 1) end)
@@ -742,6 +746,13 @@ defmodule Unused.Structure do
 
   defp node_end({:__block__, _meta, values}) when is_list(values), do: node_end(List.last(values))
   defp node_end({:|>, meta, [_left, right]}), do: node_end(right) || token_point(meta, 2)
+  defp node_end({:__aliases__, meta, parts}) when is_list(meta) and is_list(parts) do
+    case {Keyword.get(meta, :last), List.last(parts)} do
+      {last_meta, part} when is_list(last_meta) and is_atom(part) ->
+        token_point(last_meta, String.length(Atom.to_string(part)))
+      _ -> nil
+    end
+  end
   defp node_end({{:., _dot, [_receiver, name]}, meta, args}) when is_atom(name) and is_list(args),
     do: call_end(meta, name, args)
   defp node_end({name, meta, args}) when is_atom(name) and is_list(meta) and is_list(args),
@@ -756,11 +767,14 @@ defmodule Unused.Structure do
       # function-name extent. Nested interpolation calls are still walked.
       nil
     else
-      token_point(Keyword.get(meta, :closing), 1) ||
+      exact = token_point(Keyword.get(meta, :closing), 1) ||
         token_point(Keyword.get(meta, :end), 3) ||
-        point(Keyword.get(meta, :end_of_expression)) ||
-        node_end(List.last(args)) ||
-        token_point(meta, String.length(to_string(name)))
+        point(Keyword.get(meta, :end_of_expression))
+      cond do
+        exact != nil -> exact
+        Macro.special_form?(name, length(args)) -> nil
+        true -> node_end(List.last(args)) || token_point(meta, String.length(to_string(name)))
+      end
     end
   end
 

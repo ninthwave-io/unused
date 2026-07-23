@@ -235,23 +235,16 @@ end
       (carrier) => carrier.fun === "grapheme_result/1",
     );
     expect(graphemeCarrier?.body).toEqual({ sl: 15, sc: 2, el: 15, ec: 44 });
-    expect(
-      structure?.facts.some(
-        (fact) =>
-          fact.carrier === graphemeCarrier?.id &&
-          fact.from.sl === 15 &&
-          fact.from.sc === 36 &&
-          fact.from.el === 15 &&
-          fact.from.ec === 43,
-      ),
-    ).toBe(true);
+    // The quoted interpolation's internal `::` node is not an executable
+    // source call. Its plain variable argument produces no value-flow fact;
+    // the carrier span still proves Elixir/Node grapheme-column agreement.
+    expect(structure?.facts.filter((fact) => fact.carrier === graphemeCarrier?.id)).toEqual([]);
     const roles = new Set(structure?.facts.map((fact) => fact.role));
     expect(roles).toEqual(
       new Set([
         "branch-result",
         "rescue-success",
         "rescue-result",
-        "call-argument",
         "pipeline-argument",
         "carrier-result",
       ]),
@@ -305,6 +298,20 @@ end
   '''
   def sigil(value), do: ~s|neutral #{value}|
   def literal_sigil(value), do: ~S|neutral #{value}|
+  def wrap(value), do: value
+  def alias_value, do: wrap(String)
+  def qualified_alias, do: wrap(NeutralSpanMatrix.Nested)
+  def wrapped_heredoc(value), do: wrap("""
+  neutral #{value}
+  """)
+  def wrapped_tuple(value), do: wrap({:ok, value})
+  def wrapped_map(value), do: wrap(%{value: value})
+  def wrapped_binary(value), do: wrap(<<value::binary>>)
+  def wrapped_fn(value), do: wrap(fn -> value end)
+  def wrapped_case(value), do: wrap(case value do
+    nil -> :none
+    other -> other
+  end)
   def multiline_call(value), do: inspect(
     value
   )
@@ -347,7 +354,7 @@ end
       expect.objectContaining({ status: "complete", reason: null }),
     ]);
     const structure = trace.structuralFiles?.[0];
-    expect(structure?.carriers).toHaveLength(18);
+    expect(structure?.carriers).toHaveLength(27);
     const carrierByFunction = new Map(
       structure?.carriers.map((carrier) => [carrier.fun, carrier.id] as const),
     );
@@ -359,6 +366,63 @@ end
           fact.resolution === "exact",
       ),
     ).toBe(true);
+    for (const [fun, width] of [
+      ["alias_value/0", "String".length],
+      ["qualified_alias/0", "NeutralSpanMatrix.Nested".length],
+    ] as const) {
+      const aliasFact = structure?.facts.find(
+        (fact) =>
+          fact.carrier === carrierByFunction.get(fun) &&
+          fact.role === "call-argument" &&
+          fact.resolution === "exact",
+      );
+      expect(aliasFact, fun).toBeDefined();
+      expect(aliasFact?.from.sl, fun).toBe(aliasFact?.from.el);
+      expect((aliasFact?.from.ec ?? 0) - (aliasFact?.from.sc ?? 0), fun).toBe(width);
+    }
+    for (const fun of [
+      "combined/1",
+      "modifier/1",
+      "regional/1",
+      "keycap/1",
+      "heredoc/1",
+      "charlist_heredoc/1",
+      "sigil/1",
+      "literal_sigil/1",
+    ]) {
+      expect(
+        structure?.facts.some(
+          (fact) => fact.carrier === carrierByFunction.get(fun) && fact.role === "carrier-result",
+        ),
+        fun,
+      ).toBe(false);
+    }
+    const wrapEventIdByCarrier = new Map(
+      trace.structuralEvents
+        ?.filter((event) => event.name === "wrap" && event.eventId !== undefined)
+        .map((event) => [event.from_fun, event.eventId] as const),
+    );
+    for (const fun of ["wrapped_heredoc/1", "wrapped_tuple/1"]) {
+      expect(
+        structure?.facts.some(
+          (fact) =>
+            fact.carrier === carrierByFunction.get(fun) &&
+            fact.eventId === wrapEventIdByCarrier.get(fun),
+        ),
+        fun,
+      ).toBe(false);
+    }
+    for (const fun of ["wrapped_map/1", "wrapped_binary/1", "wrapped_fn/1", "wrapped_case/1"]) {
+      expect(
+        structure?.facts.some(
+          (fact) =>
+            fact.carrier === carrierByFunction.get(fun) &&
+            fact.eventId === wrapEventIdByCarrier.get(fun) &&
+            fact.resolution === "exact",
+        ),
+        fun,
+      ).toBe(true);
+    }
     for (const fun of ["multiline_tuple/1", "multiline_map/1", "binary/1"]) {
       expect(
         structure?.facts.some(
