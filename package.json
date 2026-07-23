@@ -12,14 +12,15 @@
     "lint": "biome check .",
     "format": "biome format --write .",
     "boundaries": "depcruise --config .dependency-cruiser.cjs packages/unused/src",
-    "test": "vitest run",
+    "test": "vitest run --exclude packages/unused/src/frontends/elixir/structural-protocol-scale.integration.test.ts",
+    "test:elixir-scale": "vitest run packages/unused/src/frontends/elixir/structural-protocol-scale.integration.test.ts",
     "build": "tsc -p packages/unused/tsconfig.json && node packages/unused/scripts/copy-schemas.mjs",
     "scoreboard": "tsc -p packages/unused/tsconfig.json && node packages/unused/dist/testing/corpus/scoreboard.js",
     "scoreboard:elixir": "tsc -p packages/unused/tsconfig.json && node packages/unused/dist/testing/corpus/scoreboard-elixir.js",
     "scoreboard:rust": "tsc -p packages/unused/tsconfig.json && node packages/unused/dist/testing/corpus/scoreboard-rust.js",
     "scoreboard:polyglot": "tsc -p packages/unused/tsconfig.json && node packages/unused/dist/testing/corpus/scoreboard-polyglot.js",
     "assumptions": "tsc -p packages/unused/tsconfig.json && node packages/unused/dist/testing/assumption-set-doc.js",
-    "ci": "pnpm run typecheck && pnpm run lint && pnpm run boundaries && pnpm run test"
+    "ci": "pnpm run typecheck && pnpm run lint && pnpm run boundaries && pnpm run test && pnpm run test:elixir-scale"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.4",

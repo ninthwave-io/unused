@@ -23,7 +23,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { runTracer } from "./runner.js";
+import { ElixirCompileError, runTracer } from "./runner.js";
 
 const MIX_AVAILABLE = spawnSync("mix", ["--version"], { encoding: "utf8" }).status === 0;
 
@@ -75,7 +75,21 @@ function snapshotTree(root: string): readonly SnapshotEntry[] {
 }
 
 function traceDigest(trace: ReturnType<typeof runTracer>): string {
-  return createHash("sha256").update(JSON.stringify(trace)).digest("hex");
+  const structuralSummary = trace.structuralSummary;
+  const stable =
+    structuralSummary === undefined
+      ? trace
+      : {
+          ...trace,
+          structuralSummary: {
+            ...structuralSummary,
+            elapsedUs: 0,
+            eventIndexUs: 0,
+            fileExtractionUs: 0,
+            emitUs: 0,
+          },
+        };
+  return createHash("sha256").update(JSON.stringify(stable)).digest("hex");
 }
 
 function withSchedulers<T>(schedulers: string, run: () => T): T {
@@ -88,6 +102,33 @@ function withSchedulers<T>(schedulers: string, run: () => T): T {
     if (previous === undefined) delete environment.ERL_FLAGS;
     else environment.ERL_FLAGS = previous;
   }
+}
+
+const COLLISION_OWNERSHIP_REFUSAL =
+  "cannot analyze Elixir project: the production tracer emitted conflicting or incomplete module ownership.";
+const COLLISION_PROTOCOL_REFUSALS = new Set([
+  "cannot analyze Elixir project: the production tracer emitted an incomplete or malformed phase protocol.",
+  "cannot analyze Elixir project: the production tracer did not complete.",
+]);
+const COLLISION_COMPILE_REFUSAL =
+  "cannot analyze Elixir project: `mix compile` reported errors. Fix the compile errors and ensure dependency build artifacts exist from a clean project compile, then retry.";
+
+function expectCrossFileCollisionRefusal(run: () => unknown): void {
+  let error: unknown;
+  try {
+    run();
+  } catch (thrown) {
+    error = thrown;
+  }
+  expect(error).toBeInstanceOf(ElixirCompileError);
+  const message = (error as ElixirCompileError).message;
+  const firstLine = message.split("\n", 1)[0] ?? "";
+  const sanctioned =
+    message === COLLISION_OWNERSHIP_REFUSAL ||
+    COLLISION_PROTOCOL_REFUSALS.has(message) ||
+    firstLine === COLLISION_COMPILE_REFUSAL ||
+    message.startsWith("cannot analyze Elixir project: `mix compile` failed in ");
+  expect(sanctioned, `unexpected cross-file collision refusal: ${message}`).toBe(true);
 }
 
 describe.skipIf(!MIX_AVAILABLE)("runTracer — isolated Mix build", () => {
@@ -127,7 +168,33 @@ defmodule NeutralIsolation do
 
   def render(value), do: NeutralIsolation.Renderable.render(value)
   def resource_contents, do: @resource_contents
+	def grapheme_result(name), do: "é😀#{name}"
+  def through_private(value), do: normalize(value)
+  def structural_roles(value) do
+    (case value do
+      nil -> render(0)
+      rendered ->
+        try do
+          render(rendered)
+        rescue
+          ArgumentError -> render(0)
+        end
+    end)
+    |> render()
+  end
+  def unsupported_control(value) do
+    try do
+      render(value)
+    rescue
+      ArgumentError -> :invalid
+    else
+      rendered -> rendered
+    end
+  end
   def unused_public, do: :unused
+  defp normalize(value) do
+    value
+  end
 end
 `,
     );
@@ -151,6 +218,52 @@ end
         (fn) => fn.mod === "NeutralIsolation" && fn.name === "resource_contents" && fn.arity === 0,
       ),
     ).toBe(true);
+    const structure = trace.structuralFiles?.find(
+      (file) => file.file === "lib/neutral_isolation.ex",
+    );
+    expect(structure).toMatchObject({
+      status: "complete",
+      reason: null,
+      bytes: Buffer.byteLength(readFileSync(join(projectDir, "lib", "neutral_isolation.ex"))),
+    });
+    expect(structure?.digest).toMatch(/^[a-f0-9]{64}$/u);
+    expect(structure?.astNodes).toBeGreaterThan(0);
+    expect(structure?.maxDepth).toBeGreaterThan(0);
+    expect(structure?.carriers.some((carrier) => carrier.fun === "render/1")).toBe(true);
+    expect(structure?.carriers.some((carrier) => carrier.fun === "normalize/1")).toBe(true);
+    const graphemeCarrier = structure?.carriers.find(
+      (carrier) => carrier.fun === "grapheme_result/1",
+    );
+    expect(graphemeCarrier?.body).toEqual({ sl: 15, sc: 2, el: 15, ec: 44 });
+    expect(
+      structure?.facts.some(
+        (fact) =>
+          fact.carrier === graphemeCarrier?.id &&
+          fact.from.sl === 15 &&
+          fact.from.sc === 36 &&
+          fact.from.el === 15 &&
+          fact.from.ec === 43,
+      ),
+    ).toBe(true);
+    const roles = new Set(structure?.facts.map((fact) => fact.role));
+    expect(roles).toEqual(
+      new Set([
+        "branch-result",
+        "rescue-success",
+        "rescue-result",
+        "call-argument",
+        "pipeline-argument",
+        "carrier-result",
+      ]),
+    );
+    const unsupportedCarrier = structure?.carriers.find(
+      (carrier) => carrier.fun === "unsupported_control/1",
+    );
+    expect(unsupportedCarrier).toBeDefined();
+    expect(structure?.facts.filter((fact) => fact.carrier === unsupportedCarrier?.id)).toEqual([]);
+    expect(trace.structuralFiles?.map((file) => file.file)).toEqual([
+      ...new Set(trace.modules.map((module) => module.file)),
+    ]);
     expect(snapshotTree(buildPath)).toEqual(before);
     expect(readFileSync(resourcePath, "utf8")).toBe(resourceBefore.contents);
     expect(lstatSync(resourcePath).mtimeMs).toBe(resourceBefore.mtimeMs);
@@ -258,6 +371,21 @@ NeutralOwnerStable.Factory.emit(NeutralOwnerStable.Generated)
   def zulu, do: :zulu
   def select(:first), do: :first
   def select(_other), do: :other
+  def guarded(value \\\\ :ok) when is_atom(value) when value != :blocked, do: inspect(value)
+  def mixed(:first) when is_atom(:first), do: inspect(:first)
+  def mixed(other), do: inspect(other)
+
+  defmodule Inner do
+    def guarded(value) when is_atom(value), do: inspect(value)
+  end
+
+  defmodule Elixir.NeutralOwnerAbsolute do
+    def guarded(value) when is_atom(value), do: inspect(value)
+  end
+
+  defmodule NeutralOwnerStable.Qualified do
+    def guarded(value) when is_atom(value), do: inspect(value)
+  end
 end
 `,
     );
@@ -299,10 +427,50 @@ end
         (fn) => fn.mod === "NeutralOwnerStable.Subject" && fn.name === "select" && fn.arity === 1,
       )?.line,
     ).toBe(10);
+    const subjectStructure = cold.structuralFiles?.find((file) => file.file === "lib/d_subject.ex");
+    const carriers = subjectStructure?.carriers ?? [];
+    expect(
+      carriers.filter(
+        (carrier) => carrier.mod === "NeutralOwnerStable.Subject" && carrier.fun === "guarded/1",
+      ),
+    ).toHaveLength(1);
+    expect(
+      carriers.filter(
+        (carrier) => carrier.mod === "NeutralOwnerStable.Subject" && carrier.fun === "mixed/1",
+      ),
+    ).toHaveLength(2);
+    expect(
+      carriers.some(
+        (carrier) =>
+          carrier.mod === "NeutralOwnerStable.Subject.Inner" && carrier.fun === "guarded/1",
+      ),
+    ).toBe(true);
+    expect(
+      carriers.some(
+        (carrier) => carrier.mod === "NeutralOwnerAbsolute" && carrier.fun === "guarded/1",
+      ),
+    ).toBe(true);
+    expect(
+      carriers.some(
+        (carrier) =>
+          carrier.mod === "NeutralOwnerStable.Subject.NeutralOwnerStable.Qualified" &&
+          carrier.fun === "guarded/1",
+      ),
+    ).toBe(true);
+    expect(
+      carriers.some(
+        (carrier) => carrier.mod === "NeutralOwnerStable.Subject" && carrier.fun === "guarded/0",
+      ),
+    ).toBe(false);
+    for (const carrier of carriers.filter((candidate) => candidate.fun === "guarded/1")) {
+      const facts = subjectStructure?.facts.filter((fact) => fact.carrier === carrier.id) ?? [];
+      expect(facts).toHaveLength(1);
+      expect(new Set(facts.map((fact) => fact.role))).toEqual(new Set(["carrier-result"]));
+    }
   });
 
   it("accepts same-file redefinition but refuses a macro-generated cross-file collision", {
-    timeout: 60_000,
+    timeout: 120_000,
   }, () => {
     const sameFileDir = mkdtempSync(join(tmpdir(), "unused-ex-owner-same-file-"));
     dirs.push(sameFileDir);
@@ -326,8 +494,8 @@ defmodule NeutralOwnerSameFile.Subject do
 end
 `,
     );
-    const sameOne = withSchedulers("1:1", () => runTracer(sameFileDir));
-    const sameFour = withSchedulers("4:4", () => runTracer(sameFileDir));
+    const sameOne = withSchedulers("1:1", () => runTracer(sameFileDir, { timeoutMs: 120_000 }));
+    const sameFour = withSchedulers("4:4", () => runTracer(sameFileDir, { timeoutMs: 120_000 }));
     expect(traceDigest(sameOne)).toBe(traceDigest(sameFour));
     expect(
       sameOne.functions.some(
@@ -374,9 +542,13 @@ end
 NeutralOwnerCollision.Factory.replace(NeutralOwnerCollision.Subject)
 `,
     );
-    for (const schedulers of ["1:1", "4:4"]) {
-      expect(() => withSchedulers(schedulers, () => runTracer(collisionDir))).toThrow(
-        /conflicting or incomplete module ownership|mix compile/,
+    // Mix may compile the replacement before or after the original under
+    // parallel load. Depending on that order, the compiler itself refuses,
+    // the production phase cannot finish, or both owners reach validation.
+    // Every sanctioned outcome is a fail-closed refusal; success is forbidden.
+    for (const schedulers of ["1:1", "4:4", "1:1", "4:4"]) {
+      expectCrossFileCollisionRefusal(() =>
+        withSchedulers(schedulers, () => runTracer(collisionDir, { timeoutMs: 120_000 })),
       );
     }
 

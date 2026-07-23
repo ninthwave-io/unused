@@ -40,6 +40,9 @@ import { ElixirCompileError, ElixirToolchainError } from "./errors.js";
 import type {
   AppModRecord,
   DepsRecord,
+  ElixirStructuralFile,
+  ElixirStructuralSpan,
+  ElixirStructuralSummary,
   FunctionRecord,
   ModuleOwnerRecord,
   ModuleRecord,
@@ -50,12 +53,13 @@ import type {
   TraceResult,
 } from "./events.js";
 import {
+  type BoundedTraceLines,
   discoverRustlerLoaders,
   discoverTestFiles,
   inspectMixLayout,
   type MixLayout,
   prepareIsolatedBuild,
-  readBoundedTrace,
+  readBoundedTraceLines,
   resolveTestOnlyRoots,
   type TestInventory,
 } from "./mix-isolation.js";
@@ -189,9 +193,9 @@ export function runTracer(projectDir: string, options: RunTracerOptions = {}): T
       );
     }
 
-    let raw: string;
+    let productionLines: BoundedTraceLines;
     try {
-      raw = readBoundedTrace(productionOutPath);
+      productionLines = readBoundedTraceLines(productionOutPath);
     } catch {
       throw new ElixirCompileError(
         "cannot analyze Elixir project: the tracer produced no output (the compile may have " +
@@ -199,10 +203,21 @@ export function runTracer(projectDir: string, options: RunTracerOptions = {}): T
       );
     }
 
-    const production = validateProductionTraceOwnership(
-      parseTraceOutput(raw),
-      productionLayout.sourcePaths,
-    );
+    let production: TraceResult;
+    try {
+      production = validateProductionTraceOwnership(
+        parseProductionTraceLines(productionLines),
+        productionLayout.sourcePaths,
+        projectDir,
+      );
+    } catch (error) {
+      if (error instanceof ElixirCompileError) throw error;
+      throw new ElixirCompileError(
+        "cannot analyze Elixir project: the tracer output could not be read safely.",
+      );
+    } finally {
+      productionLines.close();
+    }
     const productionWithDependencies = withDependencyApplications(
       production,
       productionLayout.dependencyArtifacts.map((dependency) => ({
@@ -365,14 +380,19 @@ function runTestTrace(input: {
   }
   if (result.status !== 0) return incompleteTestTrace("execution");
 
+  let testLines: BoundedTraceLines | undefined;
   try {
+    testLines = readBoundedTraceLines(outPath);
     return validateTestTraceOwnership(
       input.production,
-      parseTestTraceOutput(readBoundedTrace(outPath)),
+      parseTestTraceLines(testLines),
       inventory,
+      input.projectDir,
     );
   } catch {
     return incompleteTestTrace("output");
+  } finally {
+    testLines?.close();
   }
 }
 
@@ -390,10 +410,17 @@ function createMixCargoExecutionContext(
 }
 
 export function parseTraceOutput(raw: string): TraceResult {
+  return parseProductionTraceLines(traceLines(raw));
+}
+
+function parseProductionTraceLines(lines: Iterable<string>): TraceResult {
   const events: TraceEvent[] = [];
   const owners: ModuleOwnerRecord[] = [];
   const modules: ModuleRecord[] = [];
   const functions: FunctionRecord[] = [];
+  const structuralFiles: ElixirStructuralFile[] = [];
+  let structuralSummary: ElixirStructuralSummary | undefined;
+  let structuralSummaryCount = 0;
   const records: TraceRecord[] = [];
   let appMod: string | null = null;
   let deps: readonly string[] = [];
@@ -407,7 +434,6 @@ export function parseTraceOutput(raw: string): TraceResult {
   let appModCount = 0;
   let compileErrorCount = 0;
 
-  const lines = raw.split("\n");
   for (const line of lines) {
     const trimmed = line.trim();
     if (trimmed === "") continue;
@@ -435,6 +461,13 @@ export function parseTraceOutput(raw: string): TraceResult {
         break;
       case "function":
         functions.push(record);
+        break;
+      case "structure_file":
+        structuralFiles.push(record);
+        break;
+      case "structure_summary":
+        structuralSummary = record;
+        structuralSummaryCount += 1;
         break;
       case "app_mod":
         appModCount += 1;
@@ -471,6 +504,7 @@ export function parseTraceOutput(raw: string): TraceResult {
     depsCount !== 1 ||
     appModCount > 1 ||
     compileErrorCount > 1 ||
+    structuralSummaryCount !== 1 ||
     hasConflictingDefinitions(modules, functions)
   ) {
     throw new ElixirCompileError(
@@ -502,25 +536,67 @@ export function parseTraceOutput(raw: string): TraceResult {
     );
   }
 
-  return { events, modules, functions, appMod, deps, compileOk, testPartition };
+  if (!hasValidStructuralEventReferences(events, structuralFiles)) {
+    throw new ElixirCompileError(
+      "cannot analyze Elixir project: the production tracer emitted invalid structural facts.",
+    );
+  }
+  if (
+    structuralSummary === undefined ||
+    !structuralSummaryMatches(structuralSummary, structuralFiles, events.length)
+  ) {
+    throw new ElixirCompileError(
+      "cannot analyze Elixir project: the production tracer emitted inconsistent structural counters.",
+    );
+  }
+  return {
+    events,
+    modules,
+    functions,
+    structuralFiles,
+    structuralSummary,
+    appMod,
+    deps,
+    compileOk,
+    testPartition,
+  };
 }
 
 /** Parse one isolated test child. Invalid/partial output is bounded, never thrown. */
 export function parseTestTraceOutput(raw: string): TestTraceResult {
+  return parseTestTraceLines(traceLines(raw));
+}
+
+function parseTestTraceLines(lines: Iterable<string>): TestTraceResult {
   const events: TraceEvent[] = [];
   const owners: ModuleOwnerRecord[] = [];
   const modules: ModuleRecord[] = [];
   const functions: FunctionRecord[] = [];
+  const structuralFiles: ElixirStructuralFile[] = [];
+  let structuralSummary: ElixirStructuralSummary | undefined;
+  let structuralSummaryCount = 0;
   const records: TraceRecord[] = [];
   let malformed = false;
   let sawCompileError = false;
+  let structuralMalformed = false;
 
-  for (const line of raw.split("\n")) {
+  for (const line of lines) {
     const trimmed = line.trim();
     if (trimmed === "") continue;
     let record: TraceRecord | null;
     try {
-      record = decodeTraceRecord(JSON.parse(trimmed), "test");
+      const value = JSON.parse(trimmed) as unknown;
+      record = decodeTraceRecord(value, "test");
+      const structuralKind =
+        typeof value === "object" &&
+        value !== null &&
+        "k" in value &&
+        ((value as { readonly k?: unknown }).k === "structure_file" ||
+          (value as { readonly k?: unknown }).k === "structure_summary");
+      if (record === null && structuralKind) {
+        structuralMalformed = true;
+        continue;
+      }
     } catch {
       malformed = true;
       continue;
@@ -543,6 +619,15 @@ export function parseTestTraceOutput(raw: string): TestTraceResult {
       case "function":
         if (record.partition === "test") functions.push(record);
         break;
+      case "structure_file":
+        if (record.partition === "test") structuralFiles.push(record);
+        break;
+      case "structure_summary":
+        if (record.partition === "test") {
+          structuralSummary = record;
+          structuralSummaryCount += 1;
+        }
+        break;
       case "test_compile_error":
         sawCompileError = true;
         break;
@@ -560,7 +645,138 @@ export function parseTestTraceOutput(raw: string): TestTraceResult {
   }
   if (sawCompileError) return incompleteTestTrace("compile");
   if (!hasExactModuleOwnership(owners, modules)) return incompleteTestTrace("ownership");
-  return { events, modules, functions, testPartition: "complete" };
+  if (!hasValidStructuralEventReferences(events, structuralFiles)) structuralMalformed = true;
+  if (
+    !structuralMalformed &&
+    (structuralSummaryCount !== 1 ||
+      structuralSummary === undefined ||
+      !structuralSummaryMatches(structuralSummary, structuralFiles, events.length))
+  ) {
+    structuralMalformed = true;
+  }
+  return {
+    events,
+    modules,
+    functions,
+    structuralFiles: structuralMalformed ? [] : structuralFiles,
+    ...(structuralSummary === undefined || structuralMalformed ? {} : { structuralSummary }),
+    structuralPartition: structuralMalformed ? "incomplete" : "complete",
+    testPartition: "complete",
+  };
+}
+
+/** Iterate one JSONL record at a time without retaining a second whole-trace line array. */
+function* traceLines(raw: string): Generator<string> {
+  let start = 0;
+  for (let index = 0; index <= raw.length; index += 1) {
+    if (index !== raw.length && raw.charCodeAt(index) !== 10) continue;
+    yield raw.slice(start, index);
+    start = index + 1;
+  }
+}
+
+function structuralSummaryMatches(
+  summary: ElixirStructuralSummary,
+  files: readonly ElixirStructuralFile[],
+  rawEvents: number,
+): boolean {
+  let completeFiles = 0;
+  let bytes = 0;
+  let astNodes = 0;
+  let maxDepth = 0;
+  let carriers = 0;
+  let facts = 0;
+  let exactFacts = 0;
+  let opaqueFacts = 0;
+  const roles = new Map<string, number>();
+  for (const file of files) {
+    if (file.status === "complete") completeFiles += 1;
+    bytes += file.bytes;
+    astNodes += file.astNodes;
+    maxDepth = Math.max(maxDepth, file.maxDepth);
+    carriers += file.carriers.length;
+    facts += file.facts.length;
+    for (const fact of file.facts) {
+      if (fact.resolution === "exact") exactFacts += 1;
+      if (fact.resolution === "opaque") opaqueFacts += 1;
+      roles.set(fact.role, (roles.get(fact.role) ?? 0) + 1);
+    }
+  }
+  const summaryRoles = Object.entries(summary.roles).filter(([, count]) => count !== 0);
+  const actualRoles = [...roles.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  summaryRoles.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return (
+    summary.rawEvents === rawEvents &&
+    summary.files === files.length &&
+    summary.completeFiles === completeFiles &&
+    summary.incompleteFiles === files.length - completeFiles &&
+    summary.bytes === bytes &&
+    summary.astNodes === astNodes &&
+    summary.maxDepth === maxDepth &&
+    summary.carriers === carriers &&
+    summary.facts === facts &&
+    summary.exactFacts === exactFacts &&
+    summary.opaqueFacts === opaqueFacts &&
+    JSON.stringify(summaryRoles) === JSON.stringify(actualRoles)
+  );
+}
+
+function hasValidStructuralEventReferences(
+  events: readonly TraceEvent[],
+  files: readonly ElixirStructuralFile[],
+): boolean {
+  const ids = new Set<number>();
+  const eventsById = new Map<number, TraceEvent>();
+  for (const event of events) {
+    if (event.eventId === undefined || ids.has(event.eventId)) return false;
+    ids.add(event.eventId);
+    eventsById.set(event.eventId, event);
+  }
+  const fileKeys = new Set<string>();
+  for (const file of files) {
+    const key = `${file.partition}\0${file.file}`;
+    if (fileKeys.has(key)) return false;
+    fileKeys.add(key);
+    const carriers = new Set<number>();
+    for (const [index, carrier] of file.carriers.entries()) {
+      if (carrier.id !== index || carriers.has(carrier.id)) return false;
+      carriers.add(carrier.id);
+    }
+    for (const fact of file.facts) {
+      if (!carriers.has(fact.carrier)) return false;
+      if (fact.eventId !== null) {
+        if (!ids.has(fact.eventId)) return false;
+        const event = eventsById.get(fact.eventId);
+        if (
+          event === undefined ||
+          event.line <= 0 ||
+          (event.column ?? 0) <= 0 ||
+          event.name === undefined ||
+          event.arity === undefined ||
+          fact.argument === null ||
+          fact.argument >= event.arity ||
+          fact.to === null ||
+          (fact.role === "pipeline-argument"
+            ? !validPipelineEventPoint(event.line, event.column ?? 0, fact.from, fact.to)
+            : event.line !== fact.to.sl || (event.column ?? 0) !== fact.to.sc)
+        )
+          return false;
+      }
+    }
+  }
+  return true;
+}
+
+function validPipelineEventPoint(
+  line: number,
+  column: number,
+  from: ElixirStructuralSpan,
+  pipeline: ElixirStructuralSpan,
+): boolean {
+  const afterPipelineStart = line > pipeline.sl || (line === pipeline.sl && column > pipeline.sc);
+  const atOrAfterArgumentEnd = line > from.el || (line === from.el && column >= from.ec);
+  const beforeEnd = line < pipeline.el || (line === pipeline.el && column < pipeline.ec);
+  return afterPipelineStart && atOrAfterArgumentEnd && beforeEnd;
 }
 
 function tailLines(text: string, n: number): string {

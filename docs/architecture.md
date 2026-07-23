@@ -45,6 +45,11 @@ The measured Rust compiler/tooling boundary is
 - Boundary and production/config/test partition completeness is part of the
   machine contract. Partial facts must be bounded toward alive before global
   reachability; diagnostics are deterministic stderr, never JSON stdout.
+- Internal frontend precision protocols may carry bounded structural facts
+  without changing the shared IR. Such a protocol is a semantic no-op until a
+  reviewed consumer is enabled; strict ownership, completeness, content-digest,
+  and work-cap validation happens before any structural fact can influence a
+  claim. Elixir protocol v2 is the first implementation (ADR 0011).
 
 ## 5. Performance strategy
 - Discovery produces one gitignore-bounded inventory of sources, JSON configs,

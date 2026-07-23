@@ -284,3 +284,63 @@ registered built-in convention provider.
 Unknown arguments, calls, returns, rebinds, interpolation, ambiguous
 source/event cardinality, and unmodelled boundaries still fail closed. This
 phase is intra-function only; it does not infer helper or module summaries.
+
+### Internal structural trace protocol v2
+
+The compiler child attempts one bounded read of every compiler-owned source
+file and, when the file is readable and within cap, one
+`Code.string_to_quoted/2` pass. This is an internal precision substrate and,
+at introduction, a semantic no-op: no structural fact changes graph edges,
+hazards, claims, evidence, or deletion plans until a separately reviewed phase
+explicitly consumes it. The child emits no source, AST, literals, local
+variable identifiers, or private-project prose. It emits only the
+repository-relative owner path, a
+SHA-256 digest and byte count, bounded visit counters, carrier identities,
+grapheme-column spans, closed structural roles, and exact compiler-event joins.
+The repository-relative path and module/function carrier identities cross the
+child boundary and remain internal; this is source-minimized, not anonymous.
+
+Every owned file has exactly one `complete` or explicitly `incomplete` bundle.
+The hard per-file limits are 8 MiB, 500,000 AST visits, depth 256, 20,000
+carriers, and 500,000 facts. Read, size, parse, ownership, and limit failures
+emit zero digest/byte/counter fields and empty arrays; they never fabricate a
+partial fact set. A `try` with `else` or `catch` is not modeled: encountering
+one anywhere in a carrier rolls back every structural fact for that carrier,
+not merely the unsupported control-result facts. Private helpers participate only when the compiler trace
+proves a same-file carrier or call target; uncalled private definitions cannot
+affect producer flow.
+
+After the JSON parser materializes one bounded output record, the parent checks
+declared array lengths before mapping them into normalized protocol arrays, then
+revalidates path ownership, regular-file/realpath containment, content digest,
+the complete owned-file inventory, reflected module/function ownership,
+carrier identity, fact uniqueness, and fact containment in the carrier body.
+Elixir columns are grapheme columns, so line grapheme bounds are indexed once
+per file rather than rebuilt per span. A one-line definition uses the parser's
+exact `end_of_expression` coordinate before falling back to its final AST child;
+this keeps generated interpolation calls inside the carrier without guessing
+an atom-name width. Neutral coverage fixes the contract for tab indentation, a
+combining grapheme, and an emoji. Compiler events are indexed once for joins.
+Phase-local wire event IDs never survive a production/test merge:
+events are canonicalized by their immutable semantic key, facts are remapped,
+and references are checked again. Duplicate compiler events coalesce, while
+same-line calls at distinct columns and production/test ID collisions remain
+distinct. An exact ordinary call-argument join requires the compiler coordinate
+to equal the call target start. For an injected pipeline argument, the compiler
+coordinate must be strictly after the whole-pipeline start, at or after the
+left operand's end, and strictly before the whole-pipeline end.
+A production phase requires exactly one matching production summary.
+A test phase treats structural files plus exactly one matching test summary as
+one optional all-or-nothing overlay: malformed, missing, duplicate, mismatched,
+or invalidly joined structure drops only that overlay; already validated test
+modules, functions, and events remain usable. Merge retains production and test
+summaries under distinct partition-labelled fields rather than presenting the
+production counters as an aggregate.
+
+Extraction and validation are O(source bytes + AST visits + events + carriers +
+facts). Semantic production/test comparison uses an in-order streaming digest
+instead of sorting all facts or assembling a second whole-file JSON value. The
+per-file byte, visit, depth, carrier, and fact fields are the accountable work
+counters; extraction remains included in the existing Elixir parsing phase
+wall/CPU/RSS measurement. JSON stdout is unaffected because this protocol is an
+internal child-to-parent channel.

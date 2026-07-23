@@ -2,13 +2,18 @@
 
 import { spawnSync } from "node:child_process";
 import {
+  closeSync,
+  constants,
   cpSync,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   readlinkSync,
+  readSync,
   realpathSync,
   statSync,
   symlinkSync,
@@ -20,6 +25,7 @@ import { bytewiseCompare } from "./trace-protocol.js";
 
 const MAX_BUFFER = 256 * 1024 * 1024;
 const MAX_TRACE_BYTES = 256 * 1024 * 1024;
+const TRACE_READ_CHUNK_BYTES = 64 * 1024;
 const LAYOUT_MARKER = "__UNUSED_MIX_LAYOUT__";
 
 export interface MixDependencyArtifact {
@@ -460,11 +466,184 @@ function mirrorPrivTree(sourceRoot: string, destinationRoot: string): void {
   copyEntry(sourceRoot, destinationRoot);
 }
 
-export function readBoundedTrace(path: string): string {
-  if (statSync(path).size > MAX_TRACE_BYTES) {
+/** Stream bounded JSONL without retaining the trace plus a second line array. */
+export function readBoundedTraceLines(path: string, maxBytes = MAX_TRACE_BYTES): BoundedTraceLines {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes > MAX_TRACE_BYTES) {
+    throw new Error("invalid bounded trace read limit");
+  }
+  const opened = openRegularFileNoFollow(path);
+  if (opened.size > maxBytes) {
+    closeSync(opened.descriptor);
     throw new Error("trace output exceeds the bounded read limit");
   }
-  return readFileSync(path, "utf8");
+  return new BoundedTraceLines(opened.descriptor, maxBytes);
+}
+
+/** A single-use iterable whose eagerly bound descriptor can also be explicitly released. */
+export class BoundedTraceLines implements Iterable<string> {
+  readonly #maxBytes: number;
+  #descriptor: number | null;
+  #iterated = false;
+
+  constructor(descriptor: number, maxBytes: number) {
+    this.#descriptor = descriptor;
+    this.#maxBytes = maxBytes;
+  }
+
+  *[Symbol.iterator](): Iterator<string> {
+    if (this.#iterated) throw new Error("bounded trace lines are single-use");
+    this.#iterated = true;
+    const descriptor = this.#descriptor;
+    if (descriptor === null) return;
+    try {
+      yield* traceDescriptorLines(descriptor, this.#maxBytes);
+    } finally {
+      this.close();
+    }
+  }
+
+  close(): void {
+    const descriptor = this.#descriptor;
+    if (descriptor === null) return;
+    this.#descriptor = null;
+    closeSync(descriptor);
+  }
+}
+
+interface OpenedRegularFile {
+  readonly descriptor: number;
+  readonly size: number;
+  readonly canonicalPath: string;
+}
+
+/** Open once, refuse links/non-regular entries, and bind later reads to that descriptor. */
+export function openRegularFileNoFollow(path: string): OpenedRegularFile {
+  const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
+  let descriptor: number;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | noFollow);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ELOOP" || code === "EMLINK") {
+      throw new Error("bounded file input is not a regular file");
+    }
+    throw new Error("bounded file input could not be opened safely");
+  }
+
+  try {
+    const descriptorStat = fstatSync(descriptor);
+    if (!descriptorStat.isFile()) throw new Error("bounded file input is not a regular file");
+    const pathStat = lstatSync(path);
+    if (!pathStat.isFile()) throw new Error("bounded file input is not a regular file");
+    if (descriptorStat.dev !== pathStat.dev || descriptorStat.ino !== pathStat.ino) {
+      throw new Error("bounded file input changed while opening");
+    }
+    const canonicalPath = realpathSync(path);
+    const canonicalStat = lstatSync(canonicalPath);
+    if (
+      descriptorStat.dev !== canonicalStat.dev ||
+      descriptorStat.ino !== canonicalStat.ino ||
+      realpathSync(path) !== canonicalPath
+    ) {
+      throw new Error("bounded file input changed while opening");
+    }
+    return { descriptor, size: descriptorStat.size, canonicalPath };
+  } catch (error) {
+    closeSync(descriptor);
+    if (
+      error instanceof Error &&
+      (error.message === "bounded file input is not a regular file" ||
+        error.message === "bounded file input changed while opening")
+    ) {
+      throw error;
+    }
+    throw new Error("bounded file input could not be validated safely");
+  }
+}
+
+/** Read one already-bound descriptor with exact advertised and hard byte bounds. */
+export function readExactBoundedFile(
+  descriptor: number,
+  expectedBytes: number,
+  maxBytes: number,
+): Buffer {
+  if (
+    !Number.isSafeInteger(expectedBytes) ||
+    expectedBytes < 0 ||
+    !Number.isSafeInteger(maxBytes) ||
+    maxBytes < 0 ||
+    expectedBytes > maxBytes
+  ) {
+    throw new Error("invalid bounded file read limit");
+  }
+  const buffer = Buffer.allocUnsafe(Math.min(TRACE_READ_CHUNK_BYTES, maxBytes + 1));
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for (;;) {
+    const remaining = Math.min(expectedBytes, maxBytes) - total;
+    const requested = Math.min(buffer.length, remaining + 1);
+    let bytes: number;
+    try {
+      bytes = readSync(descriptor, buffer, 0, requested, null);
+    } catch {
+      throw new Error("bounded file input could not be read safely");
+    }
+    if (bytes === 0) break;
+    total += bytes;
+    if (total > expectedBytes || total > maxBytes) {
+      throw new Error("bounded file input exceeds its advertised byte limit");
+    }
+    chunks.push(Buffer.from(buffer.subarray(0, bytes)));
+  }
+  if (total !== expectedBytes) {
+    throw new Error("bounded file input differs from its advertised byte length");
+  }
+  return Buffer.concat(chunks, total);
+}
+
+function* traceDescriptorLines(descriptor: number, maxBytes: number): Generator<string> {
+  const buffer = Buffer.allocUnsafe(TRACE_READ_CHUNK_BYTES);
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let fragments: string[] = [];
+  let total = 0;
+  const decodedChunks = function* (): Generator<string> {
+    for (;;) {
+      let bytes: number;
+      try {
+        bytes = readSync(descriptor, buffer, 0, buffer.length, null);
+      } catch {
+        throw new Error("trace output could not be read safely");
+      }
+      if (bytes === 0) break;
+      total += bytes;
+      if (total > maxBytes) throw new Error("trace output exceeds the bounded read limit");
+      try {
+        yield decoder.decode(buffer.subarray(0, bytes), { stream: true });
+      } catch {
+        throw new Error("trace output contains invalid UTF-8");
+      }
+    }
+    try {
+      const final = decoder.decode();
+      if (final !== "") yield final;
+    } catch {
+      throw new Error("trace output contains invalid UTF-8");
+    }
+  };
+
+  for (const decoded of decodedChunks()) {
+    let start = 0;
+    let newline = decoded.indexOf("\n");
+    while (newline >= 0) {
+      fragments.push(decoded.slice(start, newline));
+      yield fragments.join("");
+      fragments = [];
+      start = newline + 1;
+      newline = decoded.indexOf("\n", start);
+    }
+    if (start < decoded.length) fragments.push(decoded.slice(start));
+  }
+  if (fragments.length > 0) yield fragments.join("");
 }
 
 function throwSpawnError(error: Error, projectDir: string, timeoutMs: number): never {

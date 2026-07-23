@@ -11,11 +11,17 @@ export type Partition = "prod" | "test";
 /** A single reference event captured by the compiler tracer. */
 export interface TraceEvent {
   readonly k: "event";
+  /** Phase-local wire identity used only by compiler-derived structural facts. */
+  readonly eventId?: number;
   /** Tracer event family. */
   readonly kind: "remote" | "imported" | "local" | "alias" | "struct";
   /** Repo-relative POSIX path of the referencing site (may be a `.heex` file). */
   readonly file: string;
   readonly line: number;
+  /** One-based compiler column, or zero when the compiler supplied none. */
+  readonly column?: number;
+  /** Exact compiler event class; references have no callable class. */
+  readonly callKind?: "function" | "macro" | null;
   /** Referencing module (`inspect`-form, e.g. `MyApp.Foo`), or `null` at top level. */
   readonly from_mod: string | null;
   /** Referencing function `name/arity` when inside one; absent for module-level code. */
@@ -28,6 +34,78 @@ export interface TraceEvent {
   /** `true` iff this call site is a dynamic-dispatch primitive (`apply`, `Module.concat`, …). */
   readonly dyn: boolean;
   readonly partition: Partition;
+}
+
+export interface ElixirStructuralSpan {
+  readonly sl: number;
+  readonly sc: number;
+  readonly el: number;
+  readonly ec: number;
+}
+
+export type ElixirStructuralRole =
+  | "branch-result"
+  | "rescue-success"
+  | "rescue-result"
+  | "call-argument"
+  | "pipeline-argument"
+  | "carrier-result";
+
+export interface ElixirStructuralCarrier {
+  readonly id: number;
+  readonly mod: string;
+  readonly fun: string;
+  readonly defLine: number;
+  readonly body: ElixirStructuralSpan;
+}
+
+/** Source-minimized structural fact; no AST, literals, or local names cross the child boundary. */
+export interface ElixirStructuralFact {
+  readonly carrier: number;
+  readonly role: ElixirStructuralRole;
+  readonly from: ElixirStructuralSpan;
+  readonly to: ElixirStructuralSpan | null;
+  readonly eventId: number | null;
+  readonly argument: number | null;
+  readonly resolution: "exact" | "opaque" | null;
+}
+
+export type ElixirStructuralIncompleteReason = "read" | "size" | "parse" | "limit" | "ownership";
+
+export interface ElixirStructuralFile {
+  readonly k: "structure_file";
+  readonly file: string;
+  readonly partition: Partition;
+  readonly digest: string;
+  readonly bytes: number;
+  readonly status: "complete" | "incomplete";
+  readonly reason: ElixirStructuralIncompleteReason | null;
+  readonly astNodes: number;
+  readonly maxDepth: number;
+  readonly carriers: readonly ElixirStructuralCarrier[];
+  readonly facts: readonly ElixirStructuralFact[];
+}
+
+export interface ElixirStructuralSummary {
+  readonly k: "structure_summary";
+  readonly partition: Partition;
+  /** Raw compiler events indexed and emitted by the child before semantic projection. */
+  readonly rawEvents: number;
+  readonly elapsedUs: number;
+  readonly eventIndexUs: number;
+  readonly fileExtractionUs: number;
+  readonly emitUs: number;
+  readonly files: number;
+  readonly completeFiles: number;
+  readonly incompleteFiles: number;
+  readonly bytes: number;
+  readonly astNodes: number;
+  readonly maxDepth: number;
+  readonly carriers: number;
+  readonly facts: number;
+  readonly exactFacts: number;
+  readonly opaqueFacts: number;
+  readonly roles: Readonly<Partial<Record<ElixirStructuralRole, number>>>;
 }
 
 /** A compiled module's reflection record. */
@@ -116,6 +194,7 @@ export interface TestCompileErrorRecord {
 /** Delimits one child trace so truncated/cross-phase output is never merged. */
 export interface PhaseRecord {
   readonly k: "phase";
+  readonly protocol: 2;
   readonly phase: "production" | "test";
   readonly status: "started" | "complete" | "incomplete";
 }
@@ -133,13 +212,33 @@ export type TraceRecord =
   | MetaRecord
   | CompileErrorRecord
   | TestCompileErrorRecord
+  | ElixirStructuralFile
+  | ElixirStructuralSummary
   | PhaseRecord;
 
 /** The runner's structured result: every record, plus the compile-ok signal. */
 export interface TraceResult {
+  /**
+   * Base-compatible semantic events consumed by the existing Elixir analysis.
+   * Compiler columns, call classes, and wire identities are projected away.
+   */
   readonly events: readonly TraceEvent[];
+  /**
+   * Exact protocol-v2 events referenced by structural facts, retained only to
+   * validate those identities.
+   * Analysis consumers must use {@link events} until a structural feature is enabled.
+   */
+  readonly structuralEvents?: readonly TraceEvent[];
   readonly modules: readonly ModuleRecord[];
   readonly functions: readonly FunctionRecord[];
+  /** Optional precision facts. Incomplete files retain the conservative source fallback. */
+  readonly structuralFiles?: readonly ElixirStructuralFile[];
+  /** Bounded child-side extraction time and structural work for production only. */
+  readonly structuralSummary?: ElixirStructuralSummary;
+  /** Bounded child-side extraction time and structural work for the optional test overlay. */
+  readonly structuralTestSummary?: ElixirStructuralSummary;
+  /** Completeness of optional structural precision in the separately compiled test world. */
+  readonly structuralTestPartition?: TestPartitionStatus;
   /** OTP application callback module (`inspect`-form), or `null` when the project declares none. */
   readonly appMod: string | null;
   /** Legacy direct dependency names from the compiler child; not provider evidence. */
@@ -172,8 +271,13 @@ export type TestPartitionIncompleteReason =
 /** Structured facts accepted from the isolated test-phase child. */
 export interface TestTraceResult {
   readonly events: readonly TraceEvent[];
+  /** Exact protocol-v2 events retained only for structural fact identities. */
+  readonly structuralEvents?: readonly TraceEvent[];
   readonly modules: readonly ModuleRecord[];
   readonly functions: readonly FunctionRecord[];
+  readonly structuralFiles?: readonly ElixirStructuralFile[];
+  readonly structuralSummary?: ElixirStructuralSummary;
+  readonly structuralPartition?: TestPartitionStatus;
   readonly testPartition: TestPartitionStatus;
   readonly testPartitionReason?: TestPartitionIncompleteReason;
 }

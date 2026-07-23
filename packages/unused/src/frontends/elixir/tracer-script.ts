@@ -51,14 +51,14 @@ defmodule Unused.Tracer do
   ])
   @function_scoped_dyn MapSet.new(["String.to_atom/1", "String.to_existing_atom/1"])
 
-  def trace({:remote_function, meta, m, n, a}, env), do: ev("remote", env, meta, m, n, a)
-  def trace({:remote_macro, meta, m, n, a}, env), do: ev("remote", env, meta, m, n, a)
-  def trace({:imported_function, meta, m, n, a}, env), do: ev("imported", env, meta, m, n, a)
-  def trace({:imported_macro, meta, m, n, a}, env), do: ev("imported", env, meta, m, n, a)
-  def trace({:local_function, meta, n, a}, env), do: ev("local", env, meta, env.module, n, a)
-  def trace({:local_macro, meta, n, a}, env), do: ev("local", env, meta, env.module, n, a)
-  def trace({:alias_reference, meta, m}, env), do: ev("alias", env, meta, m, nil, nil)
-  def trace({:struct_expansion, meta, m, _keys}, env), do: ev("struct", env, meta, m, nil, nil)
+  def trace({:remote_function, meta, m, n, a}, env), do: ev("remote", "function", env, meta, m, n, a)
+  def trace({:remote_macro, meta, m, n, a}, env), do: ev("remote", "macro", env, meta, m, n, a)
+  def trace({:imported_function, meta, m, n, a}, env), do: ev("imported", "function", env, meta, m, n, a)
+  def trace({:imported_macro, meta, m, n, a}, env), do: ev("imported", "macro", env, meta, m, n, a)
+  def trace({:local_function, meta, n, a}, env), do: ev("local", "function", env, meta, env.module, n, a)
+  def trace({:local_macro, meta, n, a}, env), do: ev("local", "macro", env, meta, env.module, n, a)
+  def trace({:alias_reference, meta, m}, env), do: ev("alias", nil, env, meta, m, nil, nil)
+  def trace({:struct_expansion, meta, m, _keys}, env), do: ev("struct", nil, env, meta, m, nil, nil)
   def trace({:on_module, _bytecode, _warnings}, env), do: owner(env)
   def trace(_event, _env), do: :ok
 
@@ -68,14 +68,15 @@ defmodule Unused.Tracer do
   end
   defp owner(_env), do: :ok
 
-  defp ev(kind, env, meta, module, name, arity) do
+  defp ev(kind, call_kind, env, meta, module, name, arity) do
     line = Keyword.get(meta, :line, env.line) || 0
+    column = Keyword.get(meta, :column, 0) || 0
     tomod = ms(module)
     target = "#{tomod}.#{name}/#{arity}"
     dyn = MapSet.member?(@dyn, target) and
       (not MapSet.member?(@function_scoped_dyn, target) or env.function != nil)
     :ets.insert(:unused_events,
-      {{kind, to_string(env.file), line, ms(env.module), fnf(env.function), tomod, ns(name), arity, dyn}})
+      {{kind, call_kind, to_string(env.file), line, column, ms(env.module), fnf(env.function), tomod, ns(name), arity, dyn}})
     :ok
   end
 
@@ -226,16 +227,583 @@ defmodule Unused.Reflect do
   end
 end
 
+defmodule Unused.Structure do
+  @moduledoc false
+  # The recursive visitor is stack-bounded at this fixed depth. Module discovery
+  # and carrier extraction each visit a source node at most once, so the total
+  # visit count remains a constant multiple of the parsed AST size.
+  @max_source_bytes 8 * 1024 * 1024
+  @max_ast_nodes 500_000
+  @max_depth 256
+  @max_carriers 20_000
+  @max_facts 500_000
+
+  def dump(emit, root, partition, events) do
+    owners =
+      :ets.tab2list(:unused_owners)
+      |> Enum.map(fn {owner} -> owner end)
+      |> Enum.group_by(fn {_mod, file} -> file end, fn {mod, _file} -> mod end)
+
+    started = System.monotonic_time(:microsecond)
+    event_count = length(events)
+    index_started = System.monotonic_time(:microsecond)
+    event_index = index_events(events)
+    event_index_us = System.monotonic_time(:microsecond) - index_started
+    # event_index is now authoritative and the caller has no later use for
+    # the canonical list. Reclaim its old-generation heap at this explicit
+    # ownership-transfer boundary before parsing any source ASTs.
+    :erlang.garbage_collect()
+    summary = %{files: 0, complete_files: 0, incomplete_files: 0, bytes: 0,
+      ast_nodes: 0, max_depth: 0, carriers: 0, facts: 0, exact_facts: 0,
+      opaque_facts: 0, roles: %{}, file_extraction_us: 0, emit_us: 0}
+    summary = owners
+      |> Enum.sort_by(fn {file, _mods} -> file end)
+      |> Enum.reduce(summary, fn {file, modules}, acc ->
+        file_started = System.monotonic_time(:microsecond)
+        record = file_record(root, partition, file, MapSet.new(modules), event_index)
+        file_extraction_us = System.monotonic_time(:microsecond) - file_started
+        emit_started = System.monotonic_time(:microsecond)
+        emit.(record)
+        emit_us = System.monotonic_time(:microsecond) - emit_started
+        summarized = summarize(acc, record)
+        %{summarized | file_extraction_us: summarized.file_extraction_us + file_extraction_us,
+          emit_us: summarized.emit_us + emit_us}
+      end)
+    Map.merge(summary, %{k: "structure_summary", partition: partition,
+      events: event_count,
+      event_index_us: event_index_us,
+      elapsed_us: System.monotonic_time(:microsecond) - started})
+  end
+
+  defp summarize(summary, record) do
+    facts = Map.fetch!(record, "facts")
+    roles = Enum.reduce(facts, summary.roles, fn fact, acc ->
+      Map.update(acc, Map.fetch!(fact, "role"), 1, &(&1 + 1))
+    end)
+    exact = Enum.count(facts, &(Map.get(&1, "resolution") == "exact"))
+    opaque = Enum.count(facts, &(Map.get(&1, "resolution") == "opaque"))
+    complete = Map.fetch!(record, "status") == "complete"
+    %{summary |
+      files: summary.files + 1,
+      complete_files: summary.complete_files + if(complete, do: 1, else: 0),
+      incomplete_files: summary.incomplete_files + if(complete, do: 0, else: 1),
+      bytes: summary.bytes + Map.fetch!(record, "bytes"),
+      ast_nodes: summary.ast_nodes + Map.fetch!(record, "ast_nodes"),
+      max_depth: max(summary.max_depth, Map.fetch!(record, "max_depth")),
+      carriers: summary.carriers + length(Map.fetch!(record, "carriers")),
+      facts: summary.facts + length(facts),
+      exact_facts: summary.exact_facts + exact,
+      opaque_facts: summary.opaque_facts + opaque,
+      roles: roles}
+  end
+
+  defp file_record(root, partition, file, modules, event_index) do
+    rel = Path.relative_to(Path.expand(file), Path.expand(root))
+    base = %{"k" => "structure_file", "file" => rel, "partition" => partition}
+
+    with :ok <- ensure(safe_relative?(rel), :ownership),
+         expanded <- Path.expand(file),
+         :ok <- ensure(within?(expanded, root), :ownership),
+         {:ok, stat} <- File.lstat(expanded),
+         :ok <- ensure(stat.type == :regular, :read),
+         :ok <- ensure(stat.size <= @max_source_bytes, :size),
+         {:ok, source} <- read_source_bounded(expanded, stat),
+         digest <- :crypto.hash(:sha256, source) |> Base.encode16(case: :lower),
+         {:ok, ast} <- Code.string_to_quoted(source,
+           file: file,
+           columns: true,
+           token_metadata: true,
+           existing_atoms_only: true,
+           emit_warnings: false),
+         {:ok, built} <- build(ast, file, modules, event_index) do
+      Map.merge(base, %{
+        "digest" => digest,
+        "bytes" => byte_size(source),
+        "status" => "complete",
+        "reason" => :null,
+        "ast_nodes" => built.nodes,
+        "max_depth" => built.max_depth,
+        "carriers" => Enum.reverse(built.carriers),
+        "facts" => Enum.reverse(built.facts)
+      })
+    else
+      {:error, :size} -> incomplete(base, "size")
+      {:error, :limit} -> incomplete(base, "limit")
+      {:error, :ownership} -> incomplete(base, "ownership")
+      {:error, :read} -> incomplete(base, "read")
+      {:error, %SyntaxError{}} -> incomplete(base, "parse")
+      {:error, {_meta, _message, _token}} -> incomplete(base, "parse")
+      {:error, _} -> incomplete(base, "read")
+      _ -> incomplete(base, "read")
+    end
+  rescue
+    _ -> incomplete(structure_base(root, partition, file), "parse")
+  catch
+    :throw, :structure_limit -> incomplete(structure_base(root, partition, file), "limit")
+  end
+
+  defp structure_base(root, partition, file),
+    do: %{"k" => "structure_file", "file" => Path.relative_to(Path.expand(file), Path.expand(root)),
+          "partition" => partition}
+
+  defp incomplete(base, reason) do
+    Map.merge(base, %{
+      "digest" => String.duplicate("0", 64),
+      "bytes" => 0,
+      "status" => "incomplete",
+      "reason" => reason,
+      "ast_nodes" => 0,
+      "max_depth" => 0,
+      "carriers" => [],
+      "facts" => []
+    })
+  end
+
+  defp safe_relative?(rel) do
+    rel != "." and rel != ".." and not String.starts_with?(rel, "../") and
+      not String.starts_with?(rel, "/")
+  end
+
+  defp ensure(true, _reason), do: :ok
+  defp ensure(false, reason), do: {:error, reason}
+
+  defp read_source_bounded(path, before) do
+    case :file.open(String.to_charlist(path), [:read, :binary, :raw]) do
+      {:ok, descriptor} ->
+        try do
+          with {:ok, info} <- :file.read_file_info(descriptor),
+               :ok <- validate_opened_source(path, before, info) do
+            read_source_chunks(descriptor, [], 0)
+          else
+            {:error, :size} -> {:error, :size}
+            _ -> {:error, :read}
+          end
+        after
+          :file.close(descriptor)
+        end
+      _ -> {:error, :read}
+    end
+  end
+
+  defp validate_opened_source(path, before, info) do
+    with true <- is_tuple(info) and tuple_size(info) == 14 and elem(info, 0) == :file_info,
+         true <- elem(info, 2) == :regular,
+         :ok <- ensure(elem(info, 1) <= @max_source_bytes, :size),
+         {:ok, after_open} <- File.lstat(path),
+         true <- after_open.type == :regular,
+         true <- same_file?(before, after_open),
+         true <- descriptor_matches?(info, after_open) do
+      :ok
+    else
+      {:error, :size} -> {:error, :size}
+      _ -> {:error, :read}
+    end
+  end
+
+  defp same_file?(left, right) do
+    left.major_device == right.major_device and left.minor_device == right.minor_device and
+      left.inode == right.inode
+  end
+
+  defp descriptor_matches?(info, stat) do
+    elem(info, 9) == stat.major_device and elem(info, 10) == stat.minor_device and
+      elem(info, 11) == stat.inode
+  end
+
+  defp read_source_chunks(descriptor, chunks, total) do
+    requested = min(64 * 1024, @max_source_bytes - total + 1)
+    case :file.read(descriptor, requested) do
+      {:ok, chunk} ->
+        next = total + byte_size(chunk)
+        if next > @max_source_bytes,
+          do: {:error, :size},
+          else: read_source_chunks(descriptor, [chunk | chunks], next)
+      :eof -> {:ok, chunks |> Enum.reverse() |> IO.iodata_to_binary()}
+      _ -> {:error, :read}
+    end
+  end
+
+  defp within?(path, root) do
+    rel = Path.relative_to(Path.expand(path), Path.expand(root))
+    safe_relative?(rel)
+  end
+
+  defp build(ast, file, modules, event_index) do
+    state = %{nodes: 0, max_depth: 0, carriers: [], facts: [], next_carrier: 0,
+              carrier_count: 0, fact_count: 0, unsupported: MapSet.new()}
+    state = visit_modules(ast, file, modules, event_index, state, 1, nil)
+    {:ok, state}
+  catch
+    :throw, :structure_limit -> {:error, :limit}
+  end
+
+  defp index_events(events) do
+    Enum.reduce(events, %{carriers: MapSet.new(), by_target: MapSet.new(), by_call: %{}}, fn
+      event = {_id, {_kind, _call_kind, file, line, column, from_mod, from_fun,
+                             to_mod, name, arity, _dyn}}, acc ->
+        carrier_key = {file, from_mod, from_fun}
+        carriers = MapSet.put(acc.carriers, carrier_key)
+        by_target = if is_binary(name) and is_integer(arity),
+          do: MapSet.put(acc.by_target, {file, to_mod, "#{name}/#{arity}"}), else: acc.by_target
+        call_key = {file, line, column, from_mod, from_fun, name, arity}
+        {_id, {kind, call_kind, _file, _line, _column, _from_mod, _from_fun,
+               _to_mod, _name, _arity, _dyn}} = event
+        compact = {elem(event, 0), kind, call_kind, to_mod}
+        by_call = Map.update(acc.by_call, call_key, [compact], &[compact | &1])
+        %{acc | carriers: carriers, by_target: by_target, by_call: by_call}
+    end)
+  end
+
+  defp visit_modules(node, file, modules, event_index, state, depth, lexical_mod) do
+    state = tick(state, depth)
+    case node do
+      {:defmodule, _meta, [{:__aliases__, _alias_meta, parts}, body]}
+          when is_list(parts) and is_list(body) ->
+        mod = resolve_module(parts, lexical_mod, modules)
+        state =
+          if mod != nil do
+            visit_definitions(Keyword.get(body, :do), mod, file, event_index, state, depth + 1)
+          else
+            state
+          end
+        visit_children(body, file, modules, event_index, state, depth + 1, mod || lexical_mod)
+      {_, _, args} when is_list(args) ->
+        visit_children(args, file, modules, event_index, state, depth + 1, lexical_mod)
+      values when is_list(values) ->
+        visit_children(values, file, modules, event_index, state, depth + 1, lexical_mod)
+      _ -> state
+    end
+  end
+
+  defp visit_children(values, file, modules, event_index, state, depth, lexical_mod) do
+    Enum.reduce(values, state, fn value, acc ->
+      child = if match?({_key, _value}, value), do: elem(value, 1), else: value
+      visit_modules(child, file, modules, event_index, acc, depth, lexical_mod)
+    end)
+  end
+
+  # The compiler's on-module inventory is authoritative. Source spelling only
+  # selects among exact compiler-owned identities: a one-segment nested module
+  # is lexical, qualified names remain lexical, and Elixir.X explicitly escapes
+  # the lexical namespace.
+  defp resolve_module([Elixir | rest], _lexical_mod, modules) when rest != [] do
+    candidate = rest |> Module.concat() |> inspect()
+    if MapSet.member?(modules, candidate), do: candidate, else: nil
+  end
+  defp resolve_module([part], lexical_mod, modules) when is_atom(part) do
+    candidate = if lexical_mod == nil, do: inspect(Module.concat([part])),
+      else: lexical_mod <> "." <> to_string(part)
+    if MapSet.member?(modules, candidate), do: candidate, else: nil
+  end
+  defp resolve_module(parts, lexical_mod, modules) do
+    suffix = parts |> Module.concat() |> inspect()
+    candidate = if lexical_mod == nil, do: suffix, else: lexical_mod <> "." <> suffix
+    if MapSet.member?(modules, candidate), do: candidate, else: nil
+  end
+
+  defp visit_definitions(nil, _mod, _file, _event_index, state, _depth), do: state
+  defp visit_definitions({:__block__, _meta, values}, mod, file, event_index, state, depth) do
+    Enum.reduce(values, state, &visit_definition(&1, mod, file, event_index, &2, depth))
+  end
+  defp visit_definitions(value, mod, file, event_index, state, depth) do
+    visit_definition(value, mod, file, event_index, state, depth)
+  end
+
+  defp visit_definition({kind, meta, [head, body]}, mod, file, event_index, state, depth)
+       when kind in [:def, :defp] and is_list(body) do
+    case definition_identity(head) do
+      {name, arity} ->
+        fun = "#{name}/#{arity}"
+        compiler_known = MapSet.member?(event_index.carriers, {file, mod, fun}) or
+          (kind == :def) or MapSet.member?(event_index.by_target, {file, mod, fun})
+        span = definition_span(meta, body)
+        if not compiler_known or span == nil do
+          state
+        else
+          id = state.next_carrier
+          carrier = %{"id" => id, "mod" => mod, "fun" => fun,
+                      "def_line" => Keyword.get(meta, :line, 0), "body" => span}
+          state = %{state | next_carrier: id + 1, carrier_count: state.carrier_count + 1,
+                           carriers: [carrier | state.carriers]}
+          if state.carrier_count > @max_carriers, do: throw(:structure_limit)
+          carrier = %{id: id, mod: mod, fun: fun, file: file, span: span,
+                      event_index: event_index}
+          visit_function_body(body, carrier, state, depth + 1)
+        end
+      nil -> state
+    end
+  end
+  defp visit_definition(_value, _mod, _file, _event_index, state, _depth), do: state
+
+  defp definition_identity({:when, _meta, [head | guards]}) when guards != [],
+    do: definition_identity(head)
+  defp definition_identity({name, _meta, args})
+       when is_atom(name) and (is_list(args) or is_nil(args)), do: {name, length(args || [])}
+  defp definition_identity(_head), do: nil
+
+  defp visit_function_body(body, carrier, state, depth) do
+    facts_before = state.facts
+    fact_count_before = state.fact_count
+    success = Keyword.get(body, :do)
+    rescue_clauses = Keyword.get(body, :rescue, [])
+    unsupported_control = Keyword.has_key?(body, :else) or Keyword.has_key?(body, :catch)
+    if unsupported_control do
+      %{state | unsupported: MapSet.put(state.unsupported, carrier.id)}
+    else
+      state = if rescue_clauses == [] do
+        add_terminal_fact(state, carrier, "carrier-result", last_expression(success), nil)
+      else
+        state
+        |> add_terminal_fact(carrier, "rescue-success", last_expression(success), carrier.span)
+        |> add_clause_facts(carrier, "rescue-result", rescue_clauses, carrier.span)
+      end
+      state = walk(success, carrier, state, depth)
+      state = Enum.reduce(rescue_clauses, state, fn clause, acc -> walk(clause, carrier, acc, depth) end)
+      if MapSet.member?(state.unsupported, carrier.id),
+        do: %{state | facts: facts_before, fact_count: fact_count_before}, else: state
+    end
+  end
+
+  defp walk(nil, _carrier, state, _depth), do: state
+  defp walk(node, carrier, state, depth) do
+    state = tick(state, depth)
+    case node do
+      {:|>, meta, [left, right]} ->
+        walk_pipeline(meta, left, right, carrier, state, depth)
+      {name, meta, [condition, branches]} when name in [:if, :unless] and is_list(branches) ->
+        state = if canonical_macro?(carrier.event_index, carrier.file, carrier.mod, carrier.fun,
+                     meta, name, 2), do: add_keyword_branch_facts(state, carrier, branches, node), else: state
+        state = walk(condition, carrier, state, depth + 1)
+        walk(branches, carrier, state, depth + 1)
+      {:case, _meta, [subject, branches]} when is_list(branches) ->
+        state = add_clause_facts(state, carrier, "branch-result", Keyword.get(branches, :do, []), node_span(node))
+        state = walk(subject, carrier, state, depth + 1)
+        walk(branches, carrier, state, depth + 1)
+      {:with, _meta, values} when is_list(values) ->
+        keywords = List.last(values)
+        state = if Keyword.keyword?(keywords), do: add_keyword_branch_facts(state, carrier, keywords, node), else: state
+        Enum.reduce(values, state, fn value, acc -> walk(value, carrier, acc, depth + 1) end)
+      {:cond, meta, [branches]} when is_list(branches) ->
+        state = if canonical_macro?(carrier.event_index, carrier.file, carrier.mod, carrier.fun,
+                     meta, :cond, 1), do: add_clause_facts(state, carrier, "branch-result",
+                       Keyword.get(branches, :do, []), node_span(node)), else: state
+        walk(branches, carrier, state, depth + 1)
+      {:try, _meta, [parts]} when is_list(parts) ->
+        target = node_span(node)
+        unsupported_control = Keyword.has_key?(parts, :else) or Keyword.has_key?(parts, :catch)
+        if unsupported_control do
+          %{state | unsupported: MapSet.put(state.unsupported, carrier.id)}
+        else
+          state = add_terminal_fact(state, carrier, "rescue-success",
+            last_expression(Keyword.get(parts, :do)), target)
+          state = add_clause_facts(state, carrier, "rescue-result",
+            Keyword.get(parts, :rescue, []), target)
+          Enum.reduce(parts, state, fn {_key, value}, acc -> walk(value, carrier, acc, depth + 1) end)
+        end
+      {{:., _dot_meta, [_receiver, name]}, meta, args} when is_atom(name) and is_list(args) ->
+        walk_call(node, meta, name, length(args), args, carrier, state, depth, 0, node_span(node))
+      {name, meta, args} when is_atom(name) and is_list(meta) and is_list(args) ->
+        walk_call(node, meta, name, length(args), args, carrier, state, depth, 0, node_span(node))
+      {_left, _meta, args} when is_list(args) ->
+        Enum.reduce(args, state, fn value, acc -> walk(value, carrier, acc, depth + 1) end)
+      values when is_list(values) ->
+        Enum.reduce(values, state, fn value, acc ->
+          child = if match?({_key, _value}, value), do: elem(value, 1), else: value
+          walk(child, carrier, acc, depth + 1)
+        end)
+      _ -> state
+    end
+  end
+
+  defp walk_pipeline(meta, left, right, carrier, state, depth) do
+    target = pipeline_span(left, right, meta)
+    pipe_exact = canonical_macro?(carrier.event_index, carrier.file, carrier.mod, carrier.fun,
+      meta, :|>, 2)
+    case call_parts(right) do
+      {call_meta, name, args} ->
+        call_target = node_span(right)
+        matches = matching_call_events(carrier.event_index, carrier.file, carrier.mod, carrier.fun,
+          call_meta, name, length(args) + 1)
+        event_id = if pipe_exact and length(matches) == 1, do: elem(hd(matches), 0), else: nil
+        state = add_call_fact(state, carrier, "pipeline-argument", left, target, event_id, 0)
+        state = Enum.with_index(args, 1) |> Enum.reduce(state, fn {arg, index}, acc ->
+          add_call_fact(acc, carrier, "call-argument", arg, call_target, event_id, index)
+        end)
+        state = walk(left, carrier, state, depth + 1)
+        Enum.reduce(args, state, fn arg, acc -> walk(arg, carrier, acc, depth + 1) end)
+      nil ->
+        state = walk(left, carrier, state, depth + 1)
+        walk(right, carrier, state, depth + 1)
+    end
+  end
+
+  defp walk_call(_node, meta, name, arity, args, carrier, state, depth, offset, target) do
+    matches = matching_call_events(carrier.event_index, carrier.file, carrier.mod, carrier.fun,
+      meta, name, arity + offset)
+    event_id = if length(matches) == 1, do: elem(hd(matches), 0), else: nil
+    state = Enum.with_index(args, offset) |> Enum.reduce(state, fn {arg, index}, acc ->
+      add_call_fact(acc, carrier, "call-argument", arg, target, event_id, index)
+    end)
+    Enum.reduce(args, state, fn arg, acc -> walk(arg, carrier, acc, depth + 1) end)
+  end
+
+  defp call_parts({{:., _dot, [_receiver, name]}, meta, args}) when is_atom(name) and is_list(args),
+    do: {meta, name, args}
+  defp call_parts({name, meta, args}) when is_atom(name) and is_list(meta) and is_list(args),
+    do: {meta, name, args}
+  defp call_parts(_), do: nil
+
+  defp add_keyword_branch_facts(state, carrier, keywords, target_node) do
+    target = node_span(target_node)
+    state = add_terminal_fact(state, carrier, "branch-result", last_expression(Keyword.get(keywords, :do)), target)
+    else_value = Keyword.get(keywords, :else)
+    if clause_list?(else_value), do: add_clause_facts(state, carrier, "branch-result", else_value, target),
+      else: add_terminal_fact(state, carrier, "branch-result", last_expression(else_value), target)
+  end
+
+  defp add_clause_facts(state, carrier, role, clauses, target) when is_list(clauses) do
+    Enum.reduce(clauses, state, fn
+      {:->, _meta, [_patterns, body]}, acc -> add_terminal_fact(acc, carrier, role, last_expression(body), target)
+      _other, acc -> acc
+    end)
+  end
+  defp add_clause_facts(state, _carrier, _role, _clauses, _target), do: state
+
+  defp add_terminal_fact(state, _carrier, _role, nil, _target), do: state
+  defp add_terminal_fact(state, carrier, role, value, target) do
+    case node_span(value) do
+      nil -> state
+      from -> add_fact(state, carrier.id, role, from, target, nil, nil, nil)
+    end
+  end
+
+  defp add_call_fact(state, carrier, role, value, target, event_id, argument) do
+    case {node_span(value), target} do
+      {from, to} when from != nil and to != nil ->
+        add_fact(state, carrier.id, role, from, to, event_id, argument,
+          if(event_id == nil, do: "opaque", else: "exact"))
+      _ -> state
+    end
+  end
+
+  defp add_fact(state, carrier, role, from, to, event_id, argument, resolution) do
+    fact = %{"carrier" => carrier, "role" => role, "from" => from,
+             "to" => json_value(to), "event_id" => json_value(event_id),
+             "argument" => json_value(argument), "resolution" => json_value(resolution)}
+    next = %{state | facts: [fact | state.facts], fact_count: state.fact_count + 1}
+    if next.fact_count > @max_facts, do: throw(:structure_limit)
+    next
+  end
+
+  defp canonical_macro?(event_index, file, mod, fun, meta, name, arity) do
+    matches = matching_call_events(event_index, file, mod, fun, meta, name, arity)
+    length(matches) == 1 and case hd(matches) do
+      {_id, _kind, "macro", "Kernel"} -> true
+      _ -> false
+    end
+  end
+
+  defp matching_call_events(event_index, file, mod, fun, meta, name, arity) do
+    line = Keyword.get(meta, :line, 0)
+    column = Keyword.get(meta, :column, 0)
+    if column > 0,
+      do: Map.get(event_index.by_call, {file, line, column, mod, fun, to_string(name), arity}, []),
+      else: []
+  end
+
+  defp clause_list?(value) when is_list(value), do: Enum.all?(value, &match?({:->, _, _}, &1))
+  defp clause_list?(_), do: false
+
+  defp last_expression({:__block__, _meta, values}) when is_list(values), do: List.last(values)
+  defp last_expression(value), do: value
+
+  defp definition_span(meta, body) do
+    start = point(meta)
+    ending = token_point(Keyword.get(meta, :end), 3) ||
+      point(Keyword.get(meta, :end_of_expression)) ||
+      node_end(last_expression(Keyword.get(body, :do)))
+    span(start, ending)
+  end
+
+  defp pipeline_span(left, right, meta) do
+    span(node_start(left) || point(meta), node_end(right) || token_point(meta, 2))
+  end
+
+  defp node_span(node), do: span(node_start(node), node_end(node))
+  defp node_start({:__block__, _meta, values}) when is_list(values), do: node_start(List.first(values))
+  defp node_start({:|>, meta, [left, _right]}), do: node_start(left) || point(meta)
+  defp node_start({{:., _dot, [_receiver, _name]}, meta, _args}), do: point(meta)
+  defp node_start({name, meta, _args}) when is_atom(name) and is_list(meta), do: point(meta)
+  defp node_start(_), do: nil
+
+  defp node_end({:__block__, _meta, values}) when is_list(values), do: node_end(List.last(values))
+  defp node_end({:|>, meta, [_left, right]}), do: node_end(right) || token_point(meta, 2)
+  defp node_end({{:., _dot, [_receiver, name]}, meta, args}) when is_atom(name) and is_list(args),
+    do: call_end(meta, name, args)
+  defp node_end({name, meta, args}) when is_atom(name) and is_list(meta) and is_list(args),
+    do: call_end(meta, name, args)
+  defp node_end(_), do: nil
+
+  defp call_end(meta, name, args) do
+    token_point(Keyword.get(meta, :closing), 1) ||
+      token_point(Keyword.get(meta, :end), 3) ||
+      point(Keyword.get(meta, :end_of_expression)) ||
+      node_end(List.last(args)) ||
+      token_point(meta, String.length(to_string(name)))
+  end
+
+  defp point(meta) when is_list(meta) do
+    case {Keyword.get(meta, :line), Keyword.get(meta, :column)} do
+      {line, column} when is_integer(line) and line > 0 and is_integer(column) and column > 0 -> {line, column}
+      _ -> nil
+    end
+  end
+  defp point(_), do: nil
+
+  defp token_point(meta, width) when is_list(meta) do
+    case point(meta) do
+      {line, column} -> {line, column + width}
+      nil -> nil
+    end
+  end
+  defp token_point(_, _), do: nil
+
+  defp span({sl, sc}, {el, ec}) when el > sl or (el == sl and ec > sc),
+    do: %{"sl" => sl, "sc" => sc, "el" => el, "ec" => ec}
+  defp span(_, _), do: nil
+
+  defp tick(state, depth) do
+    if depth > @max_depth or state.nodes >= @max_ast_nodes, do: throw(:structure_limit)
+    %{state | nodes: state.nodes + 1, max_depth: max(state.max_depth, depth)}
+  end
+
+  defp json_value(nil), do: :null
+  defp json_value(value), do: value
+end
+
 defmodule Unused.Output do
   @moduledoc false
 
-  def dump_events(emit, root, partition) do
-    :ets.tab2list(:unused_events)
-    |> Enum.map(fn {event} -> event end)
-    |> Enum.sort()
-    |> Enum.each(fn {kind, file, line, from_mod, from_fun, to_mod, name, arity, dyn} ->
-      base = %{"k" => "event", "kind" => kind, "file" => Path.relative_to(file, root),
-               "line" => line, "from_mod" => from_mod, "to_mod" => to_mod, "dyn" => dyn,
+  def take_events do
+    # The ETS set already performs the exact-tuple deduplication previously
+    # provided by Enum.uniq. Transfer it once, release the table before sort,
+    # then assign stable IDs without two additional full intermediate lists.
+    entries = :ets.tab2list(:unused_events)
+    true = :ets.delete(:unused_events)
+    {events, _next_id} = entries
+      |> Enum.sort()
+      |> Enum.map_reduce(0, fn {event}, id -> {{id, event}, id + 1} end)
+    events
+  end
+
+  def dump_events(emit, root, partition, events) do
+    Enum.each(events, fn {id, {kind, call_kind, file, line, column, from_mod, from_fun,
+                               to_mod, name, arity, dyn}} ->
+      base = %{"k" => "event", "id" => id, "kind" => kind,
+               "call_kind" => if(call_kind == nil, do: :null, else: call_kind),
+               "file" => Path.relative_to(file, root), "line" => line, "column" => column,
+               "from_mod" => if(from_mod == nil, do: :null, else: from_mod),
+               "to_mod" => to_mod, "dyn" => dyn,
                "partition" => partition}
       base = if from_fun, do: Map.put(base, "from_fun", from_fun), else: base
       base = if name, do: Map.put(base, "name", name), else: base
@@ -311,9 +879,9 @@ out = System.get_env("UNUSED_OUT")
 emit = fn map -> IO.puts(io, IO.iodata_to_binary(:json.encode(map))) end
 root = File.cwd!()
 phase = System.get_env("UNUSED_PHASE") || "production"
-emit.(%{"k" => "phase", "phase" => phase, "status" => "started"})
+emit.(%{"k" => "phase", "protocol" => 2, "phase" => phase, "status" => "started"})
 
-:ets.new(:unused_events, [:public, :named_table, :duplicate_bag, write_concurrency: true])
+:ets.new(:unused_events, [:public, :named_table, :set, write_concurrency: true])
 :ets.new(:unused_owners, [:public, :named_table, :set, write_concurrency: true])
 Code.put_compiler_option(:tracers, [Unused.Tracer])
 
@@ -348,8 +916,11 @@ case phase do
 
     reflection_ok =
       if compile_ok do
-        Unused.Output.dump_events(emit, root, "prod")
+        events = Unused.Output.take_events()
+        Unused.Output.dump_events(emit, root, "prod", events)
         Unused.Output.dump_owners(emit, root, "prod")
+        structure_summary = Unused.Structure.dump(emit, root, "prod", events)
+        emit.(structure_summary)
         Mix.Project.compile_path()
         |> Path.join("*.beam")
         |> Path.wildcard()
@@ -371,7 +942,7 @@ case phase do
               "details" => ["module reflection incomplete"]})
     end
     emit.(%{"k" => "meta", "compile_ok" => complete})
-    emit.(%{"k" => "phase", "phase" => "production",
+    emit.(%{"k" => "phase", "protocol" => 2, "phase" => "production",
             "status" => if(complete, do: "complete", else: "incomplete")})
 
   "test" ->
@@ -440,15 +1011,17 @@ case phase do
 
     complete = compile_complete and reflection_ok
     if complete do
-      Unused.Output.dump_events(emit, root, "test")
+      events = Unused.Output.take_events()
+      Unused.Output.dump_events(emit, root, "test", events)
+      emit.(Unused.Structure.dump(emit, root, "test", events))
     else
       emit.(%{"k" => "test_compile_error"})
     end
-    emit.(%{"k" => "phase", "phase" => "test",
+    emit.(%{"k" => "phase", "protocol" => 2, "phase" => "test",
             "status" => if(complete, do: "complete", else: "incomplete")})
 
   _ ->
-    emit.(%{"k" => "phase", "phase" => phase, "status" => "incomplete"})
+    emit.(%{"k" => "phase", "protocol" => 2, "phase" => phase, "status" => "incomplete"})
 end
 
 File.close(io)

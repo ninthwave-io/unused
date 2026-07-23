@@ -116,6 +116,29 @@ function withPath<T>(path: string, operation: () => T): T {
   }
 }
 
+function withoutStructuralTimings(
+  trace: ReturnType<typeof runTracer>,
+): ReturnType<typeof runTracer> {
+  const withoutTimings = <T extends NonNullable<typeof trace.structuralSummary>>(
+    summary: T,
+  ): T => ({
+    ...summary,
+    elapsedUs: 0,
+    eventIndexUs: 0,
+    fileExtractionUs: 0,
+    emitUs: 0,
+  });
+  return {
+    ...trace,
+    ...(trace.structuralSummary === undefined
+      ? {}
+      : { structuralSummary: withoutTimings(trace.structuralSummary) }),
+    ...(trace.structuralTestSummary === undefined
+      ? {}
+      : { structuralTestSummary: withoutTimings(trace.structuralTestSummary) }),
+  };
+}
+
 describe.skipIf(!toolsAvailable || !publicPackagesAvailable)(
   "runTracer — public Rustler compiler isolation",
   () => {
@@ -227,7 +250,7 @@ exit 97
       expect(snapshotWholeTree(project)).toEqual(before);
       expect(readdirSync(cargoTargetParent)).toEqual([]);
       expect(existsSync(cargoLog)).toBe(false);
-      expect(second).toEqual(first);
+      expect(withoutStructuralTimings(second)).toEqual(withoutStructuralTimings(first));
 
       expect(first.modules.map((module) => module.mod)).toContain("Neutral.Native");
       expect(

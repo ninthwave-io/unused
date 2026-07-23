@@ -5,11 +5,24 @@
  * the TS-only CI job. End-to-end tracer runs are gated in `gates.elixir.test.ts`.
  */
 
-import { mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import fs, {
+  appendFileSync,
+  mkdtempSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  truncateSync,
+  writeFileSync,
+} from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { readBoundedTrace, resolveTestOnlyRoots, type TestInventory } from "./mix-isolation.js";
+import {
+  readBoundedTraceLines,
+  resolveTestOnlyRoots,
+  type TestInventory,
+} from "./mix-isolation.js";
 import {
   ElixirCompileError,
   ElixirToolchainError,
@@ -28,9 +41,53 @@ function ownerLine(mod: string, file: string, partition: "prod" | "test" = "prod
   return JSON.stringify({ k: "owner", mod, file, partition });
 }
 
+function incompleteStructureLine(file: string, partition: "prod" | "test" = "prod"): string {
+  return JSON.stringify({
+    k: "structure_file",
+    file,
+    partition,
+    digest: "0".repeat(64),
+    bytes: 0,
+    status: "incomplete",
+    reason: "parse",
+    ast_nodes: 0,
+    max_depth: 0,
+    carriers: [],
+    facts: [],
+  });
+}
+
+function structuralSummaryLine(
+  partition: "prod" | "test",
+  files = 0,
+  incompleteFiles = 0,
+  events = 0,
+): string {
+  return JSON.stringify({
+    k: "structure_summary",
+    partition,
+    events,
+    elapsed_us: 0,
+    event_index_us: 0,
+    file_extraction_us: 0,
+    emit_us: 0,
+    files,
+    complete_files: files - incompleteFiles,
+    incomplete_files: incompleteFiles,
+    bytes: 0,
+    ast_nodes: 0,
+    max_depth: 0,
+    carriers: 0,
+    facts: 0,
+    exact_facts: 0,
+    opaque_facts: 0,
+    roles: {},
+  });
+}
+
 /** A minimal well-formed trace: one module, one function, compile ok. */
 const OK_LINES = [
-  JSON.stringify({ k: "phase", phase: "production", status: "started" }),
+  JSON.stringify({ k: "phase", protocol: 2, phase: "production", status: "started" }),
   JSON.stringify({ k: "meta", compile_ok: true }),
   JSON.stringify({ k: "app_mod", mod: "App.Application" }),
   JSON.stringify({ k: "deps", names: ["phoenix", "ecto"] }),
@@ -56,9 +113,12 @@ const OK_LINES = [
   }),
   JSON.stringify({
     k: "event",
+    id: 0,
     kind: "remote",
+    call_kind: "function",
     file: "lib/app/application.ex",
     line: 5,
+    column: 1,
     from_mod: "App.Application",
     from_fun: "start/2",
     to_mod: "App.Core",
@@ -67,7 +127,9 @@ const OK_LINES = [
     dyn: false,
     partition: "prod",
   }),
-  JSON.stringify({ k: "phase", phase: "production", status: "complete" }),
+  incompleteStructureLine("lib/app/core.ex"),
+  structuralSummaryLine("prod", 1, 1, 1),
+  JSON.stringify({ k: "phase", protocol: 2, phase: "production", status: "complete" }),
 ].join("\n");
 
 describe("parseTraceOutput", () => {
@@ -167,9 +229,10 @@ describe("parseTraceOutput", () => {
       );
     }
     const raw = [
-      JSON.stringify({ k: "phase", phase: "production", status: "started" }),
+      JSON.stringify({ k: "phase", protocol: 2, phase: "production", status: "started" }),
       ...middle,
-      JSON.stringify({ k: "phase", phase: "production", status: "complete" }),
+      structuralSummaryLine("prod"),
+      JSON.stringify({ k: "phase", protocol: 2, phase: "production", status: "complete" }),
     ].join("\n");
     const started = performance.now();
     expect(parseTraceOutput(raw).modules).toHaveLength(4_000);
@@ -204,8 +267,8 @@ describe("parseTraceOutput", () => {
     ],
   ])("refuses %s records instead of casting them", (_label, record) => {
     const lines = OK_LINES.replace(
-      JSON.stringify({ k: "phase", phase: "production", status: "complete" }),
-      `${record}\n${JSON.stringify({ k: "phase", phase: "production", status: "complete" })}`,
+      JSON.stringify({ k: "phase", protocol: 2, phase: "production", status: "complete" }),
+      `${record}\n${JSON.stringify({ k: "phase", protocol: 2, phase: "production", status: "complete" })}`,
     );
     expect(() => parseTraceOutput(lines)).toThrow(/malformed phase protocol/);
   });
@@ -246,6 +309,17 @@ describe("parseTraceOutput", () => {
         ...lines.slice(1),
       ],
     ],
+    [
+      "missing structural summary",
+      (lines: string[]) => lines.filter((line) => !line.includes('"k":"structure_summary"')),
+    ],
+    [
+      "duplicate structural summary",
+      (lines: string[]) => {
+        const summary = lines.find((line) => line.includes('"k":"structure_summary"')) ?? "";
+        return [lines[0] ?? "", summary, ...lines.slice(1)];
+      },
+    ],
     ["missing terminal", (lines: string[]) => lines.slice(0, -1)],
     ["duplicate terminal", (lines: string[]) => [...lines, lines.at(-1) ?? ""]],
   ])("refuses a %s record sequence", (_label, mutate) => {
@@ -254,12 +328,20 @@ describe("parseTraceOutput", () => {
     );
   });
 
+  it("refuses a structural summary that understates raw compiler event work", () => {
+    const lines = OK_LINES.split("\n").map((line) => {
+      if (!line.includes('"k":"structure_summary"')) return line;
+      return JSON.stringify({ ...JSON.parse(line), events: 0 });
+    });
+    expect(() => parseTraceOutput(lines.join("\n"))).toThrow(/inconsistent structural counters/);
+  });
+
   it("bounds an incomplete test child without rejecting complete production facts", () => {
     const result = parseTestTraceOutput(
       [
-        JSON.stringify({ k: "phase", phase: "test", status: "started" }),
+        JSON.stringify({ k: "phase", protocol: 2, phase: "test", status: "started" }),
         JSON.stringify({ k: "test_compile_error" }),
-        JSON.stringify({ k: "phase", phase: "test", status: "incomplete" }),
+        JSON.stringify({ k: "phase", protocol: 2, phase: "test", status: "incomplete" }),
       ].join("\n"),
     );
     expect(result.testPartition).toBe("incomplete");
@@ -274,9 +356,9 @@ describe("parseTraceOutput", () => {
   ])("discards malformed/foreign test record %s without throwing", (record) => {
     const result = parseTestTraceOutput(
       [
-        JSON.stringify({ k: "phase", phase: "test", status: "started" }),
+        JSON.stringify({ k: "phase", protocol: 2, phase: "test", status: "started" }),
         record,
-        JSON.stringify({ k: "phase", phase: "test", status: "complete" }),
+        JSON.stringify({ k: "phase", protocol: 2, phase: "test", status: "complete" }),
       ].join("\n"),
     );
     expect(result).toMatchObject({ testPartition: "incomplete", events: [], modules: [] });
@@ -284,29 +366,30 @@ describe("parseTraceOutput", () => {
 
   it("refuses (throws) when the tracer reported a compile error", () => {
     const lines = [
-      JSON.stringify({ k: "phase", phase: "production", status: "started" }),
+      JSON.stringify({ k: "phase", protocol: 2, phase: "production", status: "started" }),
       JSON.stringify({ k: "compile_error", count: 3 }),
       JSON.stringify({ k: "meta", compile_ok: false }),
-      JSON.stringify({ k: "phase", phase: "production", status: "incomplete" }),
+      JSON.stringify({ k: "phase", protocol: 2, phase: "production", status: "incomplete" }),
     ].join("\n");
     expect(() => parseTraceOutput(lines)).toThrow(ElixirCompileError);
   });
 
   it("refuses when compile_ok is false even without an explicit compile_error record", () => {
     const lines = [
-      JSON.stringify({ k: "phase", phase: "production", status: "started" }),
+      JSON.stringify({ k: "phase", protocol: 2, phase: "production", status: "started" }),
       JSON.stringify({ k: "meta", compile_ok: false }),
-      JSON.stringify({ k: "phase", phase: "production", status: "incomplete" }),
+      JSON.stringify({ k: "phase", protocol: 2, phase: "production", status: "incomplete" }),
     ].join("\n");
     expect(() => parseTraceOutput(lines)).toThrow(ElixirCompileError);
   });
 
   it("refuses when no modules were found (empty output)", () => {
     const lines = [
-      JSON.stringify({ k: "phase", phase: "production", status: "started" }),
+      JSON.stringify({ k: "phase", protocol: 2, phase: "production", status: "started" }),
       JSON.stringify({ k: "meta", compile_ok: true }),
       JSON.stringify({ k: "deps", names: [] }),
-      JSON.stringify({ k: "phase", phase: "production", status: "complete" }),
+      structuralSummaryLine("prod"),
+      JSON.stringify({ k: "phase", protocol: 2, phase: "production", status: "complete" }),
     ].join("\n");
     expect(() => parseTraceOutput(lines)).toThrow(/no compiled modules/);
   });
@@ -336,7 +419,7 @@ describe("runTracer — toolchain-absent refusal", () => {
 describe("parseTraceOutput — test partition tag", () => {
   it("carries the test partition tag through", () => {
     const lines = [
-      JSON.stringify({ k: "phase", phase: "test", status: "started" }),
+      JSON.stringify({ k: "phase", protocol: 2, phase: "test", status: "started" }),
       ownerLine("App.CoreTest", "test/core_test.exs", "test"),
       JSON.stringify({
         k: "module",
@@ -348,7 +431,7 @@ describe("parseTraceOutput — test partition tag", () => {
         impl: false,
         partition: "test",
       }),
-      JSON.stringify({ k: "phase", phase: "test", status: "complete" }),
+      JSON.stringify({ k: "phase", protocol: 2, phase: "test", status: "complete" }),
     ].join("\n");
     const result = parseTestTraceOutput(lines);
     const testMod = result.modules.find((m) => m.partition === "test");
@@ -368,15 +451,19 @@ describe("parseTraceOutput — test partition tag", () => {
     });
     const owner = ownerLine("App.CoreTest", "test/core_test.exs", "test");
     const missing = parseTestTraceOutput(
-      [JSON.stringify({ k: "phase", phase: "test", status: "started" }), owner, module].join("\n"),
+      [
+        JSON.stringify({ k: "phase", protocol: 2, phase: "test", status: "started" }),
+        owner,
+        module,
+      ].join("\n"),
     );
     const duplicated = parseTestTraceOutput(
       [
-        JSON.stringify({ k: "phase", phase: "test", status: "started" }),
+        JSON.stringify({ k: "phase", protocol: 2, phase: "test", status: "started" }),
         owner,
         module,
-        JSON.stringify({ k: "phase", phase: "test", status: "complete" }),
-        JSON.stringify({ k: "phase", phase: "test", status: "complete" }),
+        JSON.stringify({ k: "phase", protocol: 2, phase: "test", status: "complete" }),
+        JSON.stringify({ k: "phase", protocol: 2, phase: "test", status: "complete" }),
       ].join("\n"),
     );
     expect(missing).toMatchObject({ testPartition: "incomplete", events: [], modules: [] });
@@ -407,9 +494,9 @@ describe("parseTraceOutput — test partition tag", () => {
     }
     const result = parseTestTraceOutput(
       [
-        JSON.stringify({ k: "phase", phase: "test", status: "started" }),
+        JSON.stringify({ k: "phase", protocol: 2, phase: "test", status: "started" }),
         JSON.stringify(event),
-        JSON.stringify({ k: "phase", phase: "test", status: "complete" }),
+        JSON.stringify({ k: "phase", protocol: 2, phase: "test", status: "complete" }),
       ].join("\n"),
     );
     expect(result).toMatchObject({ testPartition: "incomplete", events: [] });
@@ -419,7 +506,7 @@ describe("parseTraceOutput — test partition tag", () => {
     const production = parseTraceOutput(OK_LINES);
     const first = parseTestTraceOutput(
       [
-        JSON.stringify({ k: "phase", phase: "test", status: "started" }),
+        JSON.stringify({ k: "phase", protocol: 2, phase: "test", status: "started" }),
         ownerLine("App.SecondTest", "test/second_test.exs", "test"),
         ownerLine("App.FirstTest", "test/first_test.exs", "test"),
         JSON.stringify({
@@ -442,7 +529,7 @@ describe("parseTraceOutput — test partition tag", () => {
           impl: false,
           partition: "test",
         }),
-        JSON.stringify({ k: "phase", phase: "test", status: "complete" }),
+        JSON.stringify({ k: "phase", protocol: 2, phase: "test", status: "complete" }),
       ].join("\n"),
     );
     const second = { ...first, modules: [...first.modules].reverse() };
@@ -452,7 +539,7 @@ describe("parseTraceOutput — test partition tag", () => {
   it("makes a complete test trace ownership-incomplete when owner facts disagree", () => {
     const result = parseTestTraceOutput(
       [
-        JSON.stringify({ k: "phase", phase: "test", status: "started" }),
+        JSON.stringify({ k: "phase", protocol: 2, phase: "test", status: "started" }),
         ownerLine("App.CoreTest", "test/other_test.exs", "test"),
         JSON.stringify({
           k: "module",
@@ -464,13 +551,15 @@ describe("parseTraceOutput — test partition tag", () => {
           impl: false,
           partition: "test",
         }),
-        JSON.stringify({ k: "phase", phase: "test", status: "complete" }),
+        JSON.stringify({ k: "phase", protocol: 2, phase: "test", status: "complete" }),
       ].join("\n"),
     );
     expect(result).toEqual({
       events: [],
       modules: [],
       functions: [],
+      structuralFiles: [],
+      structuralPartition: "incomplete",
       testPartition: "incomplete",
       testPartitionReason: "ownership",
     });
@@ -519,7 +608,12 @@ describe("test-phase compatibility filtering", () => {
         },
         inventory,
       );
-      expect(result).toEqual({ events: [], modules: [], functions: [], testPartition: "complete" });
+      expect(result).toMatchObject({
+        events: [],
+        modules: [],
+        functions: [],
+        testPartition: "complete",
+      });
     },
   );
 
@@ -574,7 +668,7 @@ describe("test-phase compatibility filtering", () => {
         },
         inventory,
       ),
-    ).toEqual({ events: [], modules: [], functions: [], testPartition: "complete" });
+    ).toMatchObject({ events: [], modules: [], functions: [], testPartition: "complete" });
   });
 
   it.each([
@@ -709,7 +803,7 @@ describe("test-phase compatibility filtering", () => {
         },
         inventory,
       ),
-    ).toEqual({ events: [event], modules: [], functions: [], testPartition: "complete" });
+    ).toMatchObject({ events: [event], modules: [], functions: [], testPartition: "complete" });
   });
 
   it("rejects an additive production-owned edge without a compatible re-emitted module", () => {
@@ -747,7 +841,7 @@ describe("test-phase compatibility filtering", () => {
         { modules: [], functions: [], events: [event], testPartition: "complete" },
         inventory,
       ),
-    ).toEqual({ events: [event], modules: [], functions: [], testPartition: "complete" });
+    ).toMatchObject({ events: [event], modules: [], functions: [], testPartition: "complete" });
   });
 
   it("normalizes an extensionless compiler pseudo-source through its unique reflected owner", () => {
@@ -772,6 +866,8 @@ describe("test-phase compatibility filtering", () => {
       events: [{ ...event, file: "lib/app/core.ex" }],
       modules: [],
       functions: [],
+      structuralFiles: [],
+      structuralPartition: "incomplete",
       testPartition: "complete",
     });
   });
@@ -896,7 +992,118 @@ describe("bounded trace reads", () => {
     const path = join(dir, "trace.jsonl");
     writeFileSync(path, "");
     truncateSync(path, 256 * 1024 * 1024 + 1);
-    expect(() => readBoundedTrace(path)).toThrow(/bounded read limit/);
+    expect(() => readBoundedTraceLines(path)).toThrow(/bounded read limit/);
+  });
+
+  it("streams UTF-8 JSONL safely across a fixed chunk boundary", () => {
+    const dir = mkdtempSync(join(tmpdir(), "unused-ex-streamed-trace-"));
+    dirs.push(dir);
+    const path = join(dir, "trace.jsonl");
+    const first = `${"x".repeat(64 * 1024 - 1)}é`;
+    writeFileSync(path, `${first}\nsecond\n`);
+    expect([...readBoundedTraceLines(path)]).toEqual([first, "second"]);
+  });
+
+  it("assembles one multi-chunk record without rescanning prior chunks", () => {
+    const dir = mkdtempSync(join(tmpdir(), "unused-ex-multichunk-trace-"));
+    dirs.push(dir);
+    const path = join(dir, "trace.jsonl");
+    const record = "x".repeat(64 * 1024 * 4 + 17);
+    writeFileSync(path, `${record}\n`);
+    expect([...readBoundedTraceLines(path)]).toEqual([record]);
+  });
+
+  it("keeps one opened descriptor when the path is swapped before iteration", () => {
+    const dir = mkdtempSync(join(tmpdir(), "unused-ex-swapped-trace-"));
+    dirs.push(dir);
+    const path = join(dir, "trace.jsonl");
+    const openedPath = join(dir, "opened.jsonl");
+    const replacement = join(dir, "replacement.jsonl");
+    writeFileSync(path, "original\n");
+    writeFileSync(replacement, "replacement\n");
+    const lines = readBoundedTraceLines(path, 64);
+    renameSync(path, openedPath);
+    symlinkSync(replacement, path);
+    expect([...lines]).toEqual(["original"]);
+  });
+
+  it("refuses a symbolic-link trace replacement deterministically", () => {
+    const dir = mkdtempSync(join(tmpdir(), "unused-ex-linked-trace-"));
+    dirs.push(dir);
+    const path = join(dir, "trace.jsonl");
+    const target = join(dir, "target.jsonl");
+    writeFileSync(target, "target\n");
+    symlinkSync(target, path);
+    expect(() => readBoundedTraceLines(path, 64)).toThrow(/not a regular file/);
+  });
+
+  it("refuses growth beyond the bound after opening and before iteration", () => {
+    const dir = mkdtempSync(join(tmpdir(), "unused-ex-grown-trace-"));
+    dirs.push(dir);
+    const path = join(dir, "trace.jsonl");
+    writeFileSync(path, "one\n");
+    const lines = readBoundedTraceLines(path, 8);
+    appendFileSync(path, "two-three\n");
+    expect(() => [...lines]).toThrow(/bounded read limit/);
+  });
+
+  it("fatally refuses malformed UTF-8 split across the chunk boundary", () => {
+    const dir = mkdtempSync(join(tmpdir(), "unused-ex-invalid-utf8-trace-"));
+    dirs.push(dir);
+    const path = join(dir, "trace.jsonl");
+    writeFileSync(
+      path,
+      Buffer.concat([Buffer.alloc(64 * 1024 - 1, 0x61), Buffer.from([0xc3, 0x28, 0x0a])]),
+    );
+    expect(() => [...readBoundedTraceLines(path)]).toThrow(/invalid UTF-8/);
+  });
+
+  it("closes the descriptor when a consuming parser throws after its first line", () => {
+    const dir = mkdtempSync(join(tmpdir(), "unused-ex-early-parser-trace-"));
+    dirs.push(dir);
+    const path = join(dir, "trace.jsonl");
+    writeFileSync(path, "first\nsecond\n");
+    const originalClose = fs.closeSync;
+    let closes = 0;
+    fs.closeSync = (descriptor: number): void => {
+      closes += 1;
+      originalClose(descriptor);
+    };
+    syncBuiltinESMExports();
+    try {
+      const lines = readBoundedTraceLines(path);
+      expect(() => {
+        for (const _line of lines) throw new Error("synthetic parser refusal");
+      }).toThrow(/synthetic parser refusal/);
+      expect(closes).toBe(1);
+    } finally {
+      fs.closeSync = originalClose;
+      syncBuiltinESMExports();
+    }
+  });
+
+  it("can explicitly close an eagerly bound iterable without starting iteration", () => {
+    const dir = mkdtempSync(join(tmpdir(), "unused-ex-unstarted-trace-"));
+    dirs.push(dir);
+    const path = join(dir, "trace.jsonl");
+    writeFileSync(path, "first\n");
+    const originalClose = fs.closeSync;
+    let closes = 0;
+    fs.closeSync = (descriptor: number): void => {
+      closes += 1;
+      originalClose(descriptor);
+    };
+    syncBuiltinESMExports();
+    try {
+      const lines = readBoundedTraceLines(path);
+      lines.close();
+      lines.close();
+      expect(closes).toBe(1);
+      expect([...lines]).toEqual([]);
+    } finally {
+      fs.closeSync = originalClose;
+      syncBuiltinESMExports();
+    }
   });
 });
 

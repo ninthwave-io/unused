@@ -247,6 +247,60 @@ facts into the existing `elixir-dynamic-dispatch` annotation and its
 carrier-reachable unit cap. Rollback may reduce precision and deletion support;
 it may never reduce safety.
 
+### Phase A structural protocol checkpoint
+
+Before any new fact is consumed, the compiler boundary provides a strict
+internal protocol-v2 substrate. The child attempts one bounded read per
+compiler-owned file and, when readable and within cap, one
+`Code.string_to_quoted/2` parse that emits a source-minimized, bounded internal bundle: its
+repository-relative path, module/function carrier identities, closed-role
+facts, source digest, bytes, AST visits, maximum depth, carrier count, and fact
+count. Those path and carrier identifiers cross the child boundary and remain
+internal; source, AST values, literals, local-variable identifiers, and
+private-project prose do not cross it.
+The caps are 8 MiB, 500,000 visits, depth 256, 20,000 carriers, and 500,000
+facts per file. Every owned file emits exactly one complete bundle or a
+zero-payload incomplete reason. The parent validates caps before mapping
+arrays, regular-file/realpath containment, digest, exact inventory, reflected
+ownership, grapheme spans, carrier/fact uniqueness, and indexed compiler-event
+joins. Phase-local event IDs are canonicalized and every fact is remapped and
+rechecked after production/test deduplication.
+
+Phase A is a semantic no-op: it changes no graph, hazard, claim, explanation,
+or deletion-plan result. An unsupported `try` containing `else` or `catch`
+rolls back every fact for its whole carrier;
+private definitions participate only with compiler carrier/target evidence.
+Production requires exactly one matching summary. Malformed, missing,
+duplicate, mismatched, or invalidly joined test-only structure drops the
+structural files and test summary as one optional overlay while preserving
+valid test semantics. Production and test summaries remain separately labelled
+through merge. Extraction and
+validation are O(source bytes + AST visits + events + carriers + facts), using
+indexed joins, one grapheme-bound pass per line, and streaming semantic hashes.
+Neutral real-Mix fixtures cover public and private carriers, unsupported
+control flow, Unicode columns, same-line call identities, duplicate compiler
+events, and production/test ID collisions. Fixed-density 250/500/1,000/2,000
+file fixtures require exact linear files, events, carriers, facts, and AST
+visits; wall scaling has a portable bound and cap controls become explicit
+incomplete bundles. Only a later independently reviewed phase may consume
+these facts.
+
+The pinned base/current external wall, user/system CPU, peak RSS, child timing
+split, exact work curves, and correction of the initially discovered
+per-file event-index rebuild are recorded in
+`docs/bench/2026-07-23-elixir-structural-protocol-v2.md`. The corrected
+dense 2,000-generated-file point completes at a 10.869-second median while
+retaining 130,007 raw compiler events, projecting 114,007 base-compatible
+semantic events, and retaining 16,000 fact-referenced exact identities, 16,002
+carriers, and 32,000 facts. The child summary attributes a 1.451-second median
+to structural work. Whole-process-tree median peak memory is 0.23% below the
+exact base fixture; Node alone is 29.35% higher. A canonical event list retained
+through extraction caused earlier bimodal failures; insert-time exact dedup,
+one-shot transfer, a scalar raw count, and one collection at the post-index
+ownership-transfer boundary stabilized the final range. The +72.80% wall and
++39.38% approximate tree-CPU deltas remain explicit follow-up optimization
+targets. The bounded work does not justify Rust.
+
 ### Phase 1B1 implementation checkpoint
 
 The first local-flow slice is implemented as a source-local indexed value-role
