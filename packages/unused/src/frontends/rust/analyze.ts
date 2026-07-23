@@ -136,7 +136,7 @@ async function analyzeRustProjectWithIsolatedCargo(
   }
   const discoveryStarted = performance?.now();
   const sourceFiles = await rustSources(root, options, internal.sourceFiles);
-  const files = sourceFiles.map((file) => toPosixRel(root, realpathSync(file))).sort();
+  const files = sourceFiles.map((file) => toPosixRel(root, file)).sort();
   if (fragmentOnly) performance?.increment("files", files.length);
   else performance?.set("files", files.length);
   if (discoveryStarted !== undefined) {
@@ -488,7 +488,7 @@ function isClaimSafeFunction(name: string, startLine: number, source: string | u
   );
 }
 
-function cargoUnits(
+export function cargoUnits(
   root: string,
   workspace: CargoWorkspace,
 ): Array<{
@@ -497,9 +497,11 @@ function cargoUnits(
 }> {
   return workspacePackages(workspace)
     .map((pkg) => ({ rootRelDir: toPosixRel(root, dirname(pkg.manifestPath)), name: pkg.name }))
-    .sort((a, b) =>
-      a.rootRelDir === "" ? -1 : b.rootRelDir === "" ? 1 : a.rootRelDir.localeCompare(b.rootRelDir),
-    );
+    .sort((a, b) => compareCodeUnits(a.rootRelDir, b.rootRelDir));
+}
+
+function compareCodeUnits(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 function workspacePackages(workspace: CargoWorkspace): CargoPackage[] {

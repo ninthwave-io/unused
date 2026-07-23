@@ -23,6 +23,10 @@ import {
   rebaseGraphContribution,
 } from "./rebase.js";
 import {
+  partitionRustSourceCandidates,
+  rustSourceCandidatesForBoundary,
+} from "./rust-boundaries.js";
+import {
   rustlerBridgePlugin,
   rustlerElixirConventionPlugin,
   rustlerRustConventionPlugin,
@@ -259,17 +263,22 @@ export const rustLanguagePlugin: LanguageFrontendPlugin = {
     mutation: false,
   },
   async discover(context) {
-    return selectProjectBoundaries(context.rootDir, context.manifests.cargoTomlDirs, {
+    const boundaries = selectProjectBoundaries(context.rootDir, context.manifests.cargoTomlDirs, {
       language: "rs",
       manifestName: "Cargo.toml",
       projectKind: "cargo-workspace",
     });
+    return partitionRustSourceCandidates(
+      context.rootDir,
+      boundaries,
+      context.manifests.rustSourceFiles,
+    ).boundaries;
   },
   async analyze(context, boundary) {
     const analysis = await analyzeRustProjectFragment(boundary.rootDir, analyzeOptions(context), {
       emitConfigMatchWarnings: false,
       deferConfigSymbolEntrypoints: true,
-      sourceFiles: context.manifests.rustSourceFiles,
+      sourceFiles: rustSourceCandidatesForBoundary(boundary),
       ...(boundary.rootRelDir === "" ? { resolvedConfig: context.repositoryConfig } : {}),
       boundaryPresetsShadowed: context.repositoryConfig.presets !== undefined,
     });
