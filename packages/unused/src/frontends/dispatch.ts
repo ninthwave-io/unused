@@ -16,7 +16,7 @@ import {
   computeSummary,
   SCHEMA_VERSION,
 } from "../core/claims/index.js";
-import { entrypointId, IRGraph, type IRNode } from "../core/ir/index.js";
+import { entrypointId, IRGraph, type IRNode, type Site } from "../core/ir/index.js";
 import type { ConfigMatchProjection } from "./config-contract.js";
 import {
   applyConfiguredSymbolRoots,
@@ -27,6 +27,7 @@ import { analyzeElixirProjectWithGraph } from "./elixir/index.js";
 import { BUILT_IN_PLUGINS } from "./plugins/builtins.js";
 import { claimAnnotationKey } from "./plugins/claim-annotations.js";
 import { collectElixirAtomRoleSummaryProviders } from "./plugins/elixir-role-summary-providers.js";
+import { prefixRepositoryPath } from "./plugins/rebase.js";
 import { PluginRegistry } from "./plugins/registry.js";
 import {
   type AnalyzerPlugin,
@@ -34,6 +35,7 @@ import {
   type FrontendConfigContribution,
   type FrontendGraphFragment,
   type GraphContribution,
+  type PluginDiagnostic,
   type RepositoryAnalysisContext,
   requireAnalyzerBoundaryMetadata,
 } from "./plugins/types.js";
@@ -202,6 +204,7 @@ export async function analyzeProjectAutoWithGraph(
   }
   const mergeStarted = options.performance?.now();
   const graph = mergeFragments(fragments);
+  const contributionDiagnostics = new RepositoryDiagnosticAccumulator();
   if (mergeStarted !== undefined) options.performance?.finish("graph-construction", mergeStarted);
   const symbolLanguages = new Map<string, "ts" | "ex" | "rs">();
   const symbolBoundaries = new Map<string, string>();
@@ -231,7 +234,16 @@ export async function analyzeProjectAutoWithGraph(
       const contribution = await executePluginOperation(plugin.id, fragment.boundary.id, () =>
         plugin.analyze(pluginContext),
       );
-      addContribution(graph, contribution, plugin.id);
+      addContribution(
+        graph,
+        contribution,
+        {
+          scope: "boundary",
+          pluginId: plugin.id,
+          boundaryId: fragment.boundary.id,
+        },
+        contributionDiagnostics,
+      );
       const language = entrySymbolLanguage(fragment.language);
       if (language !== undefined) {
         recordContributionSymbolLanguages(symbolLanguages, contribution.nodes ?? [], language);
@@ -255,7 +267,12 @@ export async function analyzeProjectAutoWithGraph(
     const contribution = await executePluginOperation(plugin.id, undefined, () =>
       plugin.analyze(pluginContext),
     );
-    addContribution(graph, contribution, plugin.id);
+    addContribution(
+      graph,
+      contribution,
+      { scope: "repository", pluginId: plugin.id },
+      contributionDiagnostics,
+    );
     for (const node of contribution.nodes ?? []) {
       if (node.kind !== "symbol") continue;
       const languages = fileLanguages.get(node.file);
@@ -386,6 +403,7 @@ export async function analyzeProjectAutoWithGraph(
   options.performance?.set("workspaces", units.length);
   const diagnostics = [
     ...fragments.flatMap((fragment) => fragment.diagnostics),
+    ...contributionDiagnostics.values(),
     ...configPolicyDiagnostics(localConfigGroups),
   ].sort(byDiagnostic);
   const result: AnalyzeResult = {
@@ -851,7 +869,13 @@ function byDiagnostic(
     compareCodeUnits(a.boundaryId ?? "", b.boundaryId ?? "") ||
     compareCodeUnits(a.pluginId, b.pluginId) ||
     compareCodeUnits(a.code, b.code) ||
-    compareCodeUnits(a.message, b.message)
+    compareCodeUnits(a.severity, b.severity) ||
+    compareCodeUnits(a.message, b.message) ||
+    compareCodeUnits(a.site?.file ?? "", b.site?.file ?? "") ||
+    (a.site?.span.start ?? -1) - (b.site?.span.start ?? -1) ||
+    (a.site?.span.end ?? -1) - (b.site?.span.end ?? -1) ||
+    (a.site?.span.startLine ?? -1) - (b.site?.span.startLine ?? -1) ||
+    (a.site?.span.endLine ?? -1) - (b.site?.span.endLine ?? -1)
   );
 }
 
@@ -905,16 +929,66 @@ function mergeFragments(fragments: readonly FrontendGraphFragment[]): IRGraph {
         edges: fragment.graph.edges(),
         hazards: fragment.graph.hazards(),
       },
-      fragment.pluginId,
+      {
+        scope: "boundary",
+        pluginId: fragment.pluginId,
+        boundaryId: fragment.boundary.id,
+      },
     );
   }
   return graph;
 }
 
-function addContribution(graph: IRGraph, contribution: GraphContribution, pluginId: string): void {
-  for (const node of contribution.nodes ?? []) addNodeChecked(graph, node, pluginId);
+type ContributionDiagnosticOwner =
+  | {
+      readonly scope: "boundary";
+      readonly pluginId: string;
+      readonly boundaryId: string;
+    }
+  | {
+      readonly scope: "repository";
+      readonly pluginId: string;
+    };
+
+/** Collect diagnostics only when their graph contribution is actually applied. */
+class RepositoryDiagnosticAccumulator {
+  private readonly diagnostics: PluginDiagnostic[] = [];
+
+  add(contribution: GraphContribution, owner: ContributionDiagnosticOwner): void {
+    for (const diagnostic of contribution.diagnostics ?? []) {
+      this.diagnostics.push({
+        pluginId: owner.pluginId,
+        ...(owner.scope === "boundary" ? { boundaryId: owner.boundaryId } : {}),
+        severity: diagnostic.severity,
+        code: diagnostic.code,
+        message: diagnostic.message,
+        ...(diagnostic.site === undefined
+          ? {}
+          : { site: validateRepositoryDiagnosticSite(diagnostic.site) }),
+      });
+    }
+  }
+
+  values(): readonly PluginDiagnostic[] {
+    return [...this.diagnostics];
+  }
+}
+
+function validateRepositoryDiagnosticSite(site: Site): Site {
+  const file = prefixRepositoryPath("", site.file);
+  return file === site.file ? site : { ...site, file };
+}
+
+function addContribution(
+  graph: IRGraph,
+  contribution: GraphContribution,
+  owner: ContributionDiagnosticOwner,
+  diagnostics?: RepositoryDiagnosticAccumulator,
+): void {
+  for (const node of contribution.nodes ?? []) addNodeChecked(graph, node, owner.pluginId);
   for (const edge of contribution.edges ?? []) graph.addEdge(edge);
   for (const hazard of contribution.hazards ?? []) graph.addHazard(hazard);
+  diagnostics?.add(contribution, owner);
 }
 
 function addNodeChecked(graph: IRGraph, node: IRNode, pluginId: string): void {

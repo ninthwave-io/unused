@@ -9,7 +9,7 @@ import {
   PerformanceTracker,
   whyAlive,
 } from "../core/analysis/index.js";
-import { fileId } from "../core/ir/index.js";
+import { entrypointId, fileId, IRGraph } from "../core/ir/index.js";
 import { isMixAvailable } from "../testing/corpus/elixir-corpus.js";
 import {
   analyzeProjectAuto,
@@ -20,6 +20,14 @@ import {
   assertUnambiguousProjectedWorkspaceMatches,
   deriveDirectBoundaryMetadata,
 } from "./dispatch.js";
+import { consumeFrontendLocalGraph } from "./plugins/builtins.js";
+import type {
+  AnalyzerPlugin,
+  ConventionPlugin,
+  FrontendLocalGraph,
+  GraphContribution,
+  LanguageFrontendPlugin,
+} from "./plugins/types.js";
 
 const elixirFixture = fileURLToPath(
   new URL("../../../../fixtures/elixir/test-only-zombie", import.meta.url),
@@ -36,6 +44,277 @@ afterEach(async () => {
     temporaryProjects.splice(0).map((root) => rm(root, { recursive: true, force: true })),
   );
 });
+
+describe("repository plugin diagnostics", () => {
+  it("attributes, rebases, and deterministically sorts applied contribution diagnostics once", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unused-plugin-diagnostics-"));
+    temporaryProjects.push(root);
+    const project = join(root, "services", "web");
+    await mkdir(project, { recursive: true });
+    await writeFile(join(project, "package.json"), JSON.stringify({ name: "neutral-web" }));
+
+    const analysis = await analyzeProjectAutoWithGraph(
+      root,
+      { now: new Date(0) },
+      {
+        plugins: diagnosticPlugins(),
+      },
+    );
+
+    expect(analysis.result.diagnostics).toEqual([
+      {
+        pluginId: "bridge:neutral",
+        severity: "info",
+        code: "BRIDGE_DIAGNOSTIC",
+        message: "neutral bridge diagnostic",
+        site: diagnosticSite("repository.bridge", 7),
+      },
+      {
+        pluginId: "convention:deferred-neutral",
+        boundaryId: "ts:services/web",
+        severity: "warning",
+        code: "DEFERRED_DIAGNOSTIC",
+        message: "neutral deferred diagnostic",
+        site: diagnosticSite("services/web/src/deferred.ts", 3),
+      },
+      {
+        pluginId: "convention:immediate-neutral",
+        boundaryId: "ts:services/web",
+        severity: "warning",
+        code: "ORDERED_DIAGNOSTIC",
+        message: "neutral ordered diagnostic",
+        site: diagnosticSite("services/web/src/Alpha.ts", 5),
+      },
+      {
+        pluginId: "convention:immediate-neutral",
+        boundaryId: "ts:services/web",
+        severity: "warning",
+        code: "ORDERED_DIAGNOSTIC",
+        message: "neutral ordered diagnostic",
+        site: diagnosticSite("services/web/src/zeta.ts", 5),
+      },
+    ]);
+    expect(
+      analysis.result.diagnostics?.filter(({ code }) => code === "DEFERRED_DIAGNOSTIC"),
+    ).toHaveLength(1);
+    expect(analysis.result.diagnostics?.some(({ code }) => code === "INACTIVE_DIAGNOSTIC")).toBe(
+      false,
+    );
+    expect(
+      analysis.result.diagnostics?.some(
+        ({ pluginId, boundaryId }) => pluginId === "spoofed:plugin" || boundaryId === "spoofed",
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects a contribution diagnostic site outside repository coordinates", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unused-plugin-diagnostic-escape-"));
+    temporaryProjects.push(root);
+
+    await expect(
+      analyzeProjectAutoWithGraph(
+        root,
+        { now: new Date(0) },
+        {
+          plugins: diagnosticPlugins("../escape.ts"),
+        },
+      ),
+    ).rejects.toThrow("path must be repository-relative: ../escape.ts");
+  });
+});
+
+function diagnosticPlugins(invalidDiagnosticSite?: string): readonly AnalyzerPlugin[] {
+  const language = diagnosticLanguagePlugin();
+  const deferred: ConventionPlugin = {
+    kind: "convention",
+    id: "convention:deferred-neutral",
+    version: "0.1.0",
+    languages: ["ts"],
+    applies: ({ fragment }) =>
+      fragment.deferredContributions?.has("convention:deferred-neutral") === true,
+    async analyze({ fragment }) {
+      return fragment.deferredContributions?.get("convention:deferred-neutral") ?? {};
+    },
+  };
+  const immediate: ConventionPlugin = {
+    kind: "convention",
+    id: "convention:immediate-neutral",
+    version: "0.1.0",
+    languages: ["ts"],
+    applies: () => true,
+    async analyze() {
+      if (invalidDiagnosticSite !== undefined) {
+        return {
+          diagnostics: [
+            spoofedDiagnostic(
+              "INVALID_DIAGNOSTIC",
+              "neutral invalid diagnostic",
+              diagnosticSite(invalidDiagnosticSite, 1),
+            ),
+          ],
+        };
+      }
+      return {
+        // Intentionally reversed: final order must not inherit plugin array order.
+        diagnostics: [
+          spoofedDiagnostic(
+            "ORDERED_DIAGNOSTIC",
+            "neutral ordered diagnostic",
+            diagnosticSite("services/web/src/zeta.ts", 5),
+          ),
+          spoofedDiagnostic(
+            "ORDERED_DIAGNOSTIC",
+            "neutral ordered diagnostic",
+            diagnosticSite("services/web/src/Alpha.ts", 5),
+          ),
+        ],
+      };
+    },
+  };
+  return [
+    language,
+    deferred,
+    immediate,
+    {
+      kind: "bridge",
+      id: "bridge:neutral",
+      version: "0.1.0",
+      requiredLanguages: ["ts"],
+      applies: () => true,
+      async analyze() {
+        return {
+          diagnostics: [
+            {
+              ...spoofedDiagnostic(
+                "BRIDGE_DIAGNOSTIC",
+                "neutral bridge diagnostic",
+                diagnosticSite("repository.bridge", 7),
+              ),
+              severity: "info",
+            },
+          ],
+        };
+      },
+    },
+  ];
+}
+
+function diagnosticLanguagePlugin(): LanguageFrontendPlugin {
+  return {
+    kind: "language",
+    id: "language:neutral",
+    version: "0.1.0",
+    language: "ts",
+    capabilities: {
+      files: true,
+      symbols: true,
+      dependencies: false,
+      testPartition: true,
+      configPartition: true,
+      compilerExecution: false,
+      mutation: false,
+    },
+    async discover(context) {
+      return [
+        {
+          id: "ts:services/web",
+          language: "ts",
+          rootDir: join(context.rootDir, "services", "web"),
+          rootRelDir: "services/web",
+          manifest: "services/web/package.json",
+          projectKind: "neutral",
+        },
+      ];
+    },
+    async analyze(_context, boundary) {
+      const graph = new IRGraph();
+      graph.addNode({ kind: "file", id: fileId("src/index.ts"), path: "src/index.ts" });
+      graph.addNode({
+        kind: "entrypoint",
+        id: entrypointId("production", "src/index.ts"),
+        entryKind: "production",
+        file: "src/index.ts",
+        reason: "neutral entrypoint",
+      });
+      const analysis: FrontendLocalGraph = {
+        graph,
+        provenance: {
+          analyzer: "neutral-test",
+          version: "0.1.0",
+          generatedAt: new Date(0).toISOString(),
+        },
+        metadata: {
+          projectName: "neutral-web",
+          fileCount: 1,
+          workspaceCount: 1,
+          configHash: "neutral",
+          gateThreshold: "high",
+          completeness: { production: "complete", config: "complete", test: "complete" },
+        },
+        claimInputs: {
+          fileLineCounts: new Map([[fileId("src/index.ts"), 1]]),
+          units: [{ rootRelDir: "", name: "neutral-web" }],
+          analysisFiles: new Set(["src/index.ts"]),
+          claimableFiles: new Set(["src/index.ts"]),
+        },
+        claimAnnotations: new Map(),
+        configuration: {
+          analysisFingerprint: "0".repeat(64),
+          hasEffectiveAnalysisPolicy: false,
+          configuredSymbolRoots: [],
+          configuredSymbolSelectorInventory: [],
+          configMatchInventory: [],
+        },
+        deferredContributions: new Map<string, GraphContribution>([
+          [
+            "convention:deferred-neutral",
+            {
+              diagnostics: [
+                spoofedDiagnostic(
+                  "DEFERRED_DIAGNOSTIC",
+                  "neutral deferred diagnostic",
+                  diagnosticSite("src/deferred.ts", 3),
+                ),
+              ],
+            },
+          ],
+          [
+            "convention:inactive-neutral",
+            {
+              diagnostics: [
+                spoofedDiagnostic(
+                  "INACTIVE_DIAGNOSTIC",
+                  "neutral inactive diagnostic",
+                  diagnosticSite("src/inactive.ts", 4),
+                ),
+              ],
+            },
+          ],
+        ]),
+        diagnostics: [],
+      };
+      return consumeFrontendLocalGraph(this.id, this.language, boundary, analysis);
+    },
+  };
+}
+
+function spoofedDiagnostic(code: string, message: string, site: ReturnType<typeof diagnosticSite>) {
+  return {
+    pluginId: "spoofed:plugin",
+    boundaryId: "spoofed",
+    severity: "warning" as const,
+    code,
+    message,
+    site,
+  };
+}
+
+function diagnosticSite(file: string, line: number) {
+  return {
+    file,
+    span: { start: line, end: line, startLine: line, endLine: line },
+  };
+}
 
 describe.skipIf(!MIX_AVAILABLE)("mixed-language dispatch policy", () => {
   it("uses union config diagnostics and preserves configured zombie-test cost", async () => {

@@ -269,6 +269,37 @@ describe("unused CLI — --json is schema-valid and stdout-clean", () => {
     expect(diagnostics.at(-1)?.memory?.rssBytes).toBeGreaterThan(0);
     expect(diagnostics.at(-1)?.memory?.maxRssKiB).toBeGreaterThan(0);
   });
+
+  it("keeps repository diagnostics on stderr and out of canonical JSON stdout", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unused-cli-diagnostic-"));
+    try {
+      const project = join(root, "services", "web");
+      await mkdir(join(project, "src"), { recursive: true });
+      await writeFile(
+        join(project, "package.json"),
+        JSON.stringify({ name: "neutral-web", type: "module", main: "src/index.ts" }),
+      );
+      await writeFile(join(project, "src", "index.ts"), "export const live = true;\n");
+      await writeFile(
+        join(project, "unused.config.jsonc"),
+        JSON.stringify({ gate: { threshold: "low" } }),
+      );
+
+      const result = runCli(["--json", "--cwd", root]);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stderr).toBe(
+        "unused: warning [BOUNDARY_GATE_POLICY_IGNORED] ts:services/web: " +
+          "boundary-local gate.threshold=low at services/web is ignored during repository " +
+          "analysis; configure the aggregate gate at the repository root\n",
+      );
+      expect(result.stdout.trim().split("\n")).toHaveLength(1);
+      const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
+      expect(parsed).not.toHaveProperty("diagnostics");
+      expect(validate(parsed), JSON.stringify(validate.errors)).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe.skipIf(!MIX_AVAILABLE)("unused CLI — canonical polyglot observability", () => {
