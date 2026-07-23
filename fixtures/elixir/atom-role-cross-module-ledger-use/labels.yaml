@@ -1,0 +1,22 @@
+case: atom-role-cross-module-ledger-use
+description: >-
+  A controller-shaped module containing use remains outside exact function
+  summaries. The decision ledger attributes the conservative producer escape
+  without changing claims or deletion refusal.
+subjects:
+  - kind: export
+    name: NeutralLedgerUse.Entry.run/1
+    file: lib/neutral_ledger_use/entry.ex
+    expected: alive
+    because: The application reaches the computed-atom carrier.
+  - kind: export
+    name: NeutralLedgerUse.Controller.consume/1
+    file: lib/neutral_ledger_use/controller.ex
+    expected: alive
+    because: The application reaches the controller-shaped consumer.
+  - kind: export
+    name: NeutralLedgerUse.Entry.genuinely_unused/0
+    file: lib/neutral_ledger_use/entry.ex
+    expected: dead
+    minConfidence: medium
+    because: No runtime or static path reaches this unrelated export.

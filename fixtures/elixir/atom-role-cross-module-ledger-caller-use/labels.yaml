@@ -1,0 +1,36 @@
+case: atom-role-cross-module-ledger-caller-use
+description: >-
+  A source-owned computed-atom call in a module containing use remains an
+  event-level edge without promoting that caller into the summary graph.
+subjects:
+  - kind: export
+    name: NeutralLedgerCallerUse.Entry.run/1
+    file: lib/neutral_ledger_caller_use/entry.ex
+    expected: alive
+    because: The application calls the entry function.
+  - kind: export
+    name: NeutralLedgerCallerUse.Target.consume/1
+    file: lib/neutral_ledger_caller_use/target.ex
+    expected: alive
+    because: The reachable entry calls the target directly.
+  - kind: export
+    name: NeutralLedgerCallerUse.Entry.genuinely_unused/0
+    file: lib/neutral_ledger_caller_use/entry.ex
+    expected: dead
+    minConfidence: high
+    because: No runtime or static path reaches this unrelated export.
+  - kind: export
+    name: NeutralLedgerCallerUse.Override.run/1
+    file: lib/neutral_ledger_caller_use/override.ex
+    expected: alive
+    because: The application calls the final overridable implementation.
+  - kind: export
+    name: NeutralLedgerCallerUse.Generated.run/1
+    file: lib/neutral_ledger_caller_use/generated.ex
+    expected: alive
+    because: The application calls the generated public entry.
+  - kind: export
+    name: NeutralLedgerCallerUse.Nested.run/1
+    file: lib/neutral_ledger_caller_use/nested.ex
+    expected: alive
+    because: The application calls the generated nested entry.

@@ -976,6 +976,111 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
     ).toMatchObject({ supported: false, stages: [] });
   }, 60_000);
 
+  it("attributes a controller-shaped use boundary without changing deletion refusal", async () => {
+    const root = fixture("atom-role-cross-module-ledger-use");
+    const trace = runTracer(root);
+    const extraction = extractElixirRuntimeConventions(root, trace);
+    expect(
+      extraction.dynamicDispatches.find(
+        (fact) => fact.factKind === "computed-atom" && fact.fromFun === "run/1",
+      ),
+    ).toMatchObject({ flow: "escape" });
+    expect(extraction.atomFlowStats).toMatchObject({
+      crossModuleCanonicalIdentityRejections: 1,
+      crossModuleCallEdges: 0,
+      crossModuleSummaryMatches: 0,
+      crossModuleDecisionCounts: { "target-module-safety": 1 },
+      crossModuleTargetModuleSafetyFlags: { use: 1 },
+      crossModuleProducerEscapePrimaryCounts: { "target-module-safety": 1 },
+      joinedProducerOutcomes: 1,
+      escapes: 1,
+    });
+
+    const analysis = await analyzeElixirProjectWithGraph(root, { now: new Date(0) });
+    const unrelated = whyAlive({
+      graph: analysis.graph,
+      reachability: analysis.reachability,
+      claims: analysis.result.claims,
+      query: "NeutralLedgerUse.Entry.genuinely_unused/0",
+      hazardEvaluations: [analysis.hazardEvaluation],
+    });
+    expect(unrelated).toMatchObject({ outcome: "dead", confidence: "medium" });
+    if (unrelated.outcome !== "dead") throw new Error("expected ledger use dead control");
+    expect(unrelated.hazards).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          hazardClass: "elixir-computed-atom-escape",
+          site: "lib/neutral_ledger_use/entry.ex:2",
+          worlds: ["production"],
+        }),
+      ]),
+    );
+    expect(
+      computeDeletionPlan({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        subject: unrelated.subject,
+        hazardEvaluations: [analysis.hazardEvaluation],
+      }),
+    ).toMatchObject({ supported: false, stages: [] });
+  }, 60_000);
+
+  it("keeps a use-bearing caller at the event-level summary boundary", async () => {
+    const root = fixture("atom-role-cross-module-ledger-caller-use");
+    const extraction = extractElixirRuntimeConventions(root, runTracer(root));
+    expect(
+      extraction.dynamicDispatches.find(
+        (fact) => fact.factKind === "computed-atom" && fact.fromFun === "run/1",
+      ),
+    ).toMatchObject({ flow: "data" });
+    expect(extraction.atomFlowStats).toMatchObject({
+      crossModuleDecisionCounts: {
+        "admitted-caller-ineligible": 2,
+        "caller-ineligible": 3,
+        "known-summary-delegated": 1,
+      },
+      crossModuleCallEdges: 2,
+      crossModuleDependencyEdges: 0,
+      crossModuleNonSummaryCallerEdges: 2,
+      crossModuleProducerEscapePrimaryCounts: { unattributed: 0 },
+      dataSinks: 2,
+      escapes: 0,
+    });
+    expect(extraction.atomFlowStats.crossModuleUnindexedCompilerEvents).toBeGreaterThan(0);
+
+    const analysis = await analyzeElixirProjectWithGraph(root, { now: new Date(0) });
+    const unrelated = whyAlive({
+      graph: analysis.graph,
+      reachability: analysis.reachability,
+      claims: analysis.result.claims,
+      query: "NeutralLedgerCallerUse.Entry.genuinely_unused/0",
+      hazardEvaluations: [analysis.hazardEvaluation],
+    });
+    expect(unrelated).toMatchObject({
+      outcome: "dead",
+      confidence: "medium",
+      hazards: expect.arrayContaining([
+        expect.objectContaining({
+          hazardClass: "elixir-computed-atom-escape",
+          site: "lib/neutral_ledger_caller_use/generated.ex:2",
+        }),
+        expect.objectContaining({
+          hazardClass: "elixir-computed-atom-escape",
+          site: "lib/neutral_ledger_caller_use/nested.ex:2",
+        }),
+      ]),
+    });
+    if (unrelated.outcome !== "dead") throw new Error("expected caller-use dead control");
+    expect(
+      computeDeletionPlan({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        subject: unrelated.subject,
+        hazardEvaluations: [analysis.hazardEvaluation],
+      }),
+    ).toMatchObject({ supported: false, stages: [] });
+  }, 60_000);
+
   it.each([
     "dynamic-use-helpers",
     "dynamic-local-dispatch",
@@ -993,6 +1098,8 @@ describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
     "atom-role-public-flow",
     "atom-role-public-unsafe",
     "atom-role-cross-module-flow",
+    "atom-role-cross-module-ledger-caller-use",
+    "atom-role-cross-module-ledger-use",
     "atom-role-cross-module-unsafe",
   ])(
     "preserves Elixir claims after mixed-plugin composition: %s",

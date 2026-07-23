@@ -119,7 +119,7 @@ export interface ElixirAtomFlowStats {
   readonly crossModuleCallEdges: number;
   /** Cross-module public summaries reached by a computed-atom producer flow. */
   readonly crossModuleSummaryMatches: number;
-  /** Exact project-module calls rejected because canonical target identity was not unique. */
+  /** Compatibility sum of exact project-module calls rejected by any `target-*` reason. */
   readonly crossModuleCanonicalIdentityRejections: number;
   /** Exact calls from eligible summary carriers kept as outside-boundary escapes. */
   readonly crossModuleBoundaryEscapes: number;
@@ -129,6 +129,41 @@ export interface ElixirAtomFlowStats {
   readonly crossModuleSummaryUpdates: number;
   /** Cross-module participants made opaque by the bounded call-degree contract. */
   readonly crossModuleOpaqueFunctions: number;
+  /** Every unique cross-module call-site decision, partitioned by its first-failure reason. */
+  readonly crossModuleDecisions: number;
+  /** Disjoint decision counts. Their sum is exactly `crossModuleDecisions`. */
+  readonly crossModuleDecisionCounts: Readonly<Record<CrossModuleDecisionReason, number>>;
+  /** Unique canonical target identities retained by the eligibility ledger. */
+  readonly crossModuleTargetEligibilityTotal: number;
+  /** Identity-weighted eligibility outcomes, separate from call-weighted decisions. */
+  readonly crossModuleTargetEligibilityCounts: Readonly<Record<CrossModuleDecisionReason, number>>;
+  /** Raw compiler cross-call records before exact-key grouping. */
+  readonly crossModuleCompilerCrossRecords: number;
+  /** Unique compiler cross-call groups at the current exact event key. */
+  readonly crossModuleCompilerCrossGroups: number;
+  /** Duplicate compiler records beyond the first record in each exact group. */
+  readonly crossModuleCompilerCrossDuplicateRecords: number;
+  /** Indexed source-call/world joins, partitioned independently of compiler decisions. */
+  readonly crossModuleSourceJoins: number;
+  readonly crossModuleSourceJoinCounts: Readonly<Record<CrossModuleSourceJoinReason, number>>;
+  /** Admitted cross edges whose caller participates in the summary dependency graph. */
+  readonly crossModuleDependencyEdges: number;
+  /** Admitted event-level edges from callers excluded from the summary graph. */
+  readonly crossModuleNonSummaryCallerEdges: number;
+  /** Call-weighted module-safety flags; flags may overlap for one rejected target. */
+  readonly crossModuleTargetModuleSafetyFlags: Readonly<
+    Record<CrossModuleModuleSafetyFlag, number>
+  >;
+  /** Owned compiler cross-events for which the supported source-call index had no site. */
+  readonly crossModuleUnindexedCompilerEvents: number;
+  /** Escaping producer roots classified by one deterministic primary cross-decision reason. */
+  readonly crossModuleProducerEscapePrimaryCounts: Readonly<
+    Record<CrossModuleProducerEscapeReason, number>
+  >;
+  /** Escaping producer roots whose propagated diagnostic mask contains each reason. */
+  readonly crossModuleProducerEscapeOverlapCounts: Readonly<
+    Record<CrossModuleDecisionReason, number>
+  >;
   /** Compiler module-level events accepted as exact inert module scaffolding. */
   readonly privateModuleScaffoldingEvents: number;
   /** Compiler module-level events accepted as exact inert metadata attributes. */
@@ -161,7 +196,135 @@ export interface ElixirAtomFlowStats {
   readonly privateModuleAmbiguousEventRejections: number;
 }
 
-type MutableAtomFlowStats = { -readonly [K in keyof ElixirAtomFlowStats]: number };
+export type CrossModuleDecisionReason =
+  | "admitted"
+  | "admitted-caller-ineligible"
+  | "caller-ineligible"
+  | "source-call-unindexed"
+  | "source-ambiguous"
+  | "event-missing"
+  | "event-ambiguous"
+  | "caller-unowned"
+  | "incomplete-project"
+  | "incomplete-external"
+  | "unknown-external"
+  | "known-summary-delegated"
+  | "dynamic-delegated"
+  | "target-source-owner-missing"
+  | "target-arity-mismatch"
+  | "target-private"
+  | "target-guard"
+  | "target-default"
+  | "target-pattern"
+  | "target-multiple"
+  | "target-generated"
+  | "target-no-paren"
+  | "target-module-safety"
+  | "target-reflection-missing"
+  | "target-reflection-duplicate"
+  | "target-reflection-line-mismatch"
+  | "target-reflection-world-mismatch"
+  | "target-canonical-duplicate";
+
+export type CrossModuleModuleSafetyFlag =
+  | "use"
+  | "hook"
+  | "generated"
+  | "custom"
+  | "declaration"
+  | "attribute"
+  | "sigil"
+  | "unknown-event"
+  | "ambiguous-event";
+
+export type CrossModuleProducerEscapeReason =
+  | CrossModuleDecisionReason
+  | "multiple"
+  | "unattributed";
+export type CrossModuleSourceJoinReason =
+  | "joined"
+  | "source-ambiguous"
+  | "event-missing"
+  | "event-ambiguous";
+
+type MutableRecord<T extends string> = { -readonly [K in T]: number };
+type MutableAtomFlowStats = {
+  -readonly [K in keyof ElixirAtomFlowStats]: ElixirAtomFlowStats[K] extends number
+    ? number
+    : ElixirAtomFlowStats[K] extends Readonly<Record<infer R extends string, number>>
+      ? MutableRecord<R>
+      : never;
+};
+
+const CROSS_MODULE_DECISION_REASONS = [
+  "admitted",
+  "admitted-caller-ineligible",
+  "caller-ineligible",
+  "source-call-unindexed",
+  "source-ambiguous",
+  "event-missing",
+  "event-ambiguous",
+  "caller-unowned",
+  "incomplete-project",
+  "incomplete-external",
+  "unknown-external",
+  "known-summary-delegated",
+  "dynamic-delegated",
+  "target-source-owner-missing",
+  "target-arity-mismatch",
+  "target-private",
+  "target-guard",
+  "target-default",
+  "target-pattern",
+  "target-multiple",
+  "target-generated",
+  "target-no-paren",
+  "target-module-safety",
+  "target-reflection-missing",
+  "target-reflection-duplicate",
+  "target-reflection-line-mismatch",
+  "target-reflection-world-mismatch",
+  "target-canonical-duplicate",
+] as const satisfies readonly CrossModuleDecisionReason[];
+
+const CROSS_MODULE_MODULE_SAFETY_FLAGS = [
+  "use",
+  "hook",
+  "generated",
+  "custom",
+  "declaration",
+  "attribute",
+  "sigil",
+  "unknown-event",
+  "ambiguous-event",
+] as const satisfies readonly CrossModuleModuleSafetyFlag[];
+
+const CROSS_MODULE_SOURCE_JOIN_REASONS = [
+  "joined",
+  "source-ambiguous",
+  "event-missing",
+  "event-ambiguous",
+] as const satisfies readonly CrossModuleSourceJoinReason[];
+
+if (CROSS_MODULE_DECISION_REASONS.length >= 31) {
+  throw new Error("cross-module diagnostic reason mask exceeds the signed 31-bit bound");
+}
+
+const CROSS_MODULE_DECISION_BIT = new Map(
+  CROSS_MODULE_DECISION_REASONS.map((reason, index) => [reason, 1 << index] as const),
+);
+
+const CROSS_MODULE_PRODUCER_PRIMARY_PRECEDENCE = [
+  ...CROSS_MODULE_DECISION_REASONS.filter(
+    (reason) => reason !== "admitted" && reason !== "admitted-caller-ineligible",
+  ),
+  "admitted-caller-ineligible",
+  "admitted",
+] as const satisfies readonly CrossModuleDecisionReason[];
+
+function zeroRecord<T extends string>(keys: readonly T[]): MutableRecord<T> {
+  return Object.fromEntries(keys.map((key) => [key, 0])) as MutableRecord<T>;
+}
 
 const MODULE = String.raw`[A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*`;
 const FUNCTION = `[a-z_][A-Za-z0-9_]*[!?]?`;
@@ -341,6 +504,25 @@ export function extractElixirRuntimeConventions(
     crossModuleSccIterations: 0,
     crossModuleSummaryUpdates: 0,
     crossModuleOpaqueFunctions: 0,
+    crossModuleDecisions: 0,
+    crossModuleDecisionCounts: zeroRecord(CROSS_MODULE_DECISION_REASONS),
+    crossModuleTargetEligibilityTotal: 0,
+    crossModuleTargetEligibilityCounts: zeroRecord(CROSS_MODULE_DECISION_REASONS),
+    crossModuleCompilerCrossRecords: 0,
+    crossModuleCompilerCrossGroups: 0,
+    crossModuleCompilerCrossDuplicateRecords: 0,
+    crossModuleSourceJoins: 0,
+    crossModuleSourceJoinCounts: zeroRecord(CROSS_MODULE_SOURCE_JOIN_REASONS),
+    crossModuleDependencyEdges: 0,
+    crossModuleNonSummaryCallerEdges: 0,
+    crossModuleTargetModuleSafetyFlags: zeroRecord(CROSS_MODULE_MODULE_SAFETY_FLAGS),
+    crossModuleUnindexedCompilerEvents: 0,
+    crossModuleProducerEscapePrimaryCounts: zeroRecord([
+      ...CROSS_MODULE_DECISION_REASONS,
+      "multiple",
+      "unattributed",
+    ] as const),
+    crossModuleProducerEscapeOverlapCounts: zeroRecord(CROSS_MODULE_DECISION_REASONS),
     privateModuleScaffoldingEvents: 0,
     privateModuleMetadataEvents: 0,
     privateModuleTypespecEvents: 0,
@@ -1109,6 +1291,10 @@ interface AtomFlowNode {
   readonly outgoing: Set<string>;
   terminal: number;
   outcome: number;
+  /** Diagnostic-only finite mask; never participates in semantic disposition. */
+  crossModuleDecisionTerminal: number;
+  /** Diagnostic-only mask propagated by the existing shared-graph queue. */
+  crossModuleDecisionOutcome: number;
 }
 
 interface AtomFlowGraph {
@@ -1136,17 +1322,35 @@ interface FunctionSummaryCallSite {
   readonly callerPrivateFunction?: string;
 }
 
+interface CrossModuleCallDecision {
+  readonly id: string;
+  readonly reason: CrossModuleDecisionReason;
+  readonly call?: IndexedRoleCall;
+  readonly event?: TraceEvent;
+  readonly moduleSafetyReasons?: ReadonlySet<PrivateModuleRejectionReason>;
+}
+
+interface CrossModuleTargetEligibility {
+  readonly reason: CrossModuleDecisionReason;
+  readonly moduleSafetyReasons?: ReadonlySet<PrivateModuleRejectionReason>;
+}
+
 interface FunctionFlowIndex {
   readonly definitions: ReadonlyMap<string, FunctionSummaryDefinition>;
   readonly targetByIdentity: ReadonlyMap<string, FunctionSummaryDefinition>;
   readonly callsByTarget: ReadonlyMap<string, readonly FunctionSummaryCallSite[]>;
   readonly dependenciesByCaller: ReadonlyMap<string, ReadonlySet<string>>;
   readonly callByEvent: ReadonlyMap<string, FunctionSummaryCallSite>;
+  readonly crossModuleDecisionByEvent: ReadonlyMap<string, CrossModuleCallDecision>;
+  readonly crossModuleDecisionsById: ReadonlyMap<string, CrossModuleCallDecision>;
+  readonly crossModuleTargetEligibility: ReadonlyMap<string, CrossModuleTargetEligibility>;
   readonly unsafeResultTargets: ReadonlySet<string>;
   readonly opaqueFunctions: ReadonlySet<string>;
   readonly crossModuleParticipants: ReadonlySet<string>;
   readonly summaries: Map<string, number[]>;
+  readonly summaryDecisionMasks: Map<string, number[]>;
   readonly resultSummaries: Map<string, number>;
+  readonly resultDecisionMasks: Map<string, number>;
 }
 
 /**
@@ -1241,6 +1445,8 @@ function ensureAtomValueNode(
       outgoing: new Set(),
       terminal: 0,
       outcome: 0,
+      crossModuleDecisionTerminal: 0,
+      crossModuleDecisionOutcome: 0,
     };
     graph.nodes.set(key, node);
     graph.pending.push(node);
@@ -1266,6 +1472,8 @@ function ensureAtomAssignmentNode(
       outgoing: new Set(),
       terminal: 0,
       outcome: 0,
+      crossModuleDecisionTerminal: 0,
+      crossModuleDecisionOutcome: 0,
     };
     graph.nodes.set(key, node);
     graph.pending.push(node);
@@ -1451,6 +1659,9 @@ function expandAtomValueNode(graph: AtomFlowGraph, node: AtomFlowNode): void {
       node.terminal |=
         node.context.functionFlow?.resultSummaries.get(node.context.currentSummaryFunction) ??
         ATOM_FLOW_ESCAPE;
+      node.crossModuleDecisionTerminal |=
+        node.context.functionFlow?.resultDecisionMasks.get(node.context.currentSummaryFunction) ??
+        0;
     } else {
       node.terminal |= ATOM_FLOW_ESCAPE;
     }
@@ -1485,6 +1696,10 @@ function expandAtomCallRole(
   // terminates at a data, invocation, or escape sink rather than another
   // value node.
   graph.stats.roleEdges += 1;
+  const crossModuleDecision = resolveCrossModuleCallDecision(call, node.context);
+  if (crossModuleDecision !== undefined) {
+    node.crossModuleDecisionTerminal |= crossModuleDecisionBit(crossModuleDecision.reason);
+  }
   const invocation = invocationCallEvent(call, argument, node.context);
   if (invocation !== undefined) {
     node.terminal |= invocation.dyn ? ATOM_FLOW_DELEGATED_INVOCATION : ATOM_FLOW_INVOCATION;
@@ -1497,6 +1712,9 @@ function expandAtomCallRole(
       else if (!summaryCall.target.range.private) graph.stats.publicSummaryMatches += 1;
     }
     const effect = node.context.functionFlow?.summaries.get(summaryCall.target.key)?.[argument];
+    const decisionEffect =
+      node.context.functionFlow?.summaryDecisionMasks.get(summaryCall.target.key)?.[argument] ?? 0;
+    node.crossModuleDecisionTerminal |= decisionEffect;
     if (effect === undefined) {
       node.terminal |= ATOM_FLOW_ESCAPE;
       return;
@@ -1567,7 +1785,8 @@ function solveAtomFlowGraph(graph: AtomFlowGraph): void {
   const queue: AtomFlowNode[] = [];
   for (const node of graph.nodes.values()) {
     node.outcome = node.terminal;
-    if (node.outcome !== 0) queue.push(node);
+    node.crossModuleDecisionOutcome = node.crossModuleDecisionTerminal;
+    if (node.outcome !== 0 || node.crossModuleDecisionOutcome !== 0) queue.push(node);
   }
   let queueIndex = 0;
   while (queueIndex < queue.length) {
@@ -1579,8 +1798,11 @@ function solveAtomFlowGraph(graph: AtomFlowGraph): void {
       const predecessor = graph.nodes.get(predecessorKey);
       if (predecessor === undefined) continue;
       const next = predecessor.outcome | node.outcome;
-      if (next === predecessor.outcome) continue;
+      const nextDecision = predecessor.crossModuleDecisionOutcome | node.crossModuleDecisionOutcome;
+      if (next === predecessor.outcome && nextDecision === predecessor.crossModuleDecisionOutcome)
+        continue;
       predecessor.outcome = next;
+      predecessor.crossModuleDecisionOutcome = nextDecision;
       queue.push(predecessor);
     }
   }
@@ -1708,6 +1930,22 @@ function resolveFunctionSummaryCall(
   if (event === undefined || context.functionFlow === undefined) return undefined;
   const site = context.functionFlow.callByEvent.get(functionSummaryCallEventKey(event));
   return site?.call.start === call.start ? site : undefined;
+}
+
+function resolveCrossModuleCallDecision(
+  call: IndexedRoleCall,
+  context: AtomFlowContext,
+): CrossModuleCallDecision | undefined {
+  const event = resolveSourceCallEvent(call, context);
+  if (event === undefined || context.functionFlow === undefined) return undefined;
+  const decision = context.functionFlow.crossModuleDecisionByEvent.get(
+    functionSummaryCallEventKey(event),
+  );
+  return decision?.call?.start === call.start ? decision : undefined;
+}
+
+function crossModuleDecisionBit(reason: CrossModuleDecisionReason): number {
+  return CROSS_MODULE_DECISION_BIT.get(reason) ?? 0;
 }
 
 function resolveSourceCallEvent(
@@ -2037,7 +2275,37 @@ function classifyAtomProducerEvents(
       continue;
     }
     stats.escapes += 1;
+    const decisionMask = root.graph.nodes.get(root.rootKey)?.crossModuleDecisionOutcome ?? 0;
+    if (decisionMask === 0) {
+      stats.crossModuleProducerEscapePrimaryCounts.unattributed += 1;
+    } else {
+      let reasons = 0;
+      for (const reason of CROSS_MODULE_DECISION_REASONS) {
+        if ((decisionMask & crossModuleDecisionBit(reason)) !== 0) {
+          stats.crossModuleProducerEscapeOverlapCounts[reason] += 1;
+          reasons += 1;
+        }
+      }
+      if (reasons > 1) {
+        stats.crossModuleProducerEscapePrimaryCounts.multiple += 1;
+      } else {
+        const primary = CROSS_MODULE_PRODUCER_PRIMARY_PRECEDENCE.find(
+          (reason) => (decisionMask & crossModuleDecisionBit(reason)) !== 0,
+        );
+        if (primary === undefined) {
+          throw new Error("cross-module producer decision mask had no known reason");
+        }
+        stats.crossModuleProducerEscapePrimaryCounts[primary] += 1;
+      }
+    }
     if (flow.escapeReason === "function-summary-bound") boundedEscape.add(event);
+  }
+  const producerEscapeTotal = Object.values(stats.crossModuleProducerEscapePrimaryCounts).reduce(
+    (total, count) => total + count,
+    0,
+  );
+  if (producerEscapeTotal !== stats.escapes) {
+    throw new Error("cross-module producer escape ledger invariant failed");
   }
   return { data: safe, invocation, delegatedInvocation, boundedEscape };
 }
@@ -2304,6 +2572,14 @@ function buildFunctionFlowIndex(
     traceResult.modules,
     (module) => `${module.file}\0${module.partition}`,
   );
+  const ownersByModuleWorld = groupBy(traceResult.modules, (module) =>
+    privateModuleWorldKey(module.mod, module.partition),
+  );
+  const ownedModuleNames = new Set(traceResult.modules.map((module) => module.mod));
+  const reflectedFunctionIdentities = new Set(
+    traceResult.functions.map((fn) => [fn.mod, fn.name, fn.arity].join("\0")),
+  );
+  const sourceRangesByOwnerName = new Map<string, FunctionRange[]>();
   const productionOwnerByFileModule = new Map(
     traceResult.modules
       .filter((module) => module.partition === "prod")
@@ -2343,6 +2619,9 @@ function buildFunctionFlowIndex(
       ),
       (range) => String(range.blockParent ?? -1),
     );
+    const allRangesByModuleBody = groupBy(source.functionRanges, (range) =>
+      String(range.blockParent ?? -1),
+    );
     for (const partition of ["prod", "test"] as const) {
       const directOwners = ownersByFileWorld.get(`${file}\0${partition}`) ?? [];
       const inheritedOwners =
@@ -2356,6 +2635,14 @@ function buildFunctionFlowIndex(
         if (modules.length !== 1) continue;
         const moduleRange = modules[0];
         if (moduleRange === undefined) continue;
+        for (const range of allRangesByModuleBody.get(String(moduleRange.bodyOpen)) ?? []) {
+          if (range.end > moduleRange.end) continue;
+          append(
+            sourceRangesByOwnerName,
+            [owner.mod, owner.file, partition, range.name].join("\0"),
+            range,
+          );
+        }
         const eligibleRanges = (
           eligibleRangesByModuleBody.get(String(moduleRange.bodyOpen)) ?? []
         ).filter((range) => range.end <= moduleRange.end);
@@ -2452,6 +2739,111 @@ function buildFunctionFlowIndex(
       .filter(([, matches]) => matches.length === 1)
       .flatMap(([key, matches]) => (matches[0] === undefined ? [] : [[key, matches[0]] as const])),
   );
+  const crossModuleTargetEligibility = new Map<string, CrossModuleTargetEligibility>();
+  for (const [key, matches] of crossModuleTargetGroups) {
+    crossModuleTargetEligibility.set(
+      key,
+      matches.length === 1 ? { reason: "admitted" } : { reason: "target-canonical-duplicate" },
+    );
+  }
+  const classifyMissingCrossModuleTarget = (event: TraceEvent): CrossModuleTargetEligibility => {
+    const module = event.to_mod;
+    const name = event.name;
+    const arity = event.arity;
+    if (module === null || name === undefined || arity === undefined) {
+      return { reason: "target-source-owner-missing" };
+    }
+    const key = crossModulePublicTargetKey(module, event.partition, name, arity);
+    const existing = crossModuleTargetEligibility.get(key);
+    if (existing !== undefined) return existing;
+    const owners = ownersByModuleWorld.get(privateModuleWorldKey(module, event.partition)) ?? [];
+    if (owners.length === 0) {
+      const eligibility = {
+        reason: ownedModuleNames.has(module)
+          ? ("target-reflection-world-mismatch" as const)
+          : ("target-source-owner-missing" as const),
+      };
+      crossModuleTargetEligibility.set(key, eligibility);
+      return eligibility;
+    }
+    if (new Set(owners.map((owner) => owner.file)).size > 1) {
+      const eligibility = { reason: "target-canonical-duplicate" as const };
+      crossModuleTargetEligibility.set(key, eligibility);
+      return eligibility;
+    }
+    for (const owner of owners) {
+      const source = sources.get(owner.file);
+      if (source === undefined) continue;
+      const named =
+        sourceRangesByOwnerName.get([owner.mod, owner.file, event.partition, name].join("\0")) ??
+        [];
+      const exactArity = named.filter((range) => range.arity === arity);
+      if (named.length > 0 && exactArity.length === 0) {
+        const eligibility = { reason: "target-arity-mismatch" as const };
+        crossModuleTargetEligibility.set(key, eligibility);
+        return eligibility;
+      }
+      for (const range of exactArity) {
+        const header = source.code.slice(range.start, range.headerEnd);
+        let reason: CrossModuleDecisionReason | undefined;
+        if (range.private) reason = "target-private";
+        else if (
+          range.arity < 0 ||
+          !header
+            .slice(header.indexOf(range.name) + range.name.length)
+            .trimStart()
+            .startsWith("(")
+        ) {
+          reason = "target-no-paren";
+        } else if (range.ambiguous) reason = "target-multiple";
+        else if (/\bwhen\b/u.test(header)) reason = "target-guard";
+        else if (header.includes("\\\\")) reason = "target-default";
+        else if (!range.exactParameters) reason = "target-pattern";
+        if (reason !== undefined) {
+          const eligibility = { reason };
+          crossModuleTargetEligibility.set(key, eligibility);
+          return eligibility;
+        }
+        const safety = moduleSafety.get([owner.mod, owner.file, event.partition].join("\0"));
+        if (safety?.safe === false) {
+          const eligibility = {
+            reason: safety.reasons.has("generated")
+              ? ("target-generated" as const)
+              : ("target-module-safety" as const),
+            moduleSafetyReasons: safety.reasons,
+          };
+          crossModuleTargetEligibility.set(key, eligibility);
+          return eligibility;
+        }
+        const reflected =
+          publicFunctionsByIdentity.get(
+            functionSummaryKey(owner.mod, owner.file, event.partition, name, arity),
+          ) ?? [];
+        if (reflected.length === 0) {
+          const eligibility = {
+            reason: reflectedFunctionIdentities.has([module, name, arity].join("\0"))
+              ? ("target-reflection-world-mismatch" as const)
+              : ("target-reflection-missing" as const),
+          };
+          crossModuleTargetEligibility.set(key, eligibility);
+          return eligibility;
+        }
+        if (reflected.length > 1) {
+          const eligibility = { reason: "target-reflection-duplicate" as const };
+          crossModuleTargetEligibility.set(key, eligibility);
+          return eligibility;
+        }
+        if (reflected[0]?.line !== lineAt(source.lineStarts, range.start)) {
+          const eligibility = { reason: "target-reflection-line-mismatch" as const };
+          crossModuleTargetEligibility.set(key, eligibility);
+          return eligibility;
+        }
+      }
+    }
+    const eligibility = { reason: "target-source-owner-missing" as const };
+    crossModuleTargetEligibility.set(key, eligibility);
+    return eligibility;
+  };
   const sourcePrivateStarts = new Set(
     privateDefinitions.map((definition) => `${definition.file}\0${definition.range.start}`),
   );
@@ -2466,6 +2858,61 @@ function buildFunctionFlowIndex(
   const targetEvents = new Map<string, TraceEvent[]>();
   const joinedEvents = new Set<TraceEvent>();
   const crossModuleParticipants = new Set<string>();
+  const crossModuleDecisionsById = new Map<string, CrossModuleCallDecision>();
+  const crossModuleDecisionByEvent = new Map<string, CrossModuleCallDecision>();
+  const decidedCompilerEvents = new Set<TraceEvent>();
+  const recordCrossModuleDecision = (
+    id: string,
+    reason: CrossModuleDecisionReason,
+    call?: IndexedRoleCall,
+    event?: TraceEvent,
+    moduleSafetyReasons?: ReadonlySet<PrivateModuleRejectionReason>,
+  ): CrossModuleCallDecision => {
+    const prior = crossModuleDecisionsById.get(id);
+    if (prior !== undefined) return prior;
+    const decision: CrossModuleCallDecision = {
+      id,
+      reason,
+      ...(call === undefined ? {} : { call }),
+      ...(event === undefined ? {} : { event }),
+      ...(moduleSafetyReasons === undefined ? {} : { moduleSafetyReasons }),
+    };
+    crossModuleDecisionsById.set(id, decision);
+    stats.crossModuleDecisions += 1;
+    stats.crossModuleDecisionCounts[reason] += 1;
+    for (const safetyReason of moduleSafetyReasons ?? []) {
+      if (CROSS_MODULE_MODULE_SAFETY_FLAGS.includes(safetyReason as CrossModuleModuleSafetyFlag)) {
+        stats.crossModuleTargetModuleSafetyFlags[safetyReason as CrossModuleModuleSafetyFlag] += 1;
+      }
+    }
+    if (event !== undefined) {
+      crossModuleDecisionByEvent.set(functionSummaryCallEventKey(event), decision);
+      decidedCompilerEvents.add(event);
+    }
+    return decision;
+  };
+  const sourceDecisionId = (
+    file: string,
+    call: IndexedRoleCall,
+    partition: "prod" | "test" | "unknown",
+  ): string => [file, call.start, call.name, call.arity, partition].join("\0");
+  const recordSourceJoin = (reason: CrossModuleSourceJoinReason): void => {
+    stats.crossModuleSourceJoins += 1;
+    stats.crossModuleSourceJoinCounts[reason] += 1;
+  };
+  const compilerCrossGroups = groupBy(
+    traceResult.events.filter(isFunctionScopedCrossModuleEvent),
+    functionSummaryCallEventKey,
+  );
+  stats.crossModuleCompilerCrossRecords = [...compilerCrossGroups.values()].reduce(
+    (total, events) => total + events.length,
+    0,
+  );
+  stats.crossModuleCompilerCrossGroups = compilerCrossGroups.size;
+  stats.crossModuleCompilerCrossDuplicateRecords = [...compilerCrossGroups.values()].reduce(
+    (total, events) => total + Math.max(0, events.length - 1),
+    0,
+  );
   const eventsBySource = new Map<string, TraceEvent[]>();
   for (const event of traceResult.events) {
     if (event.name === undefined || event.arity === undefined || event.from_fun === undefined)
@@ -2483,21 +2930,71 @@ function buildFunctionFlowIndex(
   for (const [file, source] of sources) {
     const roles = rolesByFile.get(file) ?? indexAtomRoles(source);
     for (const call of roles.callsByOpen.values()) {
-      if (call.sourceCardinality !== 1) continue;
       const caller = containingFunctionRange(source.functionRanges, call.start);
       if (caller === null) continue;
       const fromFun = `${caller.name}/${caller.arity}`;
       const candidates =
         eventsBySource.get([file, call.line, fromFun, call.name, call.arity].join("\0")) ?? [];
+      if (call.sourceCardinality !== 1) {
+        if (call.module !== null && projectModules.has(call.module)) {
+          recordSourceJoin("source-ambiguous");
+          const decision = recordCrossModuleDecision(
+            sourceDecisionId(file, call, "unknown"),
+            "source-ambiguous",
+            call,
+          );
+          for (const event of candidates.filter(isCrossModulePublicEvent)) {
+            crossModuleDecisionByEvent.set(functionSummaryCallEventKey(event), decision);
+            decidedCompilerEvents.add(event);
+          }
+        }
+        continue;
+      }
+      if (candidates.length === 0) {
+        if (call.module !== null && projectModules.has(call.module)) {
+          recordSourceJoin("event-missing");
+          recordCrossModuleDecision(sourceDecisionId(file, call, "unknown"), "event-missing", call);
+        }
+        continue;
+      }
       for (const worldEvents of groupBy(candidates, (event) => event.partition).values()) {
-        if (worldEvents.length !== 1) continue;
+        if (worldEvents.length !== 1) {
+          const crossEvent = worldEvents.find(isCrossModulePublicEvent);
+          if (crossEvent !== undefined) {
+            recordSourceJoin("event-ambiguous");
+            const decision = recordCrossModuleDecision(
+              sourceDecisionId(file, call, crossEvent.partition),
+              "event-ambiguous",
+              call,
+              crossEvent,
+            );
+            for (const event of worldEvents) {
+              if (!isCrossModulePublicEvent(event)) continue;
+              crossModuleDecisionByEvent.set(functionSummaryCallEventKey(event), decision);
+              decidedCompilerEvents.add(event);
+            }
+          }
+          continue;
+        }
         const event = worldEvents[0];
-        if (event === undefined || event.from_mod === null) continue;
+        if (event === undefined) continue;
+        if (event.from_mod === null) {
+          if (isCrossModulePublicEvent(event)) {
+            recordCrossModuleDecision(
+              sourceDecisionId(file, call, event.partition),
+              "caller-unowned",
+              call,
+              event,
+            );
+          }
+          continue;
+        }
         const callerDefinition = targetByIdentity.get(
           functionSummaryKey(event.from_mod, file, event.partition, caller.name, caller.arity),
         );
         const sameModule = isSameModuleLocalEvent(event);
         const crossModule = isCrossModulePublicEvent(event);
+        if (crossModule) recordSourceJoin("joined");
         let target: FunctionSummaryDefinition | undefined;
         if (sameModule) {
           target = targetByIdentity.get(
@@ -2513,9 +3010,35 @@ function buildFunctionFlowIndex(
           if (
             !ownedModuleFileWorlds.has([event.from_mod, event.file, event.partition].join("\0"))
           ) {
+            recordCrossModuleDecision(
+              sourceDecisionId(file, call, event.partition),
+              "caller-unowned",
+              call,
+              event,
+            );
             continue;
           }
           if (!completeCrossModuleBoundary) {
+            const externalUnknown =
+              !projectModules.has(event.to_mod) &&
+              !event.dyn &&
+              summaryLookup(event.to_mod, event.name ?? "", event.arity ?? -1) === undefined;
+            const reason: CrossModuleDecisionReason =
+              callerDefinition === undefined
+                ? "caller-ineligible"
+                : projectModules.has(event.to_mod)
+                  ? "incomplete-project"
+                  : event.dyn
+                    ? "dynamic-delegated"
+                    : externalUnknown
+                      ? "incomplete-external"
+                      : "known-summary-delegated";
+            recordCrossModuleDecision(
+              sourceDecisionId(file, call, event.partition),
+              reason,
+              call,
+              event,
+            );
             if (
               callerDefinition !== undefined &&
               (projectModules.has(event.to_mod) ||
@@ -2536,13 +3059,34 @@ function buildFunctionFlowIndex(
           );
           if (target === undefined) {
             if (projectModules.has(event.to_mod)) {
+              const eligibility = classifyMissingCrossModuleTarget(event);
+              recordCrossModuleDecision(
+                sourceDecisionId(file, call, event.partition),
+                eligibility.reason,
+                call,
+                event,
+                eligibility.moduleSafetyReasons,
+              );
               stats.crossModuleCanonicalIdentityRejections += 1;
-            } else if (
-              callerDefinition !== undefined &&
-              !event.dyn &&
-              summaryLookup(event.to_mod, event.name ?? "", event.arity ?? -1) === undefined
-            ) {
-              stats.crossModuleBoundaryEscapes += 1;
+            } else {
+              const summary = summaryLookup(event.to_mod, event.name ?? "", event.arity ?? -1);
+              const reason: CrossModuleDecisionReason =
+                callerDefinition === undefined
+                  ? "caller-ineligible"
+                  : event.dyn
+                    ? "dynamic-delegated"
+                    : summary === undefined
+                      ? "unknown-external"
+                      : "known-summary-delegated";
+              recordCrossModuleDecision(
+                sourceDecisionId(file, call, event.partition),
+                reason,
+                call,
+                event,
+              );
+              if (callerDefinition !== undefined && !event.dyn && summary === undefined) {
+                stats.crossModuleBoundaryEscapes += 1;
+              }
             }
             continue;
           }
@@ -2562,6 +3106,14 @@ function buildFunctionFlowIndex(
           ...(callerFunction === undefined ? {} : { callerFunction }),
           ...(callerPrivateFunction === undefined ? {} : { callerPrivateFunction }),
         };
+        if (crossModule) {
+          recordCrossModuleDecision(
+            sourceDecisionId(file, call, event.partition),
+            callerDefinition === undefined ? "admitted-caller-ineligible" : "admitted",
+            call,
+            event,
+          );
+        }
         const eventKey = functionSummaryCallEventKey(event);
         if (callByEvent.has(eventKey)) {
           unsafeResultTargets.add(target.key);
@@ -2582,6 +3134,30 @@ function buildFunctionFlowIndex(
       }
     }
   }
+  const unindexedGroups = groupBy(
+    traceResult.events.filter(
+      (event) =>
+        isFunctionScopedCrossModuleEvent(event) &&
+        event.from_mod !== null &&
+        ownedModuleFileWorlds.has([event.from_mod, event.file, event.partition].join("\0")) &&
+        !decidedCompilerEvents.has(event),
+    ),
+    functionSummaryCallEventKey,
+  );
+  for (const [id, events] of unindexedGroups) {
+    const event = events[0];
+    if (event === undefined) continue;
+    const decision = recordCrossModuleDecision(id, "source-call-unindexed", undefined, event);
+    for (const groupedEvent of events) {
+      crossModuleDecisionByEvent.set(functionSummaryCallEventKey(groupedEvent), decision);
+      decidedCompilerEvents.add(groupedEvent);
+    }
+    stats.crossModuleUnindexedCompilerEvents += 1;
+  }
+  stats.crossModuleTargetEligibilityTotal = crossModuleTargetEligibility.size;
+  for (const eligibility of crossModuleTargetEligibility.values()) {
+    stats.crossModuleTargetEligibilityCounts[eligibility.reason] += 1;
+  }
   for (const [key, targetCalls] of targetEvents) {
     if (targetCalls.some((event) => !joinedEvents.has(event))) unsafeResultTargets.add(key);
   }
@@ -2592,6 +3168,50 @@ function buildFunctionFlowIndex(
     (site) => !site.crossModule && !site.target.range.private,
   ).length;
   stats.crossModuleCallEdges = [...callByEvent.values()].filter((site) => site.crossModule).length;
+  stats.crossModuleDependencyEdges = [...callByEvent.values()].filter(
+    (site) => site.crossModule && site.callerFunction !== undefined,
+  ).length;
+  stats.crossModuleNonSummaryCallerEdges = [...callByEvent.values()].filter(
+    (site) => site.crossModule && site.callerFunction === undefined,
+  ).length;
+  const decisionTotal = CROSS_MODULE_DECISION_REASONS.reduce(
+    (total, reason) => total + stats.crossModuleDecisionCounts[reason],
+    0,
+  );
+  const canonicalDecisionTotal = CROSS_MODULE_DECISION_REASONS.filter((reason) =>
+    reason.startsWith("target-"),
+  ).reduce((total, reason) => total + stats.crossModuleDecisionCounts[reason], 0);
+  const boundaryDecisionTotal =
+    stats.crossModuleDecisionCounts["incomplete-project"] +
+    stats.crossModuleDecisionCounts["incomplete-external"] +
+    stats.crossModuleDecisionCounts["unknown-external"];
+  const admittedDecisionTotal =
+    stats.crossModuleDecisionCounts.admitted +
+    stats.crossModuleDecisionCounts["admitted-caller-ineligible"];
+  const targetEligibilityTotal = CROSS_MODULE_DECISION_REASONS.reduce(
+    (total, reason) => total + stats.crossModuleTargetEligibilityCounts[reason],
+    0,
+  );
+  const sourceJoinTotal = CROSS_MODULE_SOURCE_JOIN_REASONS.reduce(
+    (total, reason) => total + stats.crossModuleSourceJoinCounts[reason],
+    0,
+  );
+  if (
+    decisionTotal !== stats.crossModuleDecisions ||
+    targetEligibilityTotal !== stats.crossModuleTargetEligibilityTotal ||
+    sourceJoinTotal !== stats.crossModuleSourceJoins ||
+    stats.crossModuleCompilerCrossRecords !==
+      stats.crossModuleCompilerCrossGroups + stats.crossModuleCompilerCrossDuplicateRecords ||
+    canonicalDecisionTotal !== stats.crossModuleCanonicalIdentityRejections ||
+    boundaryDecisionTotal !== stats.crossModuleBoundaryEscapes ||
+    admittedDecisionTotal !== stats.crossModuleCallEdges ||
+    stats.crossModuleCallEdges !==
+      stats.crossModuleDependencyEdges + stats.crossModuleNonSummaryCallerEdges ||
+    stats.crossModuleDecisionCounts["source-call-unindexed"] !==
+      stats.crossModuleUnindexedCompilerEvents
+  ) {
+    throw new Error("cross-module decision ledger invariant failed");
+  }
   const opaqueFunctions = new Set<string>();
   for (const definition of definitions.values()) {
     if (
@@ -2611,7 +3231,9 @@ function buildFunctionFlowIndex(
     crossModuleParticipants.has(key),
   ).length;
   const summaries = new Map<string, number[]>();
+  const summaryDecisionMasks = new Map<string, number[]>();
   const resultSummaries = new Map<string, number>();
+  const resultDecisionMasks = new Map<string, number>();
   for (const definition of definitions.values()) {
     if (opaqueFunctions.has(definition.key)) {
       if (definition.range.private) {
@@ -2629,11 +3251,16 @@ function buildFunctionFlowIndex(
         opaqueFunctions.has(definition.key) ? ATOM_FLOW_BOUNDED_ESCAPE : 0,
       ),
     );
+    summaryDecisionMasks.set(
+      definition.key,
+      definition.range.parameters.map(() => 0),
+    );
     if (definition.range.private) {
       resultSummaries.set(
         definition.key,
         opaqueFunctions.has(definition.key) ? ATOM_FLOW_BOUNDED_ESCAPE : 0,
       );
+      resultDecisionMasks.set(definition.key, 0);
     }
   }
   stats.privateSummaries = privateDefinitions.reduce(
@@ -2650,11 +3277,16 @@ function buildFunctionFlowIndex(
     callsByTarget,
     dependenciesByCaller,
     callByEvent,
+    crossModuleDecisionByEvent,
+    crossModuleDecisionsById,
+    crossModuleTargetEligibility,
     unsafeResultTargets,
     opaqueFunctions,
     crossModuleParticipants,
     summaries,
+    summaryDecisionMasks,
     resultSummaries,
+    resultDecisionMasks,
   };
 }
 
@@ -2699,6 +3331,10 @@ function isCrossModulePublicEvent(event: TraceEvent): boolean {
     event.name !== undefined &&
     event.arity !== undefined
   );
+}
+
+function isFunctionScopedCrossModuleEvent(event: TraceEvent): boolean {
+  return event.from_fun !== undefined && isCrossModulePublicEvent(event);
 }
 
 function functionSummaryDependencies(index: FunctionFlowIndex, key: string): readonly string[] {
@@ -2784,7 +3420,7 @@ function evaluateFunctionParameter(
   projectModules: ReadonlySet<string>,
   stats: MutableAtomFlowStats,
   functionFlow: FunctionFlowIndex,
-): number {
+): { readonly outcome: number; readonly crossModuleDecisionMask: number } {
   const graph: AtomFlowGraph = {
     source,
     roles,
@@ -2806,7 +3442,10 @@ function evaluateFunctionParameter(
     context,
   );
   solveAtomFlowGraph(graph);
-  return graph.nodes.get(rootKey)?.outcome ?? 0;
+  return {
+    outcome: graph.nodes.get(rootKey)?.outcome ?? 0,
+    crossModuleDecisionMask: graph.nodes.get(rootKey)?.crossModuleDecisionOutcome ?? 0,
+  };
 }
 
 function evaluatePrivateResult(
@@ -2818,10 +3457,10 @@ function evaluatePrivateResult(
   projectModules: ReadonlySet<string>,
   stats: MutableAtomFlowStats,
   functionFlow: FunctionFlowIndex,
-): number {
+): { readonly outcome: number; readonly crossModuleDecisionMask: number } {
   const sites = functionFlow.callsByTarget.get(definition.key) ?? [];
   if (sites.length === 0 || functionFlow.unsafeResultTargets.has(definition.key)) {
-    return ATOM_FLOW_ESCAPE;
+    return { outcome: ATOM_FLOW_ESCAPE, crossModuleDecisionMask: 0 };
   }
   const graph: AtomFlowGraph = {
     source,
@@ -2856,7 +3495,14 @@ function evaluatePrivateResult(
     );
   }
   solveAtomFlowGraph(graph);
-  return roots.reduce((outcome, key) => outcome | (graph.nodes.get(key)?.outcome ?? 0), 0);
+  return roots.reduce(
+    (result, key) => ({
+      outcome: result.outcome | (graph.nodes.get(key)?.outcome ?? 0),
+      crossModuleDecisionMask:
+        result.crossModuleDecisionMask | (graph.nodes.get(key)?.crossModuleDecisionOutcome ?? 0),
+    }),
+    { outcome: 0, crossModuleDecisionMask: 0 },
+  );
 }
 
 function solveFunctionFlowSummaries(
@@ -2899,32 +3545,36 @@ function solveFunctionFlowSummaries(
         const source = definition === undefined ? undefined : sources.get(definition.file);
         const roles = definition === undefined ? undefined : rolesByFile.get(definition.file);
         const current = functionFlow.summaries.get(key);
+        const currentDecisionMasks = functionFlow.summaryDecisionMasks.get(key);
         if (
           definition === undefined ||
           source === undefined ||
           roles === undefined ||
-          current === undefined
+          current === undefined ||
+          currentDecisionMasks === undefined
         ) {
           continue;
         }
         let changed = false;
         for (const parameter of definition.range.parameters) {
           const prior = current[parameter.index] ?? 0;
-          const next =
-            prior |
-            evaluateFunctionParameter(
-              definition,
-              parameter,
-              source,
-              roles,
-              eventsBySourceCall,
-              summaryLookup,
-              projectModules,
-              stats,
-              functionFlow,
-            );
-          if (next === prior) continue;
+          const priorDecisionMask = currentDecisionMasks[parameter.index] ?? 0;
+          const evaluated = evaluateFunctionParameter(
+            definition,
+            parameter,
+            source,
+            roles,
+            eventsBySourceCall,
+            summaryLookup,
+            projectModules,
+            stats,
+            functionFlow,
+          );
+          const next = prior | evaluated.outcome;
+          const nextDecisionMask = priorDecisionMask | evaluated.crossModuleDecisionMask;
+          if (next === prior && nextDecisionMask === priorDecisionMask) continue;
           current[parameter.index] = next;
+          currentDecisionMasks[parameter.index] = nextDecisionMask;
           if (definition.range.private) stats.privateSummaryUpdates += bitCount(next ^ prior);
           else stats.publicSummaryUpdates += bitCount(next ^ prior);
           if (functionFlow.crossModuleParticipants.has(key)) {
@@ -2986,20 +3636,22 @@ function solveFunctionFlowSummaries(
         const roles = definition === undefined ? undefined : rolesByFile.get(definition.file);
         if (definition === undefined || source === undefined || roles === undefined) continue;
         const current = functionFlow.resultSummaries.get(key) ?? 0;
-        const next =
-          current |
-          evaluatePrivateResult(
-            definition,
-            source,
-            roles,
-            eventsBySourceCall,
-            summaryLookup,
-            projectModules,
-            stats,
-            functionFlow,
-          );
-        if (next === current) continue;
+        const currentDecisionMask = functionFlow.resultDecisionMasks.get(key) ?? 0;
+        const evaluated = evaluatePrivateResult(
+          definition,
+          source,
+          roles,
+          eventsBySourceCall,
+          summaryLookup,
+          projectModules,
+          stats,
+          functionFlow,
+        );
+        const next = current | evaluated.outcome;
+        const nextDecisionMask = currentDecisionMask | evaluated.crossModuleDecisionMask;
+        if (next === current && nextDecisionMask === currentDecisionMask) continue;
         functionFlow.resultSummaries.set(key, next);
+        functionFlow.resultDecisionMasks.set(key, nextDecisionMask);
         stats.privateSummaryUpdates += bitCount(next ^ current);
         enqueueCallees(key);
       }

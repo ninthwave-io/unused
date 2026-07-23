@@ -538,6 +538,55 @@ deletion refusal, and supported deletion of an unrelated high-confidence
 export. No JSON schema, canonical stdout, dependency, sibling-boundary, or
 repository-merge contract changes.
 
+### Phase 1B2B.1 cross-module decision ledger checkpoint
+
+This instrumentation-only checkpoint makes every Phase 1B2B cross-module
+admission or rejection auditable without changing its semantic disposition.
+The ledger deliberately keeps four universes separate: raw compiler call
+records and exact-key groups; indexed source-call/world joins; canonical target
+eligibility identities; and unique call-site decisions. Admitted call edges are
+additionally partitioned between dependencies whose callers participate in the
+summary graph and event-level edges from otherwise ineligible callers. Exact
+sum invariants preserve the legacy canonical-rejection, boundary-escape, and
+admitted-edge totals.
+
+Each call decision has one disjoint first-outcome reason. Rejections distinguish
+source cardinality, missing or ambiguous compiler joins, caller ownership and
+eligibility, incomplete boundaries, external delegation, arity mismatch, and
+each canonical target failure. A reason never borrows source shape from a
+same-name function at another arity. `source-call-unindexed` means only that an owned compiler event
+group had no supported indexed source call; it does not infer a specific source
+syntax. Module-safety rejection flags form a separate overlapping record because
+one unsafe target can contain more than one construct.
+
+Escaping computed-atom producers receive diagnostic attribution without
+retaining per-producer decision sets. A finite reason bitmask is propagated
+beside the existing semantic bitmask through the same value graph, public and
+private parameter summaries, private result summaries, SCC delta queues, and
+call adjacency. Zero reasons is `unattributed`, one reason names that decision,
+and more than one is `multiple`; overlap counters preserve the constituent
+reasons. The reason vocabulary is guarded below 31 bits. It never participates
+in data, invocation, escape, hazard, claim, explanation, or deletion decisions,
+and it adds no graph walk.
+
+The generated 250/500/1,000-file cross-module chain retains every source,
+definition, event, decision, target, and edge at fixed density while asserting
+exact linear ledger counts. A neutral real-compiler fixture exercises a
+controller-shaped `use` rejection, attributes the producer escape to module
+safety, and proves the same live claims, unrelated dead control, hazard site,
+and conservative deletion refusal. Canonical JSON and the public schema remain
+unchanged.
+
+A parallel 250/500/1,000 series retains distinct `use`-bearing rejected targets
+and producers at every size. Module/world ownership, any-world presence,
+reflection identities, and source ranges are indexed at construction, so lazy
+reason materialization does not scan the trace or source per rejected target.
+A real caller-side fixture proves direct source calls in `use`-bearing and final
+`defoverridable` implementations remain non-summary event edges. Calls emitted
+only by `use`, including a generated private carrier, remain conservatively
+unindexed and activate carrier-scoped escape/deletion refusal; no final
+generated-clause provenance is claimed.
+
 ## Acceptance
 
 Implementation is complete only when all of the following hold:

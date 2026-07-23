@@ -1,11 +1,11 @@
 {
   "analyzer": "elixir-reference-graph",
   "corpus": {
-    "cases": 31,
-    "subjects": 106
+    "cases": 33,
+    "subjects": 115
   },
   "precision": 1,
-  "recall": 0.975609756097561,
+  "recall": 0.9767441860465116,
   "falsePositives": 0,
   "confidenceViolations": 0,
   "misses": 1,
@@ -18,8 +18,8 @@
       "confidenceViolations": 0
     },
     "medium": {
-      "claims": 13,
-      "truePositives": 13,
+      "claims": 15,
+      "truePositives": 15,
       "falsePositives": 0,
       "confidenceViolations": 0
     },
@@ -89,6 +89,28 @@
     {
       "case": "atom-role-cross-module-flow",
       "subjects": 6,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "atom-role-cross-module-ledger-caller-use",
+      "subjects": 6,
+      "deadLabels": 1,
+      "precision": 1,
+      "recall": 1,
+      "falsePositives": 0,
+      "confidenceViolations": 0,
+      "misses": 0,
+      "unlabelledClaims": 0
+    },
+    {
+      "case": "atom-role-cross-module-ledger-use",
+      "subjects": 3,
       "deadLabels": 1,
       "precision": 1,
       "recall": 1,
