@@ -6,9 +6,15 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { computeDeletionPlan, whyAlive } from "../../core/analysis/index.js";
+import { IRGraph } from "../../core/ir/index.js";
 import { isMixAvailable } from "../../testing/corpus/elixir-corpus.js";
+import type { GraphContribution } from "../plugins/types.js";
 import { ConfigError } from "../ts/config.js";
-import { analyzeElixirProject, analyzeElixirProjectWithGraph } from "./analyze.js";
+import {
+  analyzeElixirProject,
+  analyzeElixirProjectWithGraph,
+  applyElixirScriptContribution,
+} from "./analyze.js";
 import { runTracer } from "./runner.js";
 
 const sourceFixture = fileURLToPath(
@@ -51,6 +57,58 @@ afterEach(async () => {
     temporaryProjects.splice(0).map((root) => rm(root, { recursive: true, force: true })),
   );
 });
+
+describe("Elixir script contribution diagnostics", () => {
+  it("retains a diagnostic-only contribution for the built-in deferred convention", () => {
+    const graph = new IRGraph();
+    const deferred = new Map<string, GraphContribution>();
+    const contribution = diagnosticOnlyScriptContribution();
+
+    expect(applyElixirScriptContribution(graph, deferred, contribution, true)).toEqual([]);
+    expect(deferred.get("convention:elixir-scripts")).toBe(contribution);
+    expect(graph.nodes()).toEqual([]);
+  });
+
+  it("publishes a direct diagnostic exactly once with trusted ownership and local coordinates", () => {
+    const graph = new IRGraph();
+    const deferred = new Map<string, GraphContribution>();
+    const contribution = diagnosticOnlyScriptContribution();
+
+    expect(applyElixirScriptContribution(graph, deferred, contribution, false)).toEqual([
+      {
+        pluginId: "convention:elixir-scripts",
+        boundaryId: "ex:.",
+        severity: "warning",
+        code: "NEUTRAL_SCRIPT_DIAGNOSTIC",
+        message: "neutral script diagnostic",
+        site: {
+          file: "scripts/neutral.exs",
+          span: { start: 2, end: 2, startLine: 1, endLine: 1 },
+        },
+      },
+    ]);
+    expect(deferred.size).toBe(0);
+    expect(graph.nodes()).toEqual([]);
+  });
+});
+
+function diagnosticOnlyScriptContribution(): GraphContribution {
+  return {
+    diagnostics: [
+      {
+        pluginId: "spoofed:plugin",
+        boundaryId: "spoofed",
+        severity: "warning",
+        code: "NEUTRAL_SCRIPT_DIAGNOSTIC",
+        message: "neutral script diagnostic",
+        site: {
+          file: "./scripts/../scripts/neutral.exs",
+          span: { start: 2, end: 2, startLine: 1, endLine: 1 },
+        },
+      },
+    ],
+  };
+}
 
 describe("Elixir analysis policy", () => {
   it("validates config before invoking the compiler", async () => {

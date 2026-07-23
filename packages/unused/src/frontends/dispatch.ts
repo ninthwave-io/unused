@@ -16,7 +16,7 @@ import {
   computeSummary,
   SCHEMA_VERSION,
 } from "../core/claims/index.js";
-import { entrypointId, IRGraph, type IRNode, type Site } from "../core/ir/index.js";
+import { entrypointId, IRGraph, type IRNode } from "../core/ir/index.js";
 import type { ConfigMatchProjection } from "./config-contract.js";
 import {
   applyConfiguredSymbolRoots,
@@ -26,8 +26,12 @@ import {
 import { analyzeElixirProjectWithGraph } from "./elixir/index.js";
 import { BUILT_IN_PLUGINS } from "./plugins/builtins.js";
 import { claimAnnotationKey } from "./plugins/claim-annotations.js";
+import {
+  type ContributionDiagnosticOwner,
+  comparePluginDiagnostics,
+  RepositoryDiagnosticAccumulator,
+} from "./plugins/diagnostics.js";
 import { collectElixirAtomRoleSummaryProviders } from "./plugins/elixir-role-summary-providers.js";
-import { prefixRepositoryPath } from "./plugins/rebase.js";
 import { PluginRegistry } from "./plugins/registry.js";
 import {
   type AnalyzerPlugin,
@@ -35,7 +39,6 @@ import {
   type FrontendConfigContribution,
   type FrontendGraphFragment,
   type GraphContribution,
-  type PluginDiagnostic,
   type RepositoryAnalysisContext,
   requireAnalyzerBoundaryMetadata,
 } from "./plugins/types.js";
@@ -405,7 +408,7 @@ export async function analyzeProjectAutoWithGraph(
     ...fragments.flatMap((fragment) => fragment.diagnostics),
     ...contributionDiagnostics.values(),
     ...configPolicyDiagnostics(localConfigGroups),
-  ].sort(byDiagnostic);
+  ].sort(comparePluginDiagnostics);
   const result: AnalyzeResult = {
     schemaVersion: SCHEMA_VERSION,
     tool: { name: "unused", version: context.toolVersion },
@@ -861,24 +864,6 @@ function configPolicyDiagnostics(
   });
 }
 
-function byDiagnostic(
-  a: FrontendGraphFragment["diagnostics"][number],
-  b: FrontendGraphFragment["diagnostics"][number],
-): number {
-  return (
-    compareCodeUnits(a.boundaryId ?? "", b.boundaryId ?? "") ||
-    compareCodeUnits(a.pluginId, b.pluginId) ||
-    compareCodeUnits(a.code, b.code) ||
-    compareCodeUnits(a.severity, b.severity) ||
-    compareCodeUnits(a.message, b.message) ||
-    compareCodeUnits(a.site?.file ?? "", b.site?.file ?? "") ||
-    (a.site?.span.start ?? -1) - (b.site?.span.start ?? -1) ||
-    (a.site?.span.end ?? -1) - (b.site?.span.end ?? -1) ||
-    (a.site?.span.startLine ?? -1) - (b.site?.span.startLine ?? -1) ||
-    (a.site?.span.endLine ?? -1) - (b.site?.span.endLine ?? -1)
-  );
-}
-
 function completedBoundary(fragment: FrontendGraphFragment): BoundaryRunMetadata {
   return {
     status: fragment.metadata.completeness.test === "incomplete" ? "partial" : "complete",
@@ -937,46 +922,6 @@ function mergeFragments(fragments: readonly FrontendGraphFragment[]): IRGraph {
     );
   }
   return graph;
-}
-
-type ContributionDiagnosticOwner =
-  | {
-      readonly scope: "boundary";
-      readonly pluginId: string;
-      readonly boundaryId: string;
-    }
-  | {
-      readonly scope: "repository";
-      readonly pluginId: string;
-    };
-
-/** Collect diagnostics only when their graph contribution is actually applied. */
-class RepositoryDiagnosticAccumulator {
-  private readonly diagnostics: PluginDiagnostic[] = [];
-
-  add(contribution: GraphContribution, owner: ContributionDiagnosticOwner): void {
-    for (const diagnostic of contribution.diagnostics ?? []) {
-      this.diagnostics.push({
-        pluginId: owner.pluginId,
-        ...(owner.scope === "boundary" ? { boundaryId: owner.boundaryId } : {}),
-        severity: diagnostic.severity,
-        code: diagnostic.code,
-        message: diagnostic.message,
-        ...(diagnostic.site === undefined
-          ? {}
-          : { site: validateRepositoryDiagnosticSite(diagnostic.site) }),
-      });
-    }
-  }
-
-  values(): readonly PluginDiagnostic[] {
-    return [...this.diagnostics];
-  }
-}
-
-function validateRepositoryDiagnosticSite(site: Site): Site {
-  const file = prefixRepositoryPath("", site.file);
-  return file === site.file ? site : { ...site, file };
 }
 
 function addContribution(

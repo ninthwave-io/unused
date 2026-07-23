@@ -39,6 +39,10 @@ import {
   graphSymbolLanguages,
 } from "../config-symbol-entrypoints.js";
 import { collectFrontendClaimAnnotations } from "../plugins/claim-annotations.js";
+import {
+  comparePluginDiagnostics,
+  normalizeContributionDiagnostic,
+} from "../plugins/diagnostics.js";
 import type {
   FrontendClaimInputs,
   FrontendLocalGraph,
@@ -217,13 +221,12 @@ async function analyzeElixirProjectGraph(
     graph = deferred.graph;
     deferredContributions.set(ELIXIR_RUNTIME_PLUGIN_ID, deferred.contribution);
   }
-  if (scriptsDeferred) {
-    if ((scriptContribution.nodes?.length ?? 0) > 0) {
-      deferredContributions.set(ELIXIR_SCRIPTS_PLUGIN_ID, scriptContribution);
-    }
-  } else {
-    addGraphContribution(graph, scriptContribution);
-  }
+  const scriptDiagnostics = applyElixirScriptContribution(
+    graph,
+    deferredContributions,
+    scriptContribution,
+    scriptsDeferred,
+  );
   const symbolCount = graph.nodes().filter((node) => node.kind === "symbol").length;
   const edgeCount = graph.edges().length;
   if (fragmentOnly) {
@@ -297,8 +300,12 @@ async function analyzeElixirProjectGraph(
     claimableFiles: new Set(analyzedFiles.filter((file) => isClaimable(file, config, configUnits))),
   };
 
-  const diagnostics =
-    traceResult.testPartition === "complete" ? [] : [incompleteTestPartitionDiagnostic("ex:.")];
+  const diagnostics = [
+    ...scriptDiagnostics,
+    ...(traceResult.testPartition === "complete"
+      ? []
+      : [incompleteTestPartitionDiagnostic("ex:.")]),
+  ].sort(comparePluginDiagnostics);
   if (fragmentOnly) {
     return {
       graph,
@@ -414,6 +421,39 @@ function addGraphContribution(graph: IRGraph, contribution: GraphContribution): 
   for (const node of contribution.nodes ?? []) graph.addNode(node);
   for (const edge of contribution.edges ?? []) graph.addEdge(edge);
   for (const hazard of contribution.hazards ?? []) graph.addHazard(hazard);
+}
+
+/** Apply script facts now, or retain the complete contribution for its owning plugin phase. */
+export function applyElixirScriptContribution(
+  graph: IRGraph,
+  deferredContributions: Map<string, GraphContribution>,
+  contribution: GraphContribution,
+  deferred: boolean,
+): readonly PluginDiagnostic[] {
+  if (deferred) {
+    if (hasGraphContributionFacts(contribution)) {
+      deferredContributions.set(ELIXIR_SCRIPTS_PLUGIN_ID, contribution);
+    }
+    return [];
+  }
+
+  addGraphContribution(graph, contribution);
+  return (contribution.diagnostics ?? []).map((diagnostic) =>
+    normalizeContributionDiagnostic(diagnostic, {
+      scope: "boundary",
+      pluginId: ELIXIR_SCRIPTS_PLUGIN_ID,
+      boundaryId: "ex:.",
+    }),
+  );
+}
+
+function hasGraphContributionFacts(contribution: GraphContribution): boolean {
+  return (
+    (contribution.nodes?.length ?? 0) > 0 ||
+    (contribution.edges?.length ?? 0) > 0 ||
+    (contribution.hazards?.length ?? 0) > 0 ||
+    (contribution.diagnostics?.length ?? 0) > 0
+  );
 }
 
 function mergeGraphContributions(

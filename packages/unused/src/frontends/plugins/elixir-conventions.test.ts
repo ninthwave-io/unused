@@ -115,6 +115,28 @@ describe("elixirRuntimeConventionPlugin", () => {
 });
 
 describe("elixirScriptConventionPlugin", () => {
+  it("activates a diagnostic-only contribution prepared by the frontend", async () => {
+    const contribution: GraphContribution = {
+      diagnostics: [
+        {
+          pluginId: "language:elixir",
+          severity: "warning",
+          code: "NEUTRAL_SCRIPT_DIAGNOSTIC",
+          message: "neutral script diagnostic",
+          site,
+        },
+      ],
+    };
+    const fragment = fixtureFragment(new Map([[elixirScriptConventionPlugin.id, contribution]]));
+    const context = { repository: repository(), fragment };
+
+    expect(await elixirScriptConventionPlugin.applies(context)).toBe(true);
+    expect(await elixirScriptConventionPlugin.analyze(context)).toEqual({
+      nodes: [],
+      diagnostics: contribution.diagnostics,
+    });
+  });
+
   it("activates untraced script nodes and references prepared by the frontend", async () => {
     const contribution: GraphContribution = {
       nodes: [
