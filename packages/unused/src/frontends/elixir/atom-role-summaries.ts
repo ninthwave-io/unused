@@ -10,7 +10,7 @@ export type ElixirConventionPluginId = `convention:${string}`;
 
 export type ElixirAtomRoleSummaryOrigin =
   | { readonly pluginId: "language:elixir" }
-  | { readonly pluginId: ElixirConventionPluginId; readonly dependency: string };
+  | { readonly pluginId: ElixirConventionPluginId; readonly hexPackage: string };
 
 export interface ElixirAtomRoleSummary {
   readonly module: string;
@@ -41,10 +41,26 @@ export interface ElixirAtomRoleSummary {
 
 export interface ElixirAtomRoleSummaryProvider {
   readonly id: ElixirConventionPluginId;
-  readonly dependency: string;
-  /** Exact dependency versions whose public semantics were audited. */
-  readonly auditedVersions: readonly string[];
+  /** Mix application identity of the recursive compiled artifact. */
+  readonly compilerApp: string;
+  /** OTP application identity declared by that artifact's `.app` resource. */
+  readonly otpApp: string;
+  /** Exact map key in `mix.lock`. */
+  readonly lockKey: string;
+  /** Hex package atom stored inside the lock tuple. */
+  readonly hexPackage: string;
+  readonly repository: "hexpm";
+  /** Immutable public release identity whose semantics were audited. */
+  readonly auditedReleases: readonly ElixirAuditedHexRelease[];
   readonly summaries: readonly ElixirAtomRoleSummary[];
+}
+
+export interface ElixirAuditedHexRelease {
+  readonly version: string;
+  /** Archive `CHECKSUM` member / fourth Hex lock tuple element. */
+  readonly innerChecksum: string;
+  /** Whole archive SHA-256 / eighth Hex lock tuple element. */
+  readonly outerChecksum: string;
 }
 
 const core = { pluginId: "language:elixir" } as const;
@@ -55,6 +71,7 @@ const CONVENTION_PLUGIN_ID_RE = /^convention:[a-z][a-z0-9]*(?:[-.:][a-z0-9]+)*$/
 const HEX_DEPENDENCY_RE = /^[a-z][a-z0-9_]*$/u;
 const EXACT_SEMVER_RE =
   /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
+const HEX_CHECKSUM_RE = /^[0-9a-f]{64}$/u;
 const MAX_CALLEE_IDENTITY_LENGTH = 255;
 const ARGUMENT_ROLES = new Set<ElixirAtomArgumentRole>([
   "consume-data",
@@ -319,7 +336,6 @@ export function validateElixirAtomRoleSummaryProviders(
   providers: readonly ElixirAtomRoleSummaryProvider[],
 ): void {
   const providerIds = new Set<string>();
-  const allSummaries = [...ELIXIR_ATOM_ROLE_SUMMARIES];
   for (const provider of providers) {
     if (!CONVENTION_PLUGIN_ID_RE.test(provider.id)) {
       throw new Error(`invalid Elixir atom role summary provider id: ${provider.id}`);
@@ -328,39 +344,67 @@ export function validateElixirAtomRoleSummaryProviders(
       throw new Error(`duplicate Elixir atom role summary provider: ${provider.id}`);
     }
     providerIds.add(provider.id);
-    if (!HEX_DEPENDENCY_RE.test(provider.dependency)) {
-      throw new Error(`invalid Elixir atom role summary dependency for ${provider.id}`);
+    for (const [field, value] of [
+      ["compiler app", provider.compilerApp],
+      ["OTP app", provider.otpApp],
+      ["lock key", provider.lockKey],
+      ["Hex package", provider.hexPackage],
+    ] as const) {
+      if (!HEX_DEPENDENCY_RE.test(value)) {
+        throw new Error(`invalid Elixir atom role summary ${field} for ${provider.id}`);
+      }
     }
-    if (provider.auditedVersions.length === 0) {
-      throw new Error(`Elixir atom role summary provider ${provider.id} has no audited versions`);
+    if (provider.repository !== "hexpm") {
+      throw new Error(`invalid Elixir atom role summary repository for ${provider.id}`);
+    }
+    if (provider.auditedReleases.length === 0) {
+      throw new Error(`Elixir atom role summary provider ${provider.id} has no audited releases`);
     }
     const versions = new Set<string>();
-    for (const version of provider.auditedVersions) {
-      if (!EXACT_SEMVER_RE.test(version)) {
-        throw new Error(`invalid audited Elixir dependency version for ${provider.id}: ${version}`);
-      }
-      if (versions.has(version)) {
+    for (const release of provider.auditedReleases) {
+      if (!EXACT_SEMVER_RE.test(release.version)) {
         throw new Error(
-          `duplicate audited Elixir dependency version for ${provider.id}: ${version}`,
+          `invalid audited Elixir dependency version for ${provider.id}: ${release.version}`,
         );
       }
-      versions.add(version);
+      if (versions.has(release.version)) {
+        throw new Error(
+          `duplicate audited Elixir dependency version for ${provider.id}: ${release.version}`,
+        );
+      }
+      versions.add(release.version);
+      if (
+        !HEX_CHECKSUM_RE.test(release.innerChecksum) ||
+        !HEX_CHECKSUM_RE.test(release.outerChecksum)
+      ) {
+        throw new Error(
+          `invalid audited Elixir dependency checksum for ${provider.id}: ${release.version}`,
+        );
+      }
     }
     if (provider.summaries.length === 0) {
       throw new Error(`Elixir atom role summary provider ${provider.id} has no summaries`);
     }
+    validateElixirAtomRoleSummaries(provider.summaries);
+    const providerKeys = new Set<string>();
     for (const summary of provider.summaries) {
       if (
         summary.origin.pluginId !== provider.id ||
-        !("dependency" in summary.origin) ||
-        summary.origin.dependency !== provider.dependency
+        !("hexPackage" in summary.origin) ||
+        summary.origin.hexPackage !== provider.hexPackage
       ) {
         throw new Error(`Elixir atom role summary is not owned by provider ${provider.id}`);
       }
-      allSummaries.push(summary);
+      providerKeys.add(`${summary.module}\0${summary.name}\0${summary.arity}`);
+    }
+    for (const coreSummary of ELIXIR_ATOM_ROLE_SUMMARIES) {
+      if (providerKeys.has(`${coreSummary.module}\0${coreSummary.name}\0${coreSummary.arity}`)) {
+        throw new Error(
+          `duplicate Elixir atom role summary: ${coreSummary.module}\0${coreSummary.name}\0${coreSummary.arity}`,
+        );
+      }
     }
   }
-  validateElixirAtomRoleSummaries(allSummaries);
 }
 
 function validateSummaryOrigin(entry: ElixirAtomRoleSummary, key: string): void {
@@ -371,7 +415,7 @@ function validateSummaryOrigin(entry: ElixirAtomRoleSummary, key: string): void 
   }
   if (
     !CONVENTION_PLUGIN_ID_RE.test(origin.pluginId) ||
-    !HEX_DEPENDENCY_RE.test(origin.dependency)
+    !HEX_DEPENDENCY_RE.test(origin.hexPackage)
   ) {
     throw new Error(`invalid convention-owned summary origin for ${key}`);
   }

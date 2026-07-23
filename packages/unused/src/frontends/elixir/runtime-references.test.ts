@@ -5,7 +5,13 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { ectoElixirAtomRoleSummaryProvider } from "../plugins/elixir-conventions.js";
 import type { ElixirAtomRoleSummaryProvider } from "./atom-role-summaries.js";
-import type { FunctionRecord, ModuleRecord, TraceEvent, TraceResult } from "./events.js";
+import type {
+  FunctionRecord,
+  HexDependencyApplication,
+  ModuleRecord,
+  TraceEvent,
+  TraceResult,
+} from "./events.js";
 import {
   type AtomFlowEscapeCause,
   type AtomFlowEscapePrimaryCause,
@@ -697,7 +703,9 @@ describe("extractElixirRuntimeReferences", () => {
     });
     const trace: TraceResult = {
       appMod: null,
-      deps: ["ecto"],
+      deps: [],
+      dependencyApplications: [{ compilerApp: "ecto", otpApp: "ecto" }],
+      hexDependencyApplications: [ectoApplication()],
       compileOk: true,
       testPartition: "complete",
       modules: [mod("NeutralIndexed.Roles", file)],
@@ -831,7 +839,7 @@ describe("extractElixirRuntimeReferences", () => {
       );
       if (ectoCall === undefined) throw new Error("missing Ecto role event");
       for (const variant of [
-        { ...trace, deps: [] },
+        { ...trace, hexDependencyApplications: [] },
         { ...trace, modules: [...trace.modules, mod("Ecto.Changeset", file)] },
         { ...trace, events: [...trace.events, ectoCall] },
       ]) {
@@ -840,37 +848,6 @@ describe("extractElixirRuntimeReferences", () => {
             (fact) => fact.fromFun === "ecto_imported/2",
           ),
         ).toMatchObject({ factKind: "computed-atom", flow: "escape", kind: "opaque" });
-      }
-
-      for (const lock of [
-        undefined,
-        ectoHexLock("3.13.4"),
-        `%{\n  "ecto": {:path, "deps/ecto"}\n}\n`,
-        `%{\n  "ecto": {:git, "https://example.invalid/ecto.git", "neutral-ref", []}\n}\n`,
-        `%{\n  "ecto": {:hex, :ecto, "3.14.1"\n}\n`,
-        `malformed\n${ectoHexLock("3.14.1")}`,
-        ectoHexLock("3.14.1").replace("[:mix]", "[(:mix]"),
-        `%{\n  "ecto": ${ectoHexTuple("3.14.1")},\n  invalid\n}\n`,
-        `%{\n  "ecto": ${ectoHexTuple("3.14.1")},\n  "ecto": ${ectoHexTuple("3.14.1")}\n}\n`,
-        `${ectoHexLock("3.14.1")}\n${ectoHexLock("3.14.1")}`,
-      ]) {
-        if (lock === undefined) rmSync(join(root, "mix.lock"));
-        else writeFileSync(join(root, "mix.lock"), lock);
-        const facts = extractElixirRuntimeConventions(
-          root,
-          trace,
-          summaryProviders,
-        ).dynamicDispatches;
-        expect(facts.find((fact) => fact.fromFun === "ecto_imported/2")).toMatchObject({
-          factKind: "computed-atom",
-          flow: "escape",
-          kind: "opaque",
-        });
-        expect(facts.find((fact) => fact.fromFun === "ecto_selector/2")).toMatchObject({
-          factKind: "computed-atom",
-          flow: "escape",
-          kind: "opaque",
-        });
       }
 
       expect(
@@ -893,15 +870,25 @@ describe("extractElixirRuntimeReferences", () => {
     const file = "neutral_provider.ex";
     const provider: ElixirAtomRoleSummaryProvider = {
       id: "convention:neutral",
-      dependency: "neutral_dep",
-      auditedVersions: ["1.2.3"],
+      compilerApp: "neutral_dep",
+      otpApp: "neutral_dep",
+      lockKey: "neutral_dep",
+      hexPackage: "neutral_dep",
+      repository: "hexpm",
+      auditedReleases: [
+        {
+          version: "1.2.3",
+          innerChecksum: "1".repeat(64),
+          outerChecksum: "2".repeat(64),
+        },
+      ],
       summaries: [
         {
           module: "Neutral.Dependency",
           name: "consume",
           arity: 1,
           arguments: { 0: "consume-data" },
-          origin: { pluginId: "convention:neutral", dependency: "neutral_dep" },
+          origin: { pluginId: "convention:neutral", hexPackage: "neutral_dep" },
         },
       ],
     };
@@ -935,7 +922,9 @@ describe("extractElixirRuntimeReferences", () => {
     ];
     const trace: TraceResult = {
       appMod: null,
-      deps: ["neutral_dep"],
+      deps: [],
+      dependencyApplications: [{ compilerApp: "neutral_dep", otpApp: "neutral_dep" }],
+      hexDependencyApplications: [neutralApplication()],
       compileOk: true,
       testPartition: "complete",
       modules: [mod("Neutral.Provider", file)],
@@ -953,16 +942,177 @@ describe("extractElixirRuntimeReferences", () => {
         extractElixirRuntimeConventions(root, trace, [provider]).dynamicDispatches,
       ).toMatchObject([{ factKind: "computed-atom", flow: "data", kind: "exact" }]);
 
+      const exactLock = hexLock("neutral_dep", "1.2.3");
       for (const variant of [
-        { trace: { ...trace, deps: [] }, lock: hexLock("neutral_dep", "1.2.3") },
-        { trace, lock: hexLock("neutral_dep", "1.2.2") },
-        { trace, lock: `%{\n  "neutral_dep": {:path, "deps/neutral_dep"}\n}\n` },
+        {
+          trace: { ...trace, hexDependencyApplications: [] },
+          lock: exactLock,
+        },
+        {
+          trace: {
+            ...trace,
+            hexDependencyApplications: [{ ...neutralApplication(), otpApp: null }],
+          },
+          lock: exactLock,
+        },
+        {
+          trace: {
+            ...trace,
+            hexDependencyApplications: [{ ...neutralApplication(), otpApp: "other_app" }],
+          },
+          lock: exactLock,
+        },
+        {
+          trace: {
+            ...trace,
+            hexDependencyApplications: [{ ...neutralApplication(), lockKey: "other_key" }],
+          },
+          lock: exactLock,
+        },
+        {
+          trace: {
+            ...trace,
+            hexDependencyApplications: [{ ...neutralApplication(), hexPackage: "other_package" }],
+          },
+          lock: exactLock,
+        },
+        {
+          trace: {
+            ...trace,
+            hexDependencyApplications: [neutralApplication(), neutralApplication()],
+          },
+          lock: exactLock,
+        },
+        {
+          trace: {
+            ...trace,
+            hexDependencyApplications: [{ ...neutralApplication(), version: "1.2.2" }],
+          },
+          lock: hexLock("neutral_dep", "1.2.2"),
+        },
+        {
+          trace: {
+            ...trace,
+            hexDependencyApplications: [{ ...neutralApplication(), lockKey: "other_key" }],
+          },
+          lock: exactLock.replace('"neutral_dep":', '"other_key":'),
+        },
+        {
+          trace: {
+            ...trace,
+            hexDependencyApplications: [{ ...neutralApplication(), hexPackage: "other_package" }],
+          },
+          lock: exactLock.replace(":neutral_dep", ":other_package"),
+        },
+        {
+          trace: {
+            ...trace,
+            hexDependencyApplications: [{ ...neutralApplication(), repository: "private" }],
+          },
+          lock: exactLock.replace('"hexpm"', '"private"'),
+        },
+        {
+          trace: {
+            ...trace,
+            hexDependencyApplications: [{ ...neutralApplication(), innerChecksum: "3".repeat(64) }],
+          },
+          lock: exactLock.replace("1".repeat(64), "3".repeat(64)),
+        },
+        {
+          trace: {
+            ...trace,
+            hexDependencyApplications: [{ ...neutralApplication(), outerChecksum: "4".repeat(64) }],
+          },
+          lock: exactLock.replace("2".repeat(64), "4".repeat(64)),
+        },
+        {
+          trace: { ...trace, hexDependencyApplications: [] },
+          lock: `%{\n  "neutral_dep": {:path, "deps/neutral_dep"}\n}\n`,
+        },
+        {
+          trace: { ...trace, hexDependencyApplications: [] },
+          lock: `%{\n  "neutral_dep": {:git, "https://example.invalid/neutral.git", "ref", []}\n}\n`,
+        },
       ]) {
         writeFileSync(join(root, "mix.lock"), variant.lock);
         expect(
           extractElixirRuntimeConventions(root, variant.trace, [provider]).dynamicDispatches,
         ).toMatchObject([{ factKind: "computed-atom", flow: "escape", kind: "opaque" }]);
       }
+
+      const explicitAlias: ElixirAtomRoleSummaryProvider = {
+        ...provider,
+        id: "convention:alias",
+        compilerApp: "alias_compiler",
+        otpApp: "alias_otp",
+        lockKey: "alias_lock",
+        hexPackage: "alias_package",
+        summaries: provider.summaries.map((summary) => ({
+          ...summary,
+          origin: { pluginId: "convention:alias", hexPackage: "alias_package" },
+        })),
+      };
+      writeFileSync(
+        join(root, "mix.lock"),
+        hexLock("alias_package", "1.2.3").replace('"alias_package":', '"alias_lock":'),
+      );
+      expect(
+        extractElixirRuntimeConventions(
+          root,
+          {
+            ...trace,
+            hexDependencyApplications: [
+              {
+                ...neutralApplication(),
+                compilerApp: "alias_compiler",
+                otpApp: "alias_otp",
+                lockKey: "alias_lock",
+                hexPackage: "alias_package",
+              },
+            ],
+          },
+          [explicitAlias],
+        ).dynamicDispatches,
+      ).toMatchObject([{ factKind: "computed-atom", flow: "data", kind: "exact" }]);
+
+      const otherProvider: ElixirAtomRoleSummaryProvider = {
+        ...provider,
+        id: "convention:other",
+        compilerApp: "other_dep",
+        otpApp: "other_dep",
+        lockKey: "other_dep",
+        hexPackage: "other_dep",
+        summaries: provider.summaries.map((summary) => ({
+          ...summary,
+          origin: { pluginId: "convention:other", hexPackage: "other_dep" },
+        })),
+      };
+      writeFileSync(
+        join(root, "mix.lock"),
+        hexLocks([
+          ["neutral_dep", "1.2.3"],
+          ["other_dep", "1.2.3"],
+        ]),
+      );
+      expect(
+        extractElixirRuntimeConventions(
+          root,
+          {
+            ...trace,
+            hexDependencyApplications: [
+              neutralApplication(),
+              {
+                ...neutralApplication(),
+                compilerApp: "other_dep",
+                otpApp: "other_dep",
+                lockKey: "other_dep",
+                hexPackage: "other_dep",
+              },
+            ],
+          },
+          [provider, otherProvider],
+        ).dynamicDispatches,
+      ).toMatchObject([{ factKind: "computed-atom", flow: "escape", kind: "opaque" }]);
 
       writeFileSync(join(root, "mix.lock"), hexLock("neutral_dep", "1.2.3"));
       expect(
@@ -7654,10 +7804,57 @@ function ectoHexLock(version: string): string {
   return `%{\n  "ecto": ${ectoHexTuple(version)},\n}\n`;
 }
 
+function ectoApplication(): HexDependencyApplication {
+  const audited = ectoElixirAtomRoleSummaryProvider.auditedReleases[0];
+  if (audited === undefined) throw new Error("expected audited Ecto release");
+  return {
+    compilerApp: "ecto",
+    otpApp: "ecto",
+    lockKey: "ecto",
+    hexPackage: "ecto",
+    version: audited.version,
+    innerChecksum: audited.innerChecksum,
+    repository: "hexpm",
+    outerChecksum: audited.outerChecksum,
+  };
+}
+
+function neutralApplication(): HexDependencyApplication {
+  return {
+    compilerApp: "neutral_dep",
+    otpApp: "neutral_dep",
+    lockKey: "neutral_dep",
+    hexPackage: "neutral_dep",
+    version: "1.2.3",
+    innerChecksum: "1".repeat(64),
+    repository: "hexpm",
+    outerChecksum: "2".repeat(64),
+  };
+}
+
 function ectoHexTuple(version: string): string {
-  return `{:hex, :ecto, "${version}", "neutral-checksum", [:mix], [], "hexpm", "neutral-outer-checksum"}`;
+  const audited =
+    version === "3.14.1"
+      ? {
+          inner: "7b740d87bdf45996aa0c2c2e081640906f10caa7ce5ba328fd294c7d49d0cc6f",
+          outer: "24b991956796700f467d0a3ef3d303138a3ef9ddddf8b98f43758ee067b20a30",
+        }
+      : { inner: "1".repeat(64), outer: "2".repeat(64) };
+  return `{:hex, :ecto, "${version}", "${audited.inner}", [:mix], [], "hexpm", "${audited.outer}"}`;
 }
 
 function hexLock(dependency: string, version: string): string {
-  return `%{\n  "${dependency}": {:hex, :${dependency}, "${version}", "neutral-checksum", [:mix], [], "hexpm", "neutral-outer-checksum"},\n}\n`;
+  return hexLocks([[dependency, version]]);
+}
+
+function hexLocks(entries: readonly (readonly [string, string])[]): string {
+  return [
+    "%{",
+    ...entries.map(
+      ([dependency, version]) =>
+        `  "${dependency}": {:hex, :${dependency}, "${version}", "${"1".repeat(64)}", [:mix], [], "hexpm", "${"2".repeat(64)}"},`,
+    ),
+    "}",
+    "",
+  ].join("\n");
 }

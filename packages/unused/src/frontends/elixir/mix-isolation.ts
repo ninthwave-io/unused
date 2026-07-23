@@ -22,10 +22,23 @@ const MAX_BUFFER = 256 * 1024 * 1024;
 const MAX_TRACE_BYTES = 256 * 1024 * 1024;
 const LAYOUT_MARKER = "__UNUSED_MIX_LAYOUT__";
 
-interface MixDependencyArtifact {
+export interface MixDependencyArtifact {
   readonly app: string;
   readonly buildPath: string;
   readonly appResource: string | null;
+  /** Whether Mix resolved this artifact through the Hex SCM. */
+  readonly hex: boolean;
+  /** Application identity proven by the artifact's existing `.app` term. */
+  readonly otpApp: string | null;
+  /** Exact lock identity attached by Mix to this Hex dependency, or null. */
+  readonly lockedRelease: {
+    readonly lockKey: string;
+    readonly hexPackage: string;
+    readonly version: string;
+    readonly innerChecksum: string;
+    readonly repository: string;
+    readonly outerChecksum: string;
+  } | null;
   readonly required: boolean;
 }
 
@@ -187,6 +200,10 @@ export function inspectMixLayout(
     'nil -> System.delete_env("MIX_BUILD_PATH"); path -> System.put_env("MIX_BUILD_PATH", path) end; ' +
     "source_build_path = config |> Keyword.delete(:deps_build_path) |> Mix.Project.build_path(); " +
     'System.put_env("MIX_BUILD_PATH", inspection_build_path); ' +
+    "safe_resource_info = fn root, path -> relative = Path.relative_to(path, root); " +
+    'if relative == ".." or String.starts_with?(relative, "../") or Path.type(relative) == :absolute, do: :error, else: ' +
+    "Enum.reduce_while(Path.split(relative), {:ok, root, nil}, fn part, {:ok, current, _} -> candidate = Path.join(current, part); " +
+    "case :file.read_link_info(String.to_charlist(candidate)) do {:ok, info} when elem(info, 2) != :symlink -> {:cont, {:ok, candidate, info}}; _ -> {:halt, :error} end end) end; " +
     'payload = %{app: to_string(Mix.Project.config()[:app] || ""), ' +
     "build_path: source_build_path, " +
     'elixirc_paths: Enum.map(Mix.Project.config()[:elixirc_paths] || ["lib"], &to_string/1), ' +
@@ -196,11 +213,16 @@ export function inspectMixLayout(
     'source_dep_build = if relative_dep_build == ".." or String.starts_with?(relative_dep_build, "../"), ' +
     "do: inspection_dep_build, else: Path.expand(relative_dep_build, source_build_path); " +
     "app_opt = Keyword.get(dep.opts, :app, true); " +
-    'app_resource = case app_opt do false -> :null; path when is_binary(path) -> Path.expand(path, source_dep_build); _ -> Path.join([source_dep_build, "ebin", "#{dep.app}.app"]) end; ' +
+    'app_resource = case app_opt do false -> :null; path when is_binary(path) -> Path.expand(path, source_dep_build); app when is_atom(app) and app != true -> Path.join([source_dep_build, "ebin", "#{app}.app"]); _ -> Path.join([source_dep_build, "ebin", "#{dep.app}.app"]) end; ' +
+    "otp_app = case app_resource do :null -> :null; path -> case safe_resource_info.(source_dep_build, path) do " +
+    "{:ok, ^path, info} when elem(info, 2) == :regular and elem(info, 1) <= 1_048_576 -> case :file.consult(String.to_charlist(path)) do " +
+    "{:ok, [{:application, otp_app, properties}]} when is_atom(otp_app) and is_list(properties) -> Atom.to_string(otp_app); _ -> :null end; " +
+    "_ -> :null end end; " +
     "required = not Keyword.get(dep.opts, :optional, false) and " +
     "not (Keyword.get(dep.opts, :compile, true) == false and app_opt == false); " +
+    "locked_release = case {dep.scm == Hex.SCM, dep.opts[:lock]} do {true, {:hex, package, version, inner, managers, lock_deps, repository, outer}} when is_atom(package) and is_binary(version) and is_binary(inner) and is_list(managers) and is_list(lock_deps) and is_binary(repository) and is_binary(outer) -> %{lockKey: to_string(dep.app), hexPackage: to_string(package), version: version, innerChecksum: inner, repository: repository, outerChecksum: outer}; _ -> :null end; " +
     "%{app: to_string(dep.app), buildPath: source_dep_build, " +
-    "appResource: app_resource, required: required} end), " +
+    "appResource: app_resource, hex: dep.scm == Hex.SCM, lockedRelease: locked_release, otpApp: otp_app, required: required} end), " +
     "mix_env: to_string(Mix.env())}; " +
     `IO.puts("${LAYOUT_MARKER}" <> IO.iodata_to_binary(:json.encode(payload)))`;
   const result = spawnSync(
@@ -282,6 +304,9 @@ function isMixDependencyArtifact(value: unknown): value is MixDependencyArtifact
     readonly app?: unknown;
     readonly appResource?: unknown;
     readonly buildPath?: unknown;
+    readonly hex?: unknown;
+    readonly lockedRelease?: unknown;
+    readonly otpApp?: unknown;
     readonly required?: unknown;
   };
   return (
@@ -290,7 +315,38 @@ function isMixDependencyArtifact(value: unknown): value is MixDependencyArtifact
     (candidate.appResource === null || typeof candidate.appResource === "string") &&
     typeof candidate.buildPath === "string" &&
     candidate.buildPath !== "" &&
+    typeof candidate.hex === "boolean" &&
+    isLockedRelease(candidate.lockedRelease, candidate.hex) &&
+    (candidate.otpApp === null ||
+      (typeof candidate.otpApp === "string" && candidate.otpApp !== "")) &&
     typeof candidate.required === "boolean"
+  );
+}
+
+function isLockedRelease(value: unknown, hex: unknown): boolean {
+  if (value === null) return true;
+  if (hex !== true || typeof value !== "object" || Array.isArray(value)) return false;
+  const release = value as {
+    readonly lockKey?: unknown;
+    readonly hexPackage?: unknown;
+    readonly version?: unknown;
+    readonly innerChecksum?: unknown;
+    readonly repository?: unknown;
+    readonly outerChecksum?: unknown;
+  };
+  return (
+    typeof release.lockKey === "string" &&
+    /^[a-z][a-z0-9_]*$/u.test(release.lockKey) &&
+    typeof release.hexPackage === "string" &&
+    /^[a-z][a-z0-9_]*$/u.test(release.hexPackage) &&
+    typeof release.version === "string" &&
+    release.version !== "" &&
+    typeof release.innerChecksum === "string" &&
+    /^[0-9a-f]{64}$/u.test(release.innerChecksum) &&
+    typeof release.repository === "string" &&
+    release.repository !== "" &&
+    typeof release.outerChecksum === "string" &&
+    /^[0-9a-f]{64}$/u.test(release.outerChecksum)
   );
 }
 

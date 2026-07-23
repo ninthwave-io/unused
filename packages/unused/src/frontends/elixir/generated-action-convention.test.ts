@@ -82,6 +82,8 @@ function generatedTrace(
   return {
     appMod: "NeutralGenerated.Application",
     deps: options.dependency === false ? [] : ["phoenix"],
+    dependencyApplications:
+      options.dependency === false ? [] : [{ compilerApp: "phoenix", otpApp: "phoenix" }],
     compileOk: true,
     testPartition: "complete",
     modules: [

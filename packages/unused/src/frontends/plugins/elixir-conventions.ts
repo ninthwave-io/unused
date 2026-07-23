@@ -13,7 +13,7 @@ const repositoryScriptRootCache = new WeakMap<
   Promise<GraphContribution>
 >();
 
-const ectoOrigin = { pluginId: "convention:ecto", dependency: "ecto" } as const;
+const ectoOrigin = { pluginId: "convention:ecto", hexPackage: "ecto" } as const;
 const propagate = "propagate-to-result" as const;
 const consume = "consume-data" as const;
 const selector = "invocation-selector" as const;
@@ -42,8 +42,19 @@ const TYPE_CALLBACK_SOURCE =
 /** Semantic summaries owned by the compiled-in Ecto convention plugin. */
 export const ectoElixirAtomRoleSummaryProvider: ElixirAtomRoleSummaryProvider = {
   id: "convention:ecto",
-  dependency: "ecto",
-  auditedVersions: ["3.14.1"],
+  compilerApp: "ecto",
+  otpApp: "ecto",
+  lockKey: "ecto",
+  hexPackage: "ecto",
+  repository: "hexpm",
+  // `ecto-3.14.1.tar`: archive CHECKSUM plus whole-tar/API checksum.
+  auditedReleases: [
+    {
+      version: "3.14.1",
+      innerChecksum: "7b740d87bdf45996aa0c2c2e081640906f10caa7ce5ba328fd294c7d49d0cc6f",
+      outerChecksum: "24b991956796700f467d0a3ef3d303138a3ef9ddddf8b98f43758ee067b20a30",
+    },
+  ],
   summaries: [
     ectoSummary("Ecto.Changeset", "change", 1, {}, ectoCallback([0], CHANGESET_CALLBACK_SOURCE)),
     ectoSummary("Ecto.Changeset", "change", 2, {}, ectoCallback([0, 1], CHANGESET_CALLBACK_SOURCE)),

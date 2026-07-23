@@ -563,14 +563,17 @@ one unsafe target can contain more than one construct.
 
 Convention-owned atom-role summaries are now supplied through one generic,
 validated pre-graph inventory rather than being wired directly into the Elixir
-language plugin. A convention provider has a namespaced `convention:*` id, one
-valid Hex dependency name, one or more exact audited semantic versions, and
-one or more summaries whose origin exactly matches the owning plugin and
-dependency. The inventory rejects malformed or duplicate providers, invalid
-versions and roles, ownership mismatches, and canonical callee collisions with
-either the language registry or another provider before any project boundary
-is analyzed. Registry defects therefore fail loudly; environmental
-non-applicability remains a conservative omission.
+language plugin. A convention provider has a namespaced `convention:*` id;
+separate compiler-application, OTP-application, lock-key, and Hex-package
+identities; the exact `hexpm` repository; immutable audited release records
+containing version plus inner and outer checksums; and summaries whose origin
+matches the owning plugin and Hex package. The inventory rejects malformed or
+duplicate providers, releases, checksums, roles, ownership mismatches, and
+canonical collisions with the language registry before any project boundary
+is analyzed. Dependency-exclusive providers may describe the same callee; if
+more than one is applicable in a project, that callee is omitted rather than
+merged or selected by registration order. Registry defects remain loud while
+environmental non-applicability is a conservative omission.
 
 The repository dispatcher constructs this immutable inventory once from the
 same deterministic built-in convention registry used after graph construction.
@@ -578,26 +581,38 @@ It passes the exact inventory to root-only Elixir analysis and through the
 shared repository context to nested and mixed-boundary analysis. Provider
 availability is consequently independent of repository topology and of a
 convention's later graph-phase `applies` result. Neutral real-compiler coverage
-locks this parity across root, nested, and mixed TypeScript/Elixir layouts. The
-same coverage schema-validates the one-line canonical JSON projection, proves
-supported deletion with an applicable provider, and proves `why` evidence plus
-deletion refusal when an unaudited version conservatively restores the escape.
+locks conservative lock-only refusal across root, nested, and mixed
+TypeScript/Elixir layouts, schema-validates canonical JSON, and proves `why`
+evidence plus deletion refusal. Exact applicable-provider behavior is covered
+with compiler/OTP ownership facts independently of a developer's local Hex
+cache.
 
 Runtime applicability remains deliberately narrower than registration. The
-Elixir frontend builds one dependency set from compiler facts, parses
-`mix.lock` once into exact Hex versions, and activates only providers whose
-declared dependency is present at an audited version. Missing or malformed
-locks, path/git dependencies, unaudited versions, and absent dependencies omit
-the provider and retain the existing escape hazard. Project-owned modules
-continue to defeat dependency-summary matching, so a project cannot spoof a
-reviewed dependency callee. Sparse summaries also remain fail closed: omitted
-argument roles escape rather than acquiring optimistic semantics.
+Elixir frontend reuses the recursive `Mix.Dep.cached/0` inventory already
+needed for isolated builds. Layout inspection consults each existing `.app`
+resource only when its lexical path remains inside the dependency artifact and
+every traversed entry is non-symlink; files must be regular and at most 1 MiB.
+It retains one sanitized recursive compiler/OTP inventory for framework
+detection. A second Hex-only inventory atomically carries the lock key, package,
+version, repository, and checksums attached by Mix to that same dependency.
+A missing, malformed, multi-term, `app: false`, path-escaping, symlinked, or
+identity-mismatched resource cannot activate a provider. Only artifacts
+resolved by Mix through Hex SCM are eligible, preventing a stale Hex-looking
+lock from blessing path or git code. The same-dependency fact requires the
+exact Mix lock key, package atom, version, lowercase inner checksum, `hexpm`
+repository, and lowercase outer checksum before applying an audited release.
+There is no second global-lock join that could cross-pair identities.
+Lock-only, compiler-only,
+cross-paired, duplicate-artifact,
+private-repository, stale/fabricated-checksum, and unaudited evidence omit the
+provider. Explicit aliases work only when the provider separately declares
+every differing identity and every fact agrees. Project-owned modules continue
+to defeat dependency-summary matching. Sparse omitted argument roles escape.
 
 This checkpoint changes no report or JSON schema, claim rule, hazard effect,
 or deletion-plan rule. A provider can only classify value-flow roles; it cannot
-emit or suppress claims. Applicability costs O(lock bytes + dependencies +
-providers + summaries), with one lock parse per Elixir boundary and no
-per-provider filesystem read.
+emit or suppress claims. Applicability costs O(layout artifacts + providers +
+summaries), with no per-provider filesystem read.
 
 Escaping computed-atom producers receive diagnostic attribution without
 retaining per-producer decision sets. A finite reason bitmask is propagated
@@ -662,20 +677,30 @@ The exact Money release inventory is:
 and `1.15.0`.
 
 Every listed release was semantically audited from its exact published Hex
-archive. `0.0.1-dev` is excluded because its overload and validation surface is
-materially different; future versions remain excluded until separately
-audited. The current `1.15.0` archive is byte-identical to upstream tag
+archive. The provider records, for every release, the lowercase archive
+`CHECKSUM` member used as the lock's inner checksum and the whole-tar SHA-256
+used as its outer checksum; each outer value was cross-checked against the Hex
+release API `checksum`. The reproducible public URL patterns are
+`https://repo.hex.pm/tarballs/money-VERSION.tar` and
+`https://hex.pm/api/packages/money/releases/VERSION`. `0.0.1-dev` is excluded
+because its overload and validation surface is materially different; future
+versions remain excluded until separately audited. The current `1.15.0`
+archive is byte-identical to upstream tag
 `v1.15.0` for `lib/money.ex` (SHA-256
 `572da818b1b7a07aa51589ab0682bf20653dd634bd9bef05b40a63a25df61aac`) and
 `lib/money/currency.ex` (SHA-256
 `c6b5874cff82cd143a235ec6eb237fef80e78689dac0fc1f1dec0cb40f80b143`).
-The Hex package checksum is
+Its inner checksum is
+`48ce20e3b0ab774fe8a41713869f70470365b899dcc80c6662c3c639cbe60bb8`
+and its outer checksum is
 `25a0400bd518a0dab4166563f3bd8625376b69da23563070b67fadf363663533`.
 
 Ecto `3.14.1` `lib/ecto/changeset.ex` is byte-identical between its Hex archive
 and upstream tag `v3.14.1` at SHA-256
 `46d8e3e7445ead10cf33811e22af773edfafa80e0e992e91bc48777b0649500d`;
-the Hex package checksum is
+its inner checksum is
+`7b740d87bdf45996aa0c2c2e081640906f10caa7ce5ba328fd294c7d49d0cc6f`
+and its outer checksum is
 `24b991956796700f467d0a3ef3d303138a3ef9ddddf8b98f43758ee067b20a30`.
 Primary evidence is the [Money release inventory](https://hex.pm/api/packages/money),
 [`Money.new/2` documentation](https://hexdocs.pm/money/1.15.0/Money.html#new/2),
@@ -685,11 +710,12 @@ Primary evidence is the [Money release inventory](https://hex.pm/api/packages/mo
 [`add_error/4` documentation](https://hexdocs.pm/ecto/3.14.1/Ecto.Changeset.html#add_error/4),
 and the [tagged Ecto implementation](https://github.com/elixir-ecto/ecto/blob/v3.14.1/lib/ecto/changeset.ex).
 
-Both providers inherit the Phase 1B2B.3 fail-closed contract: exact compiler
-dependency identity plus one structurally valid Hex lock entry at an audited
-version, unique source and compiler-event cardinality, and no project-owned
-module spoof. Missing, malformed, path/git, package-mismatched, development,
-future, or otherwise unaudited lock evidence omits the summary silently.
+Both providers inherit the Phase 1B2B.3 fail-closed contract: one recursively
+inventoried Hex compiler artifact with the exact OTP application resource plus
+one exact lock-key/package/repository/version/checksum record, unique source and
+compiler-event cardinality, and no project-owned module spoof. Missing,
+malformed, duplicated, path/git, package-mismatched, stale-checksum,
+development, future, or otherwise unaudited evidence omits the summary.
 
 Neutral real-Mix fixtures prove compiler-confirmed static result propagation to
 a later data terminal, result escape through an opaque downstream call, exact `why` evidence,

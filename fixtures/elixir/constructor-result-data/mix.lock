@@ -1,4 +1,4 @@
 %{
-  "ecto": {:hex, :ecto, "3.14.1", "neutral-checksum", [:mix], [], "hexpm", "neutral-outer-checksum"},
-  "money": {:hex, :money, "1.15.0", "neutral-checksum", [:mix], [], "hexpm", "neutral-outer-checksum"},
+  "ecto": {:hex, :ecto, "3.14.1", "7b740d87bdf45996aa0c2c2e081640906f10caa7ce5ba328fd294c7d49d0cc6f", [:mix], [], "hexpm", "24b991956796700f467d0a3ef3d303138a3ef9ddddf8b98f43758ee067b20a30"},
+  "money": {:hex, :money, "1.15.0", "48ce20e3b0ab774fe8a41713869f70470365b899dcc80c6662c3c639cbe60bb8", [:mix], [], "hexpm", "25a0400bd518a0dab4166563f3bd8625376b69da23563070b67fadf363663533"},
 }

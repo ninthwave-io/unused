@@ -298,7 +298,13 @@ export function extractElixirScriptFacts(
         opaqueCode.slice(start + match[0].length);
     }
 
-    const rootReason = standaloneRootReason(projectDir, file, content, code, traceResult.deps);
+    const rootReason = standaloneRootReason(
+      projectDir,
+      file,
+      content,
+      code,
+      (traceResult.dependencyApplications ?? []).map((dependency) => dependency.compilerApp),
+    );
     if (rootReason !== null) {
       nodes.push({
         kind: "entrypoint",

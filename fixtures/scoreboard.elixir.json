@@ -12,14 +12,14 @@
   "unlabelledClaims": 0,
   "byConfidenceTier": {
     "high": {
-      "claims": 28,
-      "truePositives": 28,
+      "claims": 27,
+      "truePositives": 27,
       "falsePositives": 0,
       "confidenceViolations": 0
     },
     "medium": {
-      "claims": 16,
-      "truePositives": 16,
+      "claims": 17,
+      "truePositives": 17,
       "falsePositives": 0,
       "confidenceViolations": 0
     },

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  MONEY_AUDITED_RELEASES,
   MONEY_AUDITED_VERSIONS,
   moneyElixirAtomRoleSummaryProvider,
   moneyElixirConventionPlugin,
@@ -47,17 +48,21 @@ describe("moneyElixirConventionPlugin", () => {
       elixirAtomRoleSummaryProvider: moneyElixirAtomRoleSummaryProvider,
     });
     expect(MONEY_AUDITED_VERSIONS).toEqual(EXPECTED_VERSIONS);
-    expect(moneyElixirAtomRoleSummaryProvider).toEqual({
+    expect(moneyElixirAtomRoleSummaryProvider).toMatchObject({
       id: "convention:money",
-      dependency: "money",
-      auditedVersions: EXPECTED_VERSIONS,
+      compilerApp: "money",
+      otpApp: "money",
+      lockKey: "money",
+      hexPackage: "money",
+      repository: "hexpm",
+      auditedReleases: MONEY_AUDITED_RELEASES,
       summaries: [
         {
           module: "Money",
           name: "new",
           arity: 2,
           arguments: { 1: "propagate-to-result" },
-          origin: { pluginId: "convention:money", dependency: "money" },
+          origin: { pluginId: "convention:money", hexPackage: "money" },
         },
       ],
     });
@@ -67,6 +72,11 @@ describe("moneyElixirConventionPlugin", () => {
 
   it("excludes the materially different development release and future versions", () => {
     expect(MONEY_AUDITED_VERSIONS).toHaveLength(30);
+    expect(MONEY_AUDITED_RELEASES).toHaveLength(30);
+    for (const audited of MONEY_AUDITED_RELEASES) {
+      expect(audited.innerChecksum).toMatch(/^[0-9a-f]{64}$/);
+      expect(audited.outerChecksum).toMatch(/^[0-9a-f]{64}$/);
+    }
     expect(MONEY_AUDITED_VERSIONS).not.toContain("0.0.1-dev");
     expect(MONEY_AUDITED_VERSIONS).not.toContain("1.15.1");
   });

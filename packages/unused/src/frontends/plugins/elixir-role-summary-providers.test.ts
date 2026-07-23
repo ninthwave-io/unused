@@ -8,7 +8,12 @@ import { BUILT_IN_PLUGINS } from "./builtins.js";
 import { collectElixirAtomRoleSummaryProviders } from "./elixir-role-summary-providers.js";
 import type { ConventionPlugin } from "./types.js";
 
-const origin = { pluginId: "convention:neutral", dependency: "neutral_dep" } as const;
+const origin = { pluginId: "convention:neutral", hexPackage: "neutral_dep" } as const;
+const auditedRelease = (version = "1.2.3") => ({
+  version,
+  innerChecksum: "1".repeat(64),
+  outerChecksum: "2".repeat(64),
+});
 const summary: ElixirAtomRoleSummary = {
   module: "Neutral.Dependency",
   name: "consume",
@@ -18,8 +23,12 @@ const summary: ElixirAtomRoleSummary = {
 };
 const provider: ElixirAtomRoleSummaryProvider = {
   id: "convention:neutral",
-  dependency: "neutral_dep",
-  auditedVersions: ["1.2.3"],
+  compilerApp: "neutral_dep",
+  otpApp: "neutral_dep",
+  lockKey: "neutral_dep",
+  hexPackage: "neutral_dep",
+  repository: "hexpm",
+  auditedReleases: [auditedRelease()],
   summaries: [summary],
 };
 
@@ -47,8 +56,8 @@ describe("Elixir atom role summary provider inventory", () => {
       (plugin): plugin is ConventionPlugin => plugin.kind === "convention",
     );
     expect(collectElixirAtomRoleSummaryProviders(conventions)).toMatchObject([
-      { id: "convention:ecto", dependency: "ecto" },
-      { id: "convention:money", dependency: "money" },
+      { id: "convention:ecto", compilerApp: "ecto", hexPackage: "ecto", otpApp: "ecto" },
+      { id: "convention:money", compilerApp: "money", hexPackage: "money", otpApp: "money" },
     ]);
   });
 
@@ -76,13 +85,35 @@ describe("Elixir atom role summary provider inventory", () => {
 
   it.each([
     ["malformed id", { ...provider, id: "ecto" as never }, /invalid.*provider id/],
-    ["malformed dependency", { ...provider, dependency: "Neutral-Dep" }, /invalid.*dependency/],
-    ["empty versions", { ...provider, auditedVersions: [] }, /no audited versions/],
-    ["version range", { ...provider, auditedVersions: ["~> 1.2"] }, /invalid audited/],
+    [
+      "malformed compiler app",
+      { ...provider, compilerApp: "Neutral-Dep" },
+      /invalid.*compiler app/,
+    ],
+    ["malformed OTP app", { ...provider, otpApp: "Neutral-Dep" }, /invalid.*OTP app/],
+    ["malformed lock key", { ...provider, lockKey: "Neutral-Dep" }, /invalid.*lock key/],
+    ["malformed package", { ...provider, hexPackage: "Neutral-Dep" }, /invalid.*Hex package/],
+    ["private repository", { ...provider, repository: "private" }, /invalid.*repository/],
+    ["empty releases", { ...provider, auditedReleases: [] }, /no audited releases/],
+    [
+      "version range",
+      { ...provider, auditedReleases: [auditedRelease("~> 1.2")] },
+      /invalid audited/,
+    ],
     [
       "duplicate version",
-      { ...provider, auditedVersions: ["1.2.3", "1.2.3"] },
+      { ...provider, auditedReleases: [auditedRelease(), auditedRelease()] },
       /duplicate audited/,
+    ],
+    [
+      "invalid inner checksum",
+      { ...provider, auditedReleases: [{ ...auditedRelease(), innerChecksum: "checksum" }] },
+      /invalid audited.*checksum/,
+    ],
+    [
+      "invalid outer checksum",
+      { ...provider, auditedReleases: [{ ...auditedRelease(), outerChecksum: "A".repeat(64) }] },
+      /invalid audited.*checksum/,
     ],
     ["empty summaries", { ...provider, summaries: [] }, /no summaries/],
     [
@@ -110,7 +141,7 @@ describe("Elixir atom role summary provider inventory", () => {
       {
         ...provider,
         summaries: [
-          { ...summary, origin: { pluginId: "convention:neutral", dependency: "other_dep" } },
+          { ...summary, origin: { pluginId: "convention:neutral", hexPackage: "other_dep" } },
         ],
       },
       /not owned/,
@@ -153,33 +184,35 @@ describe("Elixir atom role summary provider inventory", () => {
     ).toThrow(message as RegExp);
   });
 
-  it("rejects duplicate providers and provider-to-provider canonical collisions", () => {
+  it("rejects duplicate providers but permits dependency-exclusive canonical collisions", () => {
     expect(() => validateElixirAtomRoleSummaryProviders([provider, provider])).toThrow(
       /duplicate Elixir atom role summary provider/,
     );
     const other = providerWith("convention:other", "other_dep", summary.module);
-    expect(() => validateElixirAtomRoleSummaryProviders([provider, other])).toThrow(
-      /duplicate Elixir atom role summary/,
-    );
+    expect(() => validateElixirAtomRoleSummaryProviders([provider, other])).not.toThrow();
   });
 });
 
 function providerWith(
   id: `convention:${string}`,
-  dependency: string,
+  hexPackage: string,
   module: string,
 ): ElixirAtomRoleSummaryProvider {
   return {
     id,
-    dependency,
-    auditedVersions: ["1.0.0"],
+    compilerApp: hexPackage,
+    otpApp: hexPackage,
+    lockKey: hexPackage,
+    hexPackage,
+    repository: "hexpm",
+    auditedReleases: [auditedRelease("1.0.0")],
     summaries: [
       {
         module,
         name: "consume",
         arity: 1,
         arguments: { 0: "consume-data" },
-        origin: { pluginId: id, dependency },
+        origin: { pluginId: id, hexPackage },
       },
     ],
   };

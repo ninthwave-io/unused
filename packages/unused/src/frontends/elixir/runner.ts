@@ -65,6 +65,7 @@ import {
   stableTraceResult,
   validateProductionTraceOwnership,
   validateTestTraceOwnership,
+  withDependencyApplications,
 } from "./trace-merge.js";
 import {
   decodeTraceRecord,
@@ -202,16 +203,36 @@ export function runTracer(projectDir: string, options: RunTracerOptions = {}): T
       parseTraceOutput(raw),
       productionLayout.sourcePaths,
     );
+    const productionWithDependencies = withDependencyApplications(
+      production,
+      productionLayout.dependencyArtifacts.map((dependency) => ({
+        compilerApp: dependency.app,
+        otpApp: dependency.otpApp,
+      })),
+      productionLayout.dependencyArtifacts
+        .filter(
+          (
+            dependency,
+          ): dependency is typeof dependency & {
+            readonly lockedRelease: NonNullable<typeof dependency.lockedRelease>;
+          } => dependency.hex && dependency.lockedRelease !== null,
+        )
+        .map((dependency) => ({
+          compilerApp: dependency.app,
+          otpApp: dependency.otpApp,
+          ...dependency.lockedRelease,
+        })),
+    );
     let testFiles: readonly string[];
     try {
       testFiles = discoverTestFiles(projectDir);
     } catch {
-      trace = mergeTraceResults(production, incompleteTestTrace("layout"));
+      trace = mergeTraceResults(productionWithDependencies, incompleteTestTrace("layout"));
       testFiles = [];
     }
     if (trace === undefined) {
       if (testFiles.length === 0) {
-        trace = stableTraceResult(production);
+        trace = stableTraceResult(productionWithDependencies);
       } else {
         const test = runTestTrace({
           command,
@@ -219,12 +240,12 @@ export function runTracer(projectDir: string, options: RunTracerOptions = {}): T
           workDir,
           scriptPath,
           timeoutMs,
-          production,
+          production: productionWithDependencies,
           productionLayout,
           testFiles,
           cargoEnvironment,
         });
-        trace = mergeTraceResults(production, test);
+        trace = mergeTraceResults(productionWithDependencies, test);
       }
     }
   } catch (error) {

@@ -12,13 +12,17 @@ import {
   readFileSync,
   readlinkSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { moneyElixirAtomRoleSummaryProvider } from "../plugins/money-conventions.js";
+import type { ElixirAtomRoleSummaryProvider } from "./atom-role-summaries.js";
 import { inspectMixLayout } from "./mix-isolation.js";
 import { runTracer } from "./runner.js";
+import { extractElixirRuntimeConventions } from "./runtime-references.js";
 import { TRACER_SCRIPT } from "./tracer-script.js";
 
 const MIX_AVAILABLE = spawnSync("mix", ["--version"], { encoding: "utf8" }).status === 0;
@@ -698,12 +702,208 @@ end
         expect.objectContaining({
           app: "neutral_app_false_dep",
           appResource: null,
+          hex: false,
+          otpApp: null,
           required: true,
         }),
       ]);
       const trace = runTracer(root);
       expect(trace.testPartition).toBe("complete");
     });
+  });
+
+  it("consults dependency application resources without trusting malformed or wrong identities", {
+    timeout: 60_000,
+  }, () => {
+    const root = project("unused-ex-app-identity-");
+    roots.push(root);
+    write(
+      root,
+      "mix.exs",
+      basicMix(
+        "neutral_app_identity_host",
+        ', deps: [{:neutral_app_identity_dep, path: "neutral_app_identity_dep"}]',
+      ),
+    );
+    write(root, "lib/host.ex", "defmodule NeutralAppIdentityHost do\nend\n");
+    write(root, "neutral_app_identity_dep/mix.exs", basicMix("neutral_app_identity_dep"));
+    write(root, "neutral_app_identity_dep/lib/dep.ex", "defmodule NeutralAppIdentityDep do\nend\n");
+
+    const buildRoot = join(root, "app-identity-build");
+    expectMix(root, ["deps.compile"], { MIX_BUILD_ROOT: buildRoot });
+    expectMix(root, ["compile"], { MIX_BUILD_ROOT: buildRoot });
+    const appResource = join(
+      buildRoot,
+      "dev",
+      "lib",
+      "neutral_app_identity_dep",
+      "ebin",
+      "neutral_app_identity_dep.app",
+    );
+    const validApplication = readFileSync(appResource);
+
+    withProcessEnv("MIX_BUILD_ROOT", buildRoot, () => {
+      const inspect = () =>
+        inspectMixLayout("mix", root, join(root, "identity-inspection"), 30_000)
+          .dependencyArtifacts[0];
+      expect(inspect()).toMatchObject({
+        app: "neutral_app_identity_dep",
+        hex: false,
+        otpApp: "neutral_app_identity_dep",
+      });
+
+      const outsideResource = join(root, "outside-neutral-app.app");
+      writeFileSync(outsideResource, validApplication);
+      rmSync(appResource);
+      symlinkSync(outsideResource, appResource);
+      expect(inspect()).toMatchObject({ otpApp: null });
+      rmSync(appResource);
+      writeFileSync(appResource, validApplication);
+
+      writeFileSync(appResource, "not an application term\n", "utf8");
+      expect(inspect()).toMatchObject({ otpApp: null });
+
+      writeFileSync(appResource, "{:application, :other_identity, []}.\n", "utf8");
+      expect(inspect()).toMatchObject({ otpApp: null });
+
+      rmSync(appResource);
+      expect(inspect()).toMatchObject({ otpApp: null });
+    });
+  });
+
+  it("inventories recursive compiler and OTP application ownership once", {
+    timeout: 60_000,
+  }, () => {
+    const root = project("unused-ex-recursive-apps-");
+    roots.push(root);
+    write(
+      root,
+      "mix.exs",
+      basicMix(
+        "neutral_recursive_host",
+        ', deps: [{:neutral_recursive_bridge, path: "neutral_recursive_bridge"}]',
+      ),
+    );
+    write(root, "lib/host.ex", "defmodule NeutralRecursiveHost do\nend\n");
+    write(
+      root,
+      "neutral_recursive_bridge/mix.exs",
+      basicMix(
+        "neutral_recursive_bridge",
+        ', deps: [{:neutral_recursive_leaf, path: "../neutral_recursive_leaf"}]',
+      ),
+    );
+    write(
+      root,
+      "neutral_recursive_bridge/lib/bridge.ex",
+      "defmodule NeutralRecursiveBridge do\nend\n",
+    );
+    write(root, "neutral_recursive_leaf/mix.exs", basicMix("neutral_recursive_leaf"));
+    write(root, "neutral_recursive_leaf/lib/leaf.ex", "defmodule NeutralRecursiveLeaf do\nend\n");
+
+    const buildRoot = join(root, "recursive-build");
+    expectMix(root, ["deps.compile"], { MIX_BUILD_ROOT: buildRoot });
+    expectMix(root, ["compile"], { MIX_BUILD_ROOT: buildRoot });
+    withProcessEnv("MIX_BUILD_ROOT", buildRoot, () => {
+      const layout = inspectMixLayout("mix", root, join(root, "recursive-inspection"), 30_000);
+      expect(
+        layout.dependencyArtifacts.map(({ app, hex, otpApp }) => ({ app, hex, otpApp })),
+      ).toEqual([
+        { app: "neutral_recursive_bridge", hex: false, otpApp: "neutral_recursive_bridge" },
+        { app: "neutral_recursive_leaf", hex: false, otpApp: "neutral_recursive_leaf" },
+      ]);
+    });
+  });
+
+  it("atomically joins a real Hex Mix dependency artifact to its exact aliased lock", {
+    timeout: 60_000,
+  }, () => {
+    const root = project("unused-ex-hex-provider-");
+    roots.push(root);
+    write(
+      root,
+      "mix.exs",
+      basicMix(
+        "neutral_hex_host",
+        ', deps: [{:neutral_money_alias, "1.15.0", hex: :money, runtime: false}]',
+      ),
+    );
+    write(
+      root,
+      "mix.lock",
+      `%{
+  "neutral_money_alias": {:hex, :money, "1.15.0", "48ce20e3b0ab774fe8a41713869f70470365b899dcc80c6662c3c639cbe60bb8", [:mix], [], "hexpm", "25a0400bd518a0dab4166563f3bd8625376b69da23563070b67fadf363663533"},
+}
+`,
+    );
+    write(
+      root,
+      "lib/host.ex",
+      "defmodule NeutralHexHost do\n  def run(raw), do: Money.new(100, String.to_atom(raw)) |> Map.fetch!(:currency) |> Atom.to_string()\nend\n",
+    );
+    write(
+      root,
+      "deps/neutral_money_alias/mix.exs",
+      basicMix("neutral_money_alias").replace('version: "0.1.0"', 'version: "1.15.0"'),
+    );
+    write(
+      root,
+      "deps/neutral_money_alias/lib/money.ex",
+      "defmodule Money do\n  def new(amount, currency), do: %{amount: amount, currency: currency}\nend\n",
+    );
+    // Public Hex SCM metadata for money 1.15.0; package source remains independently synthetic.
+    writeFileSync(
+      join(root, "deps/neutral_money_alias/.hex"),
+      Buffer.from(
+        "g2gCaAN3A2hleGECYQB0AAAABncEbmFtZW0AAAAFbW9uZXl3B3ZlcnNpb25tAAAABjEuMTUuMHcIbWFuYWdlcnNsAAAAAXcDbWl4ancOaW5uZXJfY2hlY2tzdW1tAAAAQDQ4Y2UyMGUzYjBhYjc3NGZlOGE0MTcxMzg2OWY3MDQ3MDM2NWI4OTlkY2M4MGM2NjYyYzNjNjM5Y2JlNjBiYjh3Dm91dGVyX2NoZWNrc3VtbQAAAEAyNWEwNDAwYmQ1MThhMGRhYjQxNjY1NjNmM2JkODYyNTM3NmI2OWRhMjM1NjMwNzBiNjdmYWRmMzYzNjYzNTMzdwRyZXBvbQAAAAVoZXhwbQ==",
+        "base64",
+      ),
+    );
+
+    expectMix(root, ["deps.compile", "neutral_money_alias"]);
+    expectMix(root, ["compile"]);
+    const trace = runTracer(root);
+    expect(trace.hexDependencyApplications).toEqual([
+      {
+        compilerApp: "neutral_money_alias",
+        otpApp: "neutral_money_alias",
+        lockKey: "neutral_money_alias",
+        hexPackage: "money",
+        version: "1.15.0",
+        innerChecksum: "48ce20e3b0ab774fe8a41713869f70470365b899dcc80c6662c3c639cbe60bb8",
+        repository: "hexpm",
+        outerChecksum: "25a0400bd518a0dab4166563f3bd8625376b69da23563070b67fadf363663533",
+      },
+    ]);
+
+    const aliasProvider: ElixirAtomRoleSummaryProvider = {
+      ...moneyElixirAtomRoleSummaryProvider,
+      id: "convention:neutral-money-alias",
+      compilerApp: "neutral_money_alias",
+      otpApp: "neutral_money_alias",
+      lockKey: "neutral_money_alias",
+      summaries: moneyElixirAtomRoleSummaryProvider.summaries.map((summary) => ({
+        ...summary,
+        origin: {
+          pluginId: "convention:neutral-money-alias",
+          hexPackage: "money",
+        },
+      })),
+    };
+    const flow = (candidate: typeof trace) =>
+      extractElixirRuntimeConventions(root, candidate, [aliasProvider]).dynamicDispatches.find(
+        (fact) => fact.factKind === "computed-atom" && fact.fromFun === "run/1",
+      );
+    expect(flow(trace)).toMatchObject({ factKind: "computed-atom", flow: "data" });
+    expect(
+      flow({
+        ...trace,
+        hexDependencyApplications: (trace.hexDependencyApplications ?? []).map((application) => ({
+          ...application,
+          lockKey: "money",
+        })),
+      }),
+    ).toMatchObject({ factKind: "computed-atom", flow: "escape" });
   });
 
   it("requires an application resource for an ordinary dependency", { timeout: 60_000 }, () => {
@@ -1055,6 +1255,31 @@ end
       const partial = runTracer(root);
       expect(partial.testPartition).toBe("incomplete");
       expect(partial.testPartitionReason).toBe("artifacts");
+
+      const outsideResource = join(buildRoot, "test", "lib", "outside.app");
+      copyFileSync(
+        join(
+          buildRoot,
+          "dev",
+          "lib",
+          "neutral_custom_app_dep",
+          "custom",
+          "neutral_custom_app_dep.app",
+        ),
+        outsideResource,
+      );
+      write(
+        root,
+        "mix.exs",
+        basicMix(
+          "neutral_custom_app_host",
+          ', deps: [{:neutral_custom_app_dep, path: "neutral_custom_app_dep", runtime: false, app: "../outside.app"}]',
+        ),
+      );
+      expect(
+        inspectMixLayout("mix", root, join(root, "inspect-escape"), 30_000, "test")
+          .dependencyArtifacts[0],
+      ).toMatchObject({ appResource: outsideResource, otpApp: null });
     });
   });
 

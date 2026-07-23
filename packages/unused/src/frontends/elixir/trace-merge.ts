@@ -3,7 +3,9 @@
 import { isAbsolute } from "node:path";
 import { ElixirCompileError } from "./errors.js";
 import type {
+  DependencyApplication,
   FunctionRecord,
+  HexDependencyApplication,
   ModuleRecord,
   TestPartitionIncompleteReason,
   TestTraceResult,
@@ -24,6 +26,20 @@ import {
 // weakly keyed by the validated trace: it is neither serialized nor retained
 // after the analysis, and ordinary owner-sourced events allocate no set.
 const nonOwnerProductionEventSources = new WeakMap<TraceResult, ReadonlySet<string>>();
+
+/** Attach sanitized layout facts without dropping validated non-owner provenance. */
+export function withDependencyApplications(
+  production: TraceResult,
+  dependencyApplications: readonly DependencyApplication[],
+  hexDependencyApplications: readonly HexDependencyApplication[],
+): TraceResult {
+  const enriched = { ...production, dependencyApplications, hexDependencyApplications };
+  const nonOwnerSources = nonOwnerProductionEventSources.get(production);
+  if (nonOwnerSources !== undefined) {
+    nonOwnerProductionEventSources.set(enriched, nonOwnerSources);
+  }
+  return enriched;
+}
 
 export function incompleteTestTrace(reason: TestPartitionIncompleteReason): TestTraceResult {
   return {

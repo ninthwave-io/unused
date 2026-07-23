@@ -22,9 +22,11 @@ describe("ectoElixirConventionPlugin", () => {
       elixirAtomRoleSummaryProvider: ectoElixirAtomRoleSummaryProvider,
     });
     expect(ectoElixirAtomRoleSummaryProvider.summaries.length).toBeGreaterThan(0);
-    expect(ectoElixirAtomRoleSummaryProvider.auditedVersions).toEqual(["3.14.1"]);
+    expect(
+      ectoElixirAtomRoleSummaryProvider.auditedReleases.map((release) => release.version),
+    ).toEqual(["3.14.1"]);
     for (const summary of ectoElixirAtomRoleSummaryProvider.summaries) {
-      expect(summary.origin).toEqual({ pluginId: "convention:ecto", dependency: "ecto" });
+      expect(summary.origin).toEqual({ pluginId: "convention:ecto", hexPackage: "ecto" });
     }
     expect(
       ectoElixirAtomRoleSummaryProvider.summaries

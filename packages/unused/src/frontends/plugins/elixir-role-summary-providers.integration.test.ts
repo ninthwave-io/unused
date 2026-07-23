@@ -26,7 +26,7 @@ afterEach(async () => {
 });
 
 describe.skipIf(!isMixAvailable())("Elixir semantic-provider topology parity", () => {
-  it("uses the same neutral provider for root, nested, and mixed boundaries", {
+  it("refuses the same lock-only neutral provider in root, nested, and mixed boundaries", {
     timeout: 120_000,
   }, async () => {
     const outcomes = [];
@@ -81,7 +81,11 @@ describe.skipIf(!isMixAvailable())("Elixir semantic-provider topology parity", (
           query: "lib/neutral_topology/dead.ex",
           hazardEvaluations: analysis.hazardEvaluations,
         });
-        expect(safe).toMatchObject({ outcome: "dead", confidence: "high", hazards: [] });
+        expect(safe).toMatchObject({
+          outcome: "dead",
+          confidence: "medium",
+          hazards: [expect.objectContaining({ hazardClass: "elixir-computed-atom-escape" })],
+        });
         if (safe.outcome !== "dead") throw new Error("expected neutral dead control");
         expect(
           computeDeletionPlan({
@@ -90,7 +94,7 @@ describe.skipIf(!isMixAvailable())("Elixir semantic-provider topology parity", (
             subject: safe.subject,
             hazardEvaluations: analysis.hazardEvaluations,
           }),
-        ).toMatchObject({ supported: true });
+        ).toMatchObject({ supported: false, stages: [] });
 
         await writeNeutralLock(project, "2.0.0");
         const conservative = await analyzeProjectAutoWithGraph(
@@ -127,24 +131,34 @@ describe.skipIf(!isMixAvailable())("Elixir semantic-provider topology parity", (
     }
 
     expect(outcomes).toEqual([
-      { topology: "root", confidence: "high", verdict: "unused", atomHazards: 0 },
-      { topology: "nested", confidence: "high", verdict: "unused", atomHazards: 0 },
-      { topology: "mixed", confidence: "high", verdict: "unused", atomHazards: 0 },
+      { topology: "root", confidence: "medium", verdict: "unused", atomHazards: 1 },
+      { topology: "nested", confidence: "medium", verdict: "unused", atomHazards: 1 },
+      { topology: "mixed", confidence: "medium", verdict: "unused", atomHazards: 1 },
     ]);
   });
 });
 
 const neutralProvider: ElixirAtomRoleSummaryProvider = {
   id: "convention:neutral",
-  dependency: "neutral_dep",
-  auditedVersions: ["1.0.0"],
+  compilerApp: "neutral_dep",
+  otpApp: "neutral_dep",
+  lockKey: "neutral_dep",
+  hexPackage: "neutral_dep",
+  repository: "hexpm",
+  auditedReleases: [
+    {
+      version: "1.0.0",
+      innerChecksum: "1".repeat(64),
+      outerChecksum: "2".repeat(64),
+    },
+  ],
   summaries: [
     {
       module: "String",
       name: "upcase",
       arity: 1,
       arguments: { 0: "consume-data" },
-      origin: { pluginId: "convention:neutral", dependency: "neutral_dep" },
+      origin: { pluginId: "convention:neutral", hexPackage: "neutral_dep" },
     },
   ],
 };
@@ -205,7 +219,7 @@ async function writeNeutralLock(project: string, version: string): Promise<void>
   await writeFile(
     join(project, "mix.lock"),
     `%{
-  "neutral_dep": {:hex, :neutral_dep, "${version}", "neutral-checksum", [:mix], [], "hexpm", "neutral-outer-checksum"},
+  "neutral_dep": {:hex, :neutral_dep, "${version}", "${"1".repeat(64)}", [:mix], [], "hexpm", "${"2".repeat(64)}"},
 }
 `,
   );

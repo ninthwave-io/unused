@@ -656,6 +656,7 @@ function trace(deps: readonly string[] = []): TraceResult {
     ],
     appMod: null,
     deps,
+    dependencyApplications: deps.map((app) => ({ compilerApp: app, otpApp: app })),
     compileOk: true,
     testPartition: "complete",
   };

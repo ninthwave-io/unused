@@ -8,7 +8,7 @@ import {
   moneyElixirAtomRoleSummaryProvider,
 } from "../plugins/money-conventions.js";
 import type { ElixirAtomRoleSummaryProvider } from "./atom-role-summaries.js";
-import type { ModuleRecord, TraceEvent, TraceResult } from "./events.js";
+import type { HexDependencyApplication, ModuleRecord, TraceEvent, TraceResult } from "./events.js";
 import { extractElixirRuntimeConventions } from "./runtime-references.js";
 
 const providers: readonly ElixirAtomRoleSummaryProvider[] = [
@@ -75,6 +75,14 @@ describe("audited dependency constructor-result summaries", () => {
     const trace: TraceResult = {
       appMod: null,
       deps: ["ecto", "money"],
+      dependencyApplications: [
+        { compilerApp: "ecto", otpApp: "ecto" },
+        { compilerApp: "money", otpApp: "money" },
+      ],
+      hexDependencyApplications: [
+        providerApplication(ectoElixirAtomRoleSummaryProvider, "3.14.1"),
+        providerApplication(moneyElixirAtomRoleSummaryProvider, "1.15.0"),
+      ],
       compileOk: true,
       testPartition: "complete",
       modules: [mod("NeutralConstructors.Flow", file)],
@@ -149,30 +157,65 @@ describe("audited dependency constructor-result summaries", () => {
       writeFileSync(join(root, file), source);
       for (const version of MONEY_AUDITED_VERSIONS) {
         writeFileSync(join(root, "mix.lock"), dependencyLock(version));
-        expect(flow(trace), version).toBe("data");
+        expect(
+          flow({
+            ...trace,
+            hexDependencyApplications: [
+              providerApplication(moneyElixirAtomRoleSummaryProvider, version),
+            ],
+          }),
+          version,
+        ).toBe("data");
       }
 
       const refused = [
-        { lock: dependencyLock("0.0.1-dev"), trace },
-        { lock: dependencyLock("1.15.1"), trace },
-        { lock: dependencyLock("1.15.0"), trace: { ...trace, deps: [] } },
-        { lock: '%{\n  "money": {:path, "deps/money"}\n}\n', trace },
+        {
+          lock: dependencyLock("0.0.1-dev"),
+          trace: {
+            ...trace,
+            hexDependencyApplications: [
+              providerApplication(moneyElixirAtomRoleSummaryProvider, "0.0.1-dev"),
+            ],
+          },
+        },
+        {
+          lock: dependencyLock("1.15.1"),
+          trace: {
+            ...trace,
+            hexDependencyApplications: [
+              providerApplication(moneyElixirAtomRoleSummaryProvider, "1.15.1"),
+            ],
+          },
+        },
+        { lock: dependencyLock("1.15.0"), trace: { ...trace, hexDependencyApplications: [] } },
+        {
+          lock: '%{\n  "money": {:path, "deps/money"}\n}\n',
+          trace: { ...trace, hexDependencyApplications: [] },
+        },
         {
           lock: '%{\n  "money": {:git, "https://example.invalid/money.git", "ref", []}\n}\n',
-          trace,
+          trace: { ...trace, hexDependencyApplications: [] },
         },
         {
           lock: '%{\n  "money": {:hex, :other_money, "1.15.0", "checksum", [:mix], [], "hexpm", "outer"}\n}\n',
-          trace,
+          trace: {
+            ...trace,
+            hexDependencyApplications: [
+              {
+                ...providerApplication(moneyElixirAtomRoleSummaryProvider, "1.15.0"),
+                hexPackage: "other_money",
+              },
+            ],
+          },
         },
-        { lock: "malformed", trace },
+        { lock: "malformed", trace: { ...trace, hexDependencyApplications: [] } },
       ];
       for (const variant of refused) {
         writeFileSync(join(root, "mix.lock"), variant.lock);
         expect(flow(variant.trace)).toBe("escape");
       }
       rmSync(join(root, "mix.lock"));
-      expect(flow(trace)).toBe("escape");
+      expect(flow({ ...trace, hexDependencyApplications: [] })).toBe("escape");
 
       writeFileSync(join(root, "mix.lock"), dependencyLock("1.15.0"));
       expect(flow({ ...trace, modules: [...trace.modules, mod("Money", file)] })).toBe("escape");
@@ -194,6 +237,8 @@ describe("audited dependency constructor-result summaries", () => {
     const trace: TraceResult = {
       appMod: null,
       deps: ["ecto"],
+      dependencyApplications: [{ compilerApp: "ecto", otpApp: "ecto" }],
+      hexDependencyApplications: [providerApplication(ectoElixirAtomRoleSummaryProvider, "3.14.1")],
       compileOk: true,
       testPartition: "complete",
       modules: [mod("NeutralEcto.Spoof", file)],
@@ -254,6 +299,10 @@ describe("audited dependency constructor-result summaries", () => {
         const trace: TraceResult = {
           appMod: null,
           deps: ["money"],
+          dependencyApplications: [{ compilerApp: "money", otpApp: "money" }],
+          hexDependencyApplications: [
+            providerApplication(moneyElixirAtomRoleSummaryProvider, "1.15.0"),
+          ],
           compileOk: true,
           testPartition: "complete",
           modules: [mod("NeutralMoney.Scale", file)],
@@ -287,6 +336,8 @@ function moneyTrace(file: string): TraceResult {
   return {
     appMod: null,
     deps: ["money"],
+    dependencyApplications: [{ compilerApp: "money", otpApp: "money" }],
+    hexDependencyApplications: [providerApplication(moneyElixirAtomRoleSummaryProvider, "1.15.0")],
     compileOk: true,
     testPartition: "complete",
     modules: [mod("NeutralMoney.Version", file)],
@@ -347,5 +398,27 @@ function dependencyLock(money?: string, ecto?: string): string {
 }
 
 function hexTuple(dependency: string, version: string): string {
-  return `{:hex, :${dependency}, "${version}", "neutral-checksum", [:mix], [], "hexpm", "neutral-outer-checksum"}`;
+  const provider =
+    dependency === "money" ? moneyElixirAtomRoleSummaryProvider : ectoElixirAtomRoleSummaryProvider;
+  const audited = provider.auditedReleases.find((release) => release.version === version);
+  const inner = audited?.innerChecksum ?? "1".repeat(64);
+  const outer = audited?.outerChecksum ?? "2".repeat(64);
+  return `{:hex, :${dependency}, "${version}", "${inner}", [:mix], [], "hexpm", "${outer}"}`;
+}
+
+function providerApplication(
+  provider: ElixirAtomRoleSummaryProvider,
+  version: string,
+): HexDependencyApplication {
+  const audited = provider.auditedReleases.find((release) => release.version === version);
+  return {
+    compilerApp: provider.compilerApp,
+    otpApp: provider.otpApp,
+    lockKey: provider.lockKey,
+    hexPackage: provider.hexPackage,
+    version,
+    innerChecksum: audited?.innerChecksum ?? "1".repeat(64),
+    repository: provider.repository,
+    outerChecksum: audited?.outerChecksum ?? "2".repeat(64),
+  };
 }

@@ -80,6 +80,24 @@ export interface DepsRecord {
   readonly names: readonly string[];
 }
 
+/** Sanitized recursive compiler dependency ownership from Mix layout inspection. */
+export interface DependencyApplication {
+  /** Application identity used by Mix for the compiled dependency artifact. */
+  readonly compilerApp: string;
+  /** Identity declared by the artifact's `.app` resource, or `null` when unprovable. */
+  readonly otpApp: string | null;
+}
+
+/** Exact Hex lock identity carried by the same Mix dependency as its compiled artifact. */
+export interface HexDependencyApplication extends DependencyApplication {
+  readonly lockKey: string;
+  readonly hexPackage: string;
+  readonly version: string;
+  readonly innerChecksum: string;
+  readonly repository: string;
+  readonly outerChecksum: string;
+}
+
 export interface MetaRecord {
   readonly k: "meta";
   readonly compile_ok: boolean;
@@ -124,8 +142,12 @@ export interface TraceResult {
   readonly functions: readonly FunctionRecord[];
   /** OTP application callback module (`inspect`-form), or `null` when the project declares none. */
   readonly appMod: string | null;
-  /** Declared dependency app names (for Phoenix detection). */
+  /** Legacy direct dependency names from the compiler child; not provider evidence. */
   readonly deps: readonly string[];
+  /** Recursive compiler/OTP ownership facts for framework convention detection. */
+  readonly dependencyApplications?: readonly DependencyApplication[];
+  /** Hex-SCM subset eligible to pair with exact provider lock evidence. */
+  readonly hexDependencyApplications?: readonly HexDependencyApplication[];
   /** `false` when the production compile reported errors — the caller refuses. */
   readonly compileOk: boolean;
   /**

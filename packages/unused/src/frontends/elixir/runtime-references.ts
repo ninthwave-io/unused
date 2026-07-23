@@ -693,7 +693,7 @@ export function extractElixirRuntimeConventions(
   };
   const functionsByModuleName = indexFunctions(traceResult.functions);
   const atomRoleSummaryLookup = createElixirAtomRoleSummaryLookup(
-    applicableAtomRoleSummaries(projectDir, traceResult, summaryProviders),
+    applicableAtomRoleSummaries(traceResult, summaryProviders),
   );
   const contents = readProjectSources(projectDir, traceResult);
   const sources = new Map(
@@ -802,150 +802,55 @@ export function extractElixirRuntimeConventions(
 }
 
 function applicableAtomRoleSummaries(
-  projectDir: string,
   traceResult: TraceResult,
   providers: readonly ElixirAtomRoleSummaryProvider[],
 ): readonly ElixirAtomRoleSummary[] {
   validateElixirAtomRoleSummaryProviders(providers);
-  const summaries: ElixirAtomRoleSummary[] = [];
-  const dependencies = new Set(traceResult.deps);
-  const lockedVersions = readHexDependencyVersions(projectDir);
+  const active: { readonly providerId: string; readonly summary: ElixirAtomRoleSummary }[] = [];
+  const dependencyApplications = traceResult.hexDependencyApplications ?? [];
+  const applicationsByCompilerApp = new Map<string, (typeof dependencyApplications)[number][]>();
+  for (const application of dependencyApplications) {
+    const applications = applicationsByCompilerApp.get(application.compilerApp) ?? [];
+    applications.push(application);
+    applicationsByCompilerApp.set(application.compilerApp, applications);
+  }
   for (const provider of providers) {
-    if (!dependencies.has(provider.dependency)) continue;
-    const lockedVersion = lockedVersions?.get(provider.dependency);
-    if (lockedVersion === undefined || !provider.auditedVersions.includes(lockedVersion)) continue;
-    summaries.push(...provider.summaries);
-  }
-  return summaries;
-}
-
-/**
- * Read exact Hex dependency versions from the public Mix lock format once.
- * Path/git dependencies and malformed or ambiguous entries deliberately have
- * no applicable version: a semantic provider must fail closed without audited
- * package-version evidence.
- */
-function readHexDependencyVersions(projectDir: string): ReadonlyMap<string, string> | undefined {
-  let lock: string;
-  try {
-    lock = readFileSync(join(projectDir, "mix.lock"), "utf8");
-  } catch {
-    return undefined;
-  }
-  const entries = parseMixLockEntries(lock);
-  if (entries === undefined) return undefined;
-  const versions = new Map<string, string>();
-  for (const [dependency, tuple] of entries) {
-    const version = hexDependencyVersion(dependency, tuple);
-    if (version !== undefined) versions.set(dependency, version);
-  }
-  return versions;
-}
-
-function hexDependencyVersion(dependency: string, tuple: string): string | undefined {
-  const fields = splitTopLevelTerms(tuple.slice(1, -1));
-  if (
-    fields.length !== 8 ||
-    fields[0] !== ":hex" ||
-    fields[1] !== `:${dependency}` ||
-    !isQuotedElixirString(fields[2]) ||
-    !isQuotedElixirString(fields[3]) ||
-    !isBracketedTerm(fields[4], "[", "]") ||
-    !isBracketedTerm(fields[5], "[", "]") ||
-    !isQuotedElixirString(fields[6]) ||
-    !isQuotedElixirString(fields[7])
-  ) {
-    return undefined;
-  }
-  return fields[2]?.slice(1, -1);
-}
-
-function parseMixLockEntries(raw: string): ReadonlyMap<string, string> | undefined {
-  const lock = raw.trim();
-  if (!lock.startsWith("%{")) return undefined;
-  const mapEnd = balancedTermEnd(lock, 1);
-  if (mapEnd !== lock.length - 1) return undefined;
-  const body = lock.slice(2, -1).trim();
-  if (body === "") return new Map();
-  const entries = new Map<string, string>();
-  const terms = splitTopLevelTerms(body);
-  if (terms.at(-1) === "") terms.pop();
-  if (terms.length === 0 || terms.some((term) => term === "")) return undefined;
-  for (const term of terms) {
-    const key = /^"([^"\\]+)"[\t ]*:[\t ]*/.exec(term);
-    if (key?.[1] === undefined || entries.has(key[1])) return undefined;
-    const tuple = term.slice(key[0].length).trim();
-    if (!tuple.startsWith("{") || balancedTermEnd(tuple, 0) !== tuple.length - 1) {
-      return undefined;
-    }
-    entries.set(key[1], tuple);
-  }
-  return entries;
-}
-
-function balancedTermEnd(content: string, start: number): number | undefined {
-  const pairs: Readonly<Record<string, string>> = { "{": "}", "[": "]", "(": ")" };
-  const closing = new Set(Object.values(pairs));
-  const stack: string[] = [];
-  let quoted = false;
-  let escaped = false;
-  for (let index = start; index < content.length; index += 1) {
-    const character = content[index];
-    if (quoted) {
-      if (escaped) escaped = false;
-      else if (character === "\\") escaped = true;
-      else if (character === '"') quoted = false;
+    const applications = applicationsByCompilerApp.get(provider.compilerApp) ?? [];
+    const application = applications[0];
+    if (
+      applications.length !== 1 ||
+      application?.otpApp !== provider.otpApp ||
+      application.lockKey !== provider.lockKey ||
+      application.hexPackage !== provider.hexPackage ||
+      application.repository !== provider.repository
+    ) {
       continue;
     }
-    if (character === '"') {
-      quoted = true;
+    const audited = provider.auditedReleases.find(
+      (release) => release.version === application.version,
+    );
+    if (
+      audited === undefined ||
+      audited.innerChecksum !== application.innerChecksum ||
+      audited.outerChecksum !== application.outerChecksum
+    ) {
       continue;
     }
-    const close = character === undefined ? undefined : pairs[character];
-    if (close !== undefined) stack.push(close);
-    else if (character !== undefined && closing.has(character)) {
-      if (character !== stack.at(-1)) return undefined;
-      stack.pop();
-      if (stack.length === 0) return index;
-    }
+    active.push(...provider.summaries.map((summary) => ({ providerId: provider.id, summary })));
   }
-  return undefined;
-}
-
-function splitTopLevelTerms(content: string): string[] {
-  const terms: string[] = [];
-  let start = 0;
-  let quoted = false;
-  let escaped = false;
-  let depth = 0;
-  for (let index = 0; index < content.length; index += 1) {
-    const character = content[index];
-    if (quoted) {
-      if (escaped) escaped = false;
-      else if (character === "\\") escaped = true;
-      else if (character === '"') quoted = false;
-      continue;
-    }
-    if (character === '"') quoted = true;
-    else if (character === "{" || character === "[" || character === "(") depth += 1;
-    else if (character === "}" || character === "]" || character === ")") depth -= 1;
-    else if (character === "," && depth === 0) {
-      terms.push(content.slice(start, index).trim());
-      start = index + 1;
-    }
+  const ownersByCallee = new Map<string, Set<string>>();
+  for (const entry of active) {
+    const key = `${entry.summary.module}\0${entry.summary.name}\0${entry.summary.arity}`;
+    const owners = ownersByCallee.get(key) ?? new Set<string>();
+    owners.add(entry.providerId);
+    ownersByCallee.set(key, owners);
   }
-  terms.push(content.slice(start).trim());
-  return terms;
-}
-
-function isQuotedElixirString(value: string | undefined): value is string {
-  return value !== undefined && /^"(?:[^"\\]|\\.)*"$/.test(value);
-}
-
-function isBracketedTerm(value: string | undefined, open: string, close: string): boolean {
-  return (
-    value?.startsWith(open) === true && balancedTermEnd(value, 0) === value.length - close.length
-  );
+  return active
+    .filter((entry) => {
+      const key = `${entry.summary.module}\0${entry.summary.name}\0${entry.summary.arity}`;
+      return ownersByCallee.get(key)?.size === 1;
+    })
+    .map((entry) => entry.summary);
 }
 
 function indexParsedApplies(
@@ -5164,7 +5069,13 @@ function generatedUseSiteKey(event: TraceEvent): string {
 
 function indexPhoenixActionUseSites(traceResult: TraceResult): ReadonlyMap<string, number> {
   const counts = new Map<string, number>();
-  if (!traceResult.deps.includes("phoenix")) return counts;
+  if (
+    !(traceResult.dependencyApplications ?? []).some(
+      (dependency) => dependency.compilerApp === "phoenix" && dependency.otpApp === "phoenix",
+    )
+  ) {
+    return counts;
+  }
   if (traceResult.modules.some((record) => record.mod === PHOENIX_CONTROLLER)) return counts;
   for (const event of traceResult.events) {
     if (
