@@ -44,7 +44,6 @@ function analyzeOptions(context: RepositoryAnalysisContext): AnalyzeOptions {
     now: context.now,
     toolVersion: context.toolVersion,
     gitignore: context.gitignore,
-    ...(context.configPath === undefined ? {} : { configPath: context.configPath }),
     ...(context.performance === undefined ? {} : { performance: context.performance }),
   };
 }
@@ -122,6 +121,37 @@ function buildFrontendFragment(
     ...rebaseDiagnostic(diagnostic, boundary.rootRelDir, rebase),
     boundaryId: boundary.id,
   }));
+  const configuration =
+    analysis.configuration === undefined
+      ? undefined
+      : {
+          ...analysis.configuration,
+          configuredSymbolRoots: analysis.configuration.configuredSymbolRoots.map((root) => ({
+            ...root,
+            file: prefixRepositoryPath(boundary.rootRelDir, root.file),
+            label:
+              boundary.rootRelDir === ""
+                ? root.label
+                : `boundary ${boundary.rootRelDir} ${root.label}`,
+            boundaryId: boundary.id,
+          })),
+          configMatchInventory: analysis.configuration.configMatchInventory.map((item) => ({
+            ...item,
+            ...(item.scopeRootRelDir === undefined
+              ? {}
+              : {
+                  scopeRootRelDir: prefixRepositoryPath(boundary.rootRelDir, item.scopeRootRelDir),
+                }),
+            ...(item.workspaceMatches === undefined
+              ? {}
+              : {
+                  workspaceMatches: item.workspaceMatches.map((match) => ({
+                    ...match,
+                    rootRelDir: prefixRepositoryPath(boundary.rootRelDir, match.rootRelDir),
+                  })),
+                }),
+          })),
+        };
   // This is intentionally the final potentially mutating operation: every
   // path/site/id and all metadata surfaces were validated and prepared above.
   const graph =
@@ -137,6 +167,7 @@ function buildFrontendFragment(
     metadata: analysis.metadata,
     claimInputs,
     claimAnnotations,
+    ...(configuration === undefined ? {} : { configuration }),
     ...(deferredContributions === undefined ? {} : { deferredContributions }),
     diagnostics,
   };
@@ -168,6 +199,11 @@ export const typescriptLanguagePlugin: LanguageFrontendPlugin = {
       emitConfigMatchWarnings: false,
       deferConfigSymbolEntrypoints: true,
       deferredConventions: ["github-actions-run", "taskfile-command", "native-config-script"],
+      ...(boundary.rootRelDir === "" ? { resolvedConfig: context.repositoryConfig } : {}),
+      ...(context.repositoryConfig.presets === undefined
+        ? {}
+        : { forcedPresets: context.repositoryConfig.presets }),
+      boundaryPresetsShadowed: context.repositoryConfig.presets !== undefined,
     });
     return consumeMeasuredFrontendLocalGraph(this.id, this.language, boundary, analysis, context);
   },
@@ -201,6 +237,8 @@ export const elixirLanguagePlugin: LanguageFrontendPlugin = {
       deferredConventions: ["elixir-runtime", "elixir-scripts"],
       atomRoleSummaryProviders: context.elixirAtomRoleSummaryProviders ?? [],
       elixirSourceFiles: filesWithinBoundary(boundary.rootDir, context.manifests.elixirSourceFiles),
+      ...(boundary.rootRelDir === "" ? { resolvedConfig: context.repositoryConfig } : {}),
+      boundaryPresetsShadowed: context.repositoryConfig.presets !== undefined,
     });
     return consumeMeasuredFrontendLocalGraph(this.id, this.language, boundary, analysis, context);
   },
@@ -232,6 +270,8 @@ export const rustLanguagePlugin: LanguageFrontendPlugin = {
       emitConfigMatchWarnings: false,
       deferConfigSymbolEntrypoints: true,
       sourceFiles: context.manifests.rustSourceFiles,
+      ...(boundary.rootRelDir === "" ? { resolvedConfig: context.repositoryConfig } : {}),
+      boundaryPresetsShadowed: context.repositoryConfig.presets !== undefined,
     });
     return consumeMeasuredFrontendLocalGraph(this.id, this.language, boundary, analysis, context);
   },

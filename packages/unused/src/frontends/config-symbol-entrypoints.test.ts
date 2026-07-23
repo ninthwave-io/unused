@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { PerformanceTracker } from "../core/analysis/index.js";
 import { fileId, IRGraph, symbolId } from "../core/ir/index.js";
-import { applyConfigSymbolEntrypoints } from "./config-symbol-entrypoints.js";
+import {
+  applyConfigSymbolEntrypoints,
+  applyConfiguredSymbolRoots,
+} from "./config-symbol-entrypoints.js";
 import { ConfigError, EMPTY_CONFIG, type EntrySymbolLanguage } from "./ts/config.js";
 
 function addSymbol(graph: IRGraph, file: string, name: string): string {
@@ -177,5 +180,139 @@ describe("applyConfigSymbolEntrypoints", () => {
         symbolLanguages: languageMap([[target, "ts"]]),
       }),
     ).toThrow(/duplicates another effective entrySymbols selector/);
+  });
+
+  it("adds directory and ecosystem-name selectors and rejects their duplicates", () => {
+    const graph = new IRGraph();
+    const physical = addSymbol(graph, "packages/api/src/physical.ts", "physical");
+    const named = addSymbol(graph, "packages/api/src/named.ts", "named");
+    const override = (file: string, name: string) => ({
+      entry: [],
+      entrySymbols: [{ language: "ts" as const, file, name, reason: name }],
+      project: [],
+      suppressions: [],
+    });
+    const units = [{ rootRelDir: "packages/api", name: "@neutral/api" }];
+    applyConfigSymbolEntrypoints({
+      graph,
+      config: {
+        ...EMPTY_CONFIG,
+        workspaces: {
+          "packages/api": override("src/physical.ts", "physical"),
+          "@neutral/api": override("src/named.ts", "named"),
+        },
+      },
+      units,
+      symbolLanguages: languageMap([
+        [physical, "ts"],
+        [named, "ts"],
+      ]),
+    });
+    expect(graph.entrypoints().map((entrypoint) => entrypoint.targetSymbol)).toEqual([
+      named,
+      physical,
+    ]);
+
+    expect(() =>
+      applyConfigSymbolEntrypoints({
+        graph: new IRGraph(),
+        config: {
+          ...EMPTY_CONFIG,
+          workspaces: {
+            "packages/api": override("src/physical.ts", "physical"),
+            "@neutral/api": override("src/physical.ts", "physical"),
+          },
+        },
+        units,
+        symbolLanguages: new Map(),
+      }),
+    ).toThrow(/duplicates another effective entrySymbols selector/);
+  });
+});
+
+describe("applyConfiguredSymbolRoots", () => {
+  it("scopes identical local selectors to their owning boundary", () => {
+    const graph = new IRGraph();
+    const alpha = addSymbol(graph, "services/alpha/src/operation.ts", "selected");
+    const beta = addSymbol(graph, "services/beta/src/operation.ts", "selected");
+    applyConfiguredSymbolRoots({
+      graph,
+      roots: [
+        {
+          language: "ts",
+          file: "services/alpha/src/operation.ts",
+          name: "selected",
+          reason: "alpha runtime operation",
+          label: "boundary ts:services/alpha entrySymbols[0]",
+          boundaryId: "ts:services/alpha",
+        },
+      ],
+      symbolLanguages: languageMap([
+        [alpha, "ts"],
+        [beta, "ts"],
+      ]),
+      symbolBoundaries: new Map([
+        [alpha, "ts:services/alpha"],
+        [beta, "ts:services/beta"],
+      ]),
+    });
+    expect(graph.entrypoints()).toMatchObject([
+      {
+        file: "services/alpha/src/operation.ts",
+        targetSymbol: alpha,
+        reason: "alpha runtime operation",
+      },
+    ]);
+  });
+
+  it("never satisfies a local selector from a sibling boundary or language", () => {
+    const graph = new IRGraph();
+    const sibling = addSymbol(graph, "services/beta/src/operation.ts", "selected");
+    expect(() =>
+      applyConfiguredSymbolRoots({
+        graph,
+        roots: [
+          {
+            language: "ts",
+            file: "services/beta/src/operation.ts",
+            name: "selected",
+            reason: "alpha runtime operation",
+            label: "boundary ts:services/alpha entrySymbols[0]",
+            boundaryId: "ts:services/alpha",
+          },
+        ],
+        symbolLanguages: languageMap([[sibling, "ts"]]),
+        symbolBoundaries: new Map([[sibling, "ts:services/beta"]]),
+      }),
+    ).toThrow(/matched no exported ts symbol/);
+  });
+
+  it("rejects a repository/local duplicate that resolves to the same symbol", () => {
+    const graph = new IRGraph();
+    const target = addSymbol(graph, "services/alpha/src/operation.ts", "selected");
+    expect(() =>
+      applyConfiguredSymbolRoots({
+        graph,
+        roots: [
+          {
+            language: "ts",
+            file: "services/alpha/src/operation.ts",
+            name: "selected",
+            reason: "repository root",
+            label: "entrySymbols[0]",
+          },
+          {
+            language: "ts",
+            file: "services/alpha/src/operation.ts",
+            name: "selected",
+            reason: "local root",
+            label: "boundary ts:services/alpha entrySymbols[0]",
+            boundaryId: "ts:services/alpha",
+          },
+        ],
+        symbolLanguages: languageMap([[target, "ts"]]),
+        symbolBoundaries: new Map([[target, "ts:services/alpha"]]),
+      }),
+    ).toThrow(/duplicates effective configured symbol root/);
   });
 });

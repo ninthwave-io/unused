@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { computePartitionedReachability } from "../../core/analysis/index.js";
 import { entrypointId, fileId, IRGraph, symbolId } from "../../core/ir/index.js";
+import { EMPTY_CONFIG } from "../ts/config.js";
 import {
   rustlerBridgePlugin,
   rustlerElixirConventionPlugin,
@@ -138,6 +139,7 @@ function repository(
     },
     now: new Date(0),
     toolVersion: "0.1.0",
+    repositoryConfig: EMPTY_CONFIG,
   };
 }
 

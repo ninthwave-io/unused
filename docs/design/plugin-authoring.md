@@ -71,6 +71,66 @@ deferred edges against the complete owning graph with
 `rebaseGraphContribution`. This is an ownership hand-off, not permission to
 parse, trace, or compile twice.
 
+## Configuration ownership and projection
+
+Repository dispatch loads an explicit or auto-discovered root config exactly
+once. `--config` selects only that repository config; it is never forwarded to
+nested frontends or reinterpreted relative to their directories. A nested
+frontend may auto-discover its own local config. Root policy and local policy
+then compose as follows:
+
+- root and local `entry` roots are additive;
+- root, physical-directory, ecosystem-name, and local `project` scopes all
+  intersect;
+- local suppression wins over root suppression, while an ecosystem-name
+  suppression wins over a matching physical-directory fallback;
+- either root or local `ignoreDependencies` may exclude a dependency claim;
+- aggregate gate and CI economics belong to the repository root; ignored local
+  values produce deterministic stderr diagnostics;
+- a forced root preset list, including `[]`, controls every TypeScript
+  boundary and shadows local preset selection.
+
+A workspace directory key identifies one physical unit and applies to every
+language frontend at that path. An ecosystem package/application/crate name
+identifies only the frontend unit that reported that name. Both keys may match
+one frontend: entries and exact roots are additive, projects intersect, and
+the name-specific suppression is more specific. A name matching more than one
+physical workspace is a configuration error; use the directory key instead.
+
+Language frontends own local matching. They must validate local policy once,
+apply file/project/dependency/suppression semantics to their claim inputs and
+annotations, and emit a `FrontendConfigContribution` containing:
+
+- the full canonical SHA-256 digest of effective local analysis policy;
+- whether that policy changes analysis;
+- exact configured symbol roots expanded once against authoritative frontend
+  units and filtered to the frontend language;
+- a common canonical selector inventory used to prove that every configured
+  language has exactly one owner;
+- a compact O(rules/patterns) config-warning inventory with collision-proof
+  structured identities, per-language file-match/applicability facts, and
+  suppression patterns scoped to their authoritative unit for the one
+  post-reachability claim check; and
+- any local gate/CI values needed for the repository-owned warning.
+
+Never carry raw local config through fragment composition. The orchestrator
+verifies same-directory contributions have the same digest and selector
+inventory, requires every frontend to emit the same warning-rule identities,
+ORs file-match status across applicable languages, and renders each unmatched
+or stale warning exactly once. Do not retain per-rule matched-file lists: that
+would make contribution memory grow with rules × files. The orchestrator also
+merges complementary exact roots and resolves them only after all conventions
+have contributed symbols. It hashes one contribution per physical local config,
+so adding a second language frontend at that directory does not double-count
+policy. Sorting for hashes and diagnostics uses locale-independent code-unit
+order.
+
+Plugin code imports policy types from `frontends/config-contract.ts`. Parsing
+and matching still live in `frontends/ts/config.ts` as a transitional pre-v0.1
+implementation detail; do not add new plugin imports of that language-owned
+module. A future extraction may move the implementation behind the neutral
+surface without changing plugin obligations.
+
 An Elixir convention may also own an `elixirAtomRoleSummaryProvider`. This is a
 pre-graph semantic input, not a graph contribution and not a third-party
 loading surface. The repository dispatcher collects all such providers from

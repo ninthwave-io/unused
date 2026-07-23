@@ -18,6 +18,7 @@ import type {
   Suppression,
 } from "../../core/claims/index.js";
 import type { HazardAnnotation, IREdge, IRGraph, IRNode, Site } from "../../core/ir/index.js";
+import type { ConfigMatchProjection, GateThreshold, UnusedConfig } from "../config-contract.js";
 import type { ElixirAtomRoleSummaryProvider } from "../elixir/atom-role-summaries.js";
 
 /** Stable, open language id used in graph/claim identity (`ts`, `ex`, `rs`). */
@@ -53,7 +54,12 @@ export interface RepositoryAnalysisContext {
   readonly toolVersion: string;
   /** Validated static semantic providers collected before language analysis. */
   readonly elixirAtomRoleSummaryProviders?: readonly ElixirAtomRoleSummaryProvider[];
-  readonly configPath?: string;
+  /**
+   * Repository-coordinate policy loaded exactly once. Language adapters may
+   * project explicitly repository-wide convention controls from it, but must
+   * never reinterpret its paths as boundary-relative local policy.
+   */
+  readonly repositoryConfig: UnusedConfig;
   readonly performance?: PerformanceTracker;
 }
 
@@ -109,6 +115,40 @@ export interface FrontendClaimAnnotation {
   readonly evidence?: readonly Evidence[];
 }
 
+/** One exact symbol root prepared in frontend-local coordinates. */
+export interface ConfiguredSymbolRoot {
+  readonly language: string;
+  readonly file: RepositoryRelativePath;
+  readonly name: string;
+  readonly reason: string;
+  readonly label: string;
+  /** Added while rebasing; absent for repository-global selectors. */
+  readonly boundaryId?: string;
+}
+
+/**
+ * Language-neutral configuration facts that must survive fragment composition.
+ * Other local policy is already embodied in roots, claim inputs, and claim
+ * annotations; exact symbol roots intentionally wait for composed conventions.
+ */
+export interface FrontendConfigContribution {
+  /** Full SHA-256 of effective boundary-owned analysis policy. */
+  readonly analysisFingerprint: string;
+  readonly hasEffectiveAnalysisPolicy: boolean;
+  /** Exact selectors expanded once against this frontend's authoritative units. */
+  readonly configuredSymbolRoots: readonly ConfiguredSymbolRoot[];
+  /** Common canonical inventory used to verify polyglot completeness and ownership. */
+  readonly configuredSymbolSelectorInventory: readonly {
+    readonly language: "ts" | "ex" | "rs";
+    readonly label: string;
+  }[];
+  /** Expanded warning facts; same-root languages are OR-composed by id. */
+  readonly configMatchInventory: readonly ConfigMatchProjection[];
+  /** Aggregate economics are repository-owned; retained for an honest warning. */
+  readonly localGateThreshold?: GateThreshold;
+  readonly localCiSecondsPerTestFile?: number;
+}
+
 /**
  * A language frontend's graph-complete result before repository reachability.
  *
@@ -129,6 +169,7 @@ export interface FrontendLocalGraph {
   };
   readonly claimInputs: FrontendClaimInputs;
   readonly claimAnnotations: ReadonlyMap<string, FrontendClaimAnnotation>;
+  readonly configuration?: FrontendConfigContribution;
   readonly deferredContributions?: ReadonlyMap<string, GraphContribution>;
   readonly diagnostics: readonly PluginDiagnostic[];
 }
@@ -155,6 +196,7 @@ export interface FrontendGraphFragment {
   readonly claimInputs: FrontendClaimInputs;
   /** Stable-id metadata reapplied after repository-wide claim emission. */
   readonly claimAnnotations: ReadonlyMap<string, FrontendClaimAnnotation>;
+  readonly configuration?: FrontendConfigContribution;
   /** Precomputed facts activated by their owning convention plugin phase. */
   readonly deferredContributions?: ReadonlyMap<string, GraphContribution>;
   readonly diagnostics: readonly PluginDiagnostic[];

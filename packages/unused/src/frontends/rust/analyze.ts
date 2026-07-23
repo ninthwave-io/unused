@@ -16,6 +16,7 @@ import {
   SCHEMA_VERSION,
 } from "../../core/claims/index.js";
 import { entrypointId, fileId, IRGraph, symbolId } from "../../core/ir/index.js";
+import { createFrontendConfigContribution } from "../config-projection.js";
 import {
   applyConfigSymbolEntrypoints,
   graphSymbolLanguages,
@@ -28,6 +29,7 @@ import type { FrontendClaimInputs, FrontendLocalGraph } from "../plugins/types.j
 import type { AnalyzeInternalOptions, AnalyzeOptions, AnalyzeResult } from "../ts/analyze.js";
 import {
   applyConfigSuppressions,
+  assertUnambiguousWorkspaceKeys,
   collectConfigEntrypoints,
   computeConfigHash,
   isClaimable,
@@ -123,9 +125,10 @@ async function analyzeRustProjectWithIsolatedCargo(
     ...(internal.cargoCommand === undefined ? {} : { cargoCommand: internal.cargoCommand }),
     execution: cargo,
   });
-  const config = await loadConfig(root, options.configPath);
+  const config = internal.resolvedConfig ?? (await loadConfig(root, options.configPath));
   const units = cargoUnits(root, metadata);
   const configUnits = units.map((unit) => ({ rootRelDir: unit.rootRelDir, name: unit.name }));
+  assertUnambiguousWorkspaceKeys(config, configUnits);
   if (fragmentOnly) performance?.increment("workspaces", units.length);
   else performance?.set("workspaces", units.length);
   if (workspaceStarted !== undefined) {
@@ -273,6 +276,9 @@ async function analyzeRustProjectWithIsolatedCargo(
         units: configUnits,
         claimInputs,
         evidence,
+      }),
+      configuration: createFrontendConfigContribution(config, configUnits, "rs", files, {
+        presetsShadowed: internal.boundaryPresetsShadowed === true,
       }),
       metadata: {
         projectName: repositoryName(root, metadata),

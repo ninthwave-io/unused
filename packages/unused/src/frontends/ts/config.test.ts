@@ -5,16 +5,20 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Claim, SubjectKind } from "../../core/claims/index.js";
 import {
   applyConfigSuppressions,
+  assertUnambiguousWorkspaceKeys,
   ConfigError,
   collectConfigEntrypoints,
+  computeAggregateConfigHash,
+  computeBoundaryAnalysisFingerprint,
   computeConfigHash,
   EMPTY_CONFIG,
   filterFilesByConfig,
   findConfigFile,
-  findWorkspaceOverride,
+  findWorkspaceOverrides,
   isClaimable,
   isIgnoredDependency,
   loadConfig,
+  projectConfigMatchInventory,
   type UnusedConfig,
   validateConfig,
   warnOnEmptyConfigMatches,
@@ -433,13 +437,100 @@ describe("computeConfigHash", () => {
       }),
     );
   });
+
+  it("preserves root-only hashes and deterministically includes effective boundary policy", () => {
+    const root = validateConfig({ gate: { threshold: "medium" } }, "root.jsonc");
+    const local = validateConfig(
+      {
+        entrySymbols: [
+          {
+            language: "ts",
+            file: "src/operation.ts",
+            name: "selected",
+            reason: "neutral runtime operation",
+          },
+        ],
+      },
+      "local.jsonc",
+    );
+    const fingerprint = computeBoundaryAnalysisFingerprint(local);
+    expect(computeAggregateConfigHash(root, [])).toBe(computeConfigHash(root));
+    const first = computeAggregateConfigHash(root, [
+      { boundaryId: "ts:services/alpha", ...fingerprint },
+      {
+        boundaryId: "ts:services/empty",
+        ...computeBoundaryAnalysisFingerprint(EMPTY_CONFIG),
+      },
+    ]);
+    expect(first).not.toBe(computeConfigHash(root));
+    expect(
+      computeAggregateConfigHash(root, [
+        {
+          boundaryId: "ts:services/empty",
+          ...computeBoundaryAnalysisFingerprint(EMPTY_CONFIG),
+        },
+        { boundaryId: "ts:services/alpha", ...fingerprint },
+      ]),
+    ).toBe(first);
+    expect(
+      computeAggregateConfigHash(root, [{ boundaryId: "ts:services/beta", ...fingerprint }]),
+    ).not.toBe(first);
+  });
+
+  it("hashes exactly effective nested policy and excludes shadowed economics/presets", () => {
+    const localA = validateConfig(
+      { gate: { threshold: "low" }, ciSecondsPerTestFile: 99, presets: ["next"] },
+      "a.jsonc",
+    );
+    const localB = validateConfig(
+      { gate: { threshold: "high" }, ciSecondsPerTestFile: 2, presets: ["vite"] },
+      "b.jsonc",
+    );
+    expect(computeBoundaryAnalysisFingerprint(localA).fingerprint).not.toBe(
+      computeBoundaryAnalysisFingerprint(localB).fingerprint,
+    );
+    expect(computeBoundaryAnalysisFingerprint(localA, { presetsShadowed: true })).toEqual(
+      computeBoundaryAnalysisFingerprint(localB, { presetsShadowed: true }),
+    );
+    expect(
+      computeBoundaryAnalysisFingerprint(
+        validateConfig({ project: ["lib/**"], gate: { threshold: "low" } }, "c.jsonc"),
+        { presetsShadowed: true },
+      ).hasEffectivePolicy,
+    ).toBe(true);
+  });
+
+  it("rejects duplicate effective boundary contributions", () => {
+    const fingerprint = computeBoundaryAnalysisFingerprint(
+      validateConfig({ project: ["src/**"] }, "local.jsonc"),
+    );
+    expect(() =>
+      computeAggregateConfigHash(EMPTY_CONFIG, [
+        { boundaryId: "ts:services/web", ...fingerprint },
+        { boundaryId: "ts:services/web", ...fingerprint },
+      ]),
+    ).toThrow(/duplicate configuration contribution/);
+  });
+
+  it("orders case and non-ASCII boundary ids by code unit, independent of input order", () => {
+    const fingerprint = computeBoundaryAnalysisFingerprint(
+      validateConfig({ project: ["src/**"] }, "local.jsonc"),
+    );
+    const nonAscii = { boundaryId: "ts:Ångstrom", ...fingerprint };
+    const lowercase = { boundaryId: "ts:alpha", ...fingerprint };
+    const uppercase = { boundaryId: "ts:Zeta", ...fingerprint };
+    const boundaries = [nonAscii, lowercase, uppercase];
+    expect(computeAggregateConfigHash(EMPTY_CONFIG, boundaries)).toBe(
+      computeAggregateConfigHash(EMPTY_CONFIG, [lowercase, uppercase, nonAscii]),
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
-// findWorkspaceOverride
+// findWorkspaceOverrides
 // ---------------------------------------------------------------------------
 
-describe("findWorkspaceOverride", () => {
+describe("findWorkspaceOverrides", () => {
   const config: UnusedConfig = {
     ...EMPTY_CONFIG,
     workspaces: {
@@ -454,21 +545,76 @@ describe("findWorkspaceOverride", () => {
 
   it("matches by root-relative directory", () => {
     expect(
-      findWorkspaceOverride(config, { rootRelDir: "packages/api", name: "api" })?.entry,
+      findWorkspaceOverrides(config, { rootRelDir: "packages/api", name: "api" })[0]?.override
+        .entry,
     ).toEqual(["src/server.ts"]);
   });
 
   it("matches by package name when the directory key doesn't match", () => {
     expect(
-      findWorkspaceOverride(config, { rootRelDir: "packages/lib", name: "@scope/lib" })
-        ?.suppressions,
+      findWorkspaceOverrides(config, { rootRelDir: "packages/lib", name: "@scope/lib" })[0]
+        ?.override.suppressions,
     ).toEqual([{ files: ["**/*.gen.ts"], kinds: ["file"], reason: "generated" }]);
   });
 
-  it("returns undefined when neither matches", () => {
+  it("returns an empty list when neither matches", () => {
+    expect(findWorkspaceOverrides(config, { rootRelDir: "packages/other", name: "other" })).toEqual(
+      [],
+    );
+  });
+
+  it("returns physical and ecosystem scopes in increasing specificity", () => {
+    const both: UnusedConfig = {
+      ...EMPTY_CONFIG,
+      workspaces: {
+        "packages/api": { entry: ["src/path.ts"], project: [], suppressions: [] },
+        api: { entry: ["src/name.ts"], project: [], suppressions: [] },
+      },
+    };
+    expect(findWorkspaceOverrides(both, { rootRelDir: "packages/api", name: "api" })).toEqual([
+      expect.objectContaining({ key: "packages/api", specificity: 1 }),
+      expect.objectContaining({ key: "api", specificity: 2 }),
+    ]);
     expect(
-      findWorkspaceOverride(config, { rootRelDir: "packages/other", name: "other" }),
-    ).toBeUndefined();
+      collectConfigEntrypoints(["packages/api/src/path.ts", "packages/api/src/name.ts"], both, [
+        { rootRelDir: "packages/api", name: "api" },
+      ]).map((hit) => hit.file),
+    ).toEqual(["packages/api/src/path.ts", "packages/api/src/name.ts"]);
+  });
+
+  it("fails when one key is a directory and a different workspace's ecosystem name", () => {
+    const collision = {
+      ...EMPTY_CONFIG,
+      workspaces: {
+        alpha: { entry: [], project: [], suppressions: [] },
+      },
+    };
+    expect(() =>
+      assertUnambiguousWorkspaceKeys(collision, [
+        { rootRelDir: "alpha", name: "physical" },
+        { rootRelDir: "beta", name: "alpha" },
+      ]),
+    ).toThrow(/identifies a physical directory and an ecosystem name/);
+  });
+
+  it("keeps projected warning inventory size independent of file count and ids collision-proof", () => {
+    const projected = projectConfigMatchInventory(
+      {
+        ...EMPTY_CONFIG,
+        workspaces: {
+          a: { entry: ["src/**"], project: [], suppressions: [] },
+          "a.entry[0]": { entry: [], project: [], suppressions: [] },
+        },
+      },
+      Array.from({ length: 2_000 }, (_, index) => `a/src/file-${index}.ts`),
+      [
+        { rootRelDir: "a", name: "first" },
+        { rootRelDir: "other", name: "a.entry[0]" },
+      ],
+    );
+    expect(projected).toHaveLength(3);
+    expect(new Set(projected.map((item) => item.id)).size).toBe(projected.length);
+    expect(JSON.stringify(projected)).not.toContain("file-1999.ts");
   });
 });
 
@@ -618,6 +764,32 @@ describe("applyConfigSuppressions", () => {
     expect(warn.mock.calls.map((call) => String(call[0])).join("\n")).toMatch(/may be stale/);
     warn.mockRestore();
   });
+
+  it("prefers name suppression over directory policy while retaining directory fallback", () => {
+    const claims = [makeClaim("packages/api/src/dead.ts"), makeClaim("packages/api/src/path.ts")];
+    const config: UnusedConfig = {
+      ...EMPTY_CONFIG,
+      workspaces: {
+        "packages/api": {
+          entry: [],
+          project: [],
+          suppressions: [{ files: ["src/**"], kinds: ["file"], reason: "physical" }],
+        },
+        "@x/api": {
+          entry: [],
+          project: [],
+          suppressions: [{ files: ["src/dead.ts"], kinds: ["file"], reason: "named" }],
+        },
+      },
+    };
+    const result = applyConfigSuppressions(
+      claims,
+      config,
+      units,
+      claims.map((claim) => claim.subject.loc.file),
+    );
+    expect(result.map((claim) => claim.suppression?.reason)).toEqual(["named", "physical"]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -686,6 +858,18 @@ describe("isClaimable", () => {
     expect(isClaimable("packages/api/src/current.ts", config, units)).toBe(true);
     expect(isClaimable("packages/api/src/generated/dead.ts", config, units)).toBe(false);
     expect(isClaimable("packages/api/src/generated/keep.ts", config, units)).toBe(true);
+  });
+
+  it("intersects simultaneous directory and ecosystem-name project scopes", () => {
+    const config: UnusedConfig = {
+      ...EMPTY_CONFIG,
+      workspaces: {
+        "packages/api": { entry: [], project: ["src/**"], suppressions: [] },
+        "@x/api": { entry: [], project: ["src/allowed.ts"], suppressions: [] },
+      },
+    };
+    expect(isClaimable("packages/api/src/allowed.ts", config, units)).toBe(true);
+    expect(isClaimable("packages/api/src/denied.ts", config, units)).toBe(false);
   });
 });
 

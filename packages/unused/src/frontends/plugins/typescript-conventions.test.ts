@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { entrypointId, IRGraph } from "../../core/ir/index.js";
 import { analyzeProjectAuto } from "../dispatch.js";
+import { EMPTY_CONFIG } from "../ts/config.js";
 import type { FrontendGraphFragment, RepositoryAnalysisContext } from "./types.js";
 import { typescriptConfigCarriersConventionPlugin } from "./typescript-conventions.js";
 
@@ -111,6 +112,7 @@ function repository(rootDir: string, project: string): RepositoryAnalysisContext
     },
     now: new Date(0),
     toolVersion: "0.1.0",
+    repositoryConfig: EMPTY_CONFIG,
   };
 }
 

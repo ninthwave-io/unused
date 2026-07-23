@@ -170,6 +170,68 @@ export function computeConfigHash(config: UnusedConfig): string {
   return createHash("sha256").update(payload, "utf8").digest("hex").slice(0, 12);
 }
 
+export interface BoundaryAnalysisFingerprint {
+  readonly fingerprint: string;
+  readonly hasEffectivePolicy: boolean;
+}
+
+/**
+ * Canonical identity of policy owned by a nested analysis boundary. Aggregate
+ * gate/CI economics are deliberately absent. When the repository forces a
+ * preset set, a boundary's own preset value is shadowed and therefore absent
+ * too: config identity follows effective behavior, not ignored text.
+ */
+export function computeBoundaryAnalysisFingerprint(
+  config: UnusedConfig,
+  options: { readonly presetsShadowed?: boolean } = {},
+): BoundaryAnalysisFingerprint {
+  const canonical = canonicalBoundaryConfigForHash(config, options.presetsShadowed === true);
+  const empty = canonicalBoundaryConfigForHash(EMPTY_CONFIG, options.presetsShadowed === true);
+  const payload = JSON.stringify(canonical);
+  return {
+    fingerprint: createHash("sha256").update(payload, "utf8").digest("hex"),
+    hasEffectivePolicy: payload !== JSON.stringify(empty),
+  };
+}
+
+export interface AggregateBoundaryConfigFingerprint {
+  readonly boundaryId: string;
+  readonly fingerprint: string;
+  readonly hasEffectivePolicy: boolean;
+}
+
+/**
+ * Hash repository policy plus every effective nested boundary policy in
+ * deterministic boundary-id order. Root-only and all-empty nested runs retain
+ * the historical hash exactly.
+ */
+export function computeAggregateConfigHash(
+  repositoryConfig: UnusedConfig,
+  boundaries: readonly AggregateBoundaryConfigFingerprint[],
+): string {
+  const effective = boundaries
+    .filter((boundary) => boundary.hasEffectivePolicy)
+    .map((boundary) => ({
+      boundaryId: boundary.boundaryId,
+      fingerprint: boundary.fingerprint,
+    }))
+    .sort((a, b) => compareCodeUnits(a.boundaryId, b.boundaryId));
+  for (let index = 1; index < effective.length; index += 1) {
+    if (effective[index - 1]?.boundaryId === effective[index]?.boundaryId) {
+      throw new ConfigError(
+        `duplicate configuration contribution for boundary ${JSON.stringify(effective[index]?.boundaryId)}. ` +
+          "Fix: ensure exactly one language frontend owns each boundary id.",
+      );
+    }
+  }
+  if (effective.length === 0) return computeConfigHash(repositoryConfig);
+  const payload = JSON.stringify({
+    repository: canonicalConfigForHash(repositoryConfig),
+    boundaries: effective,
+  });
+  return createHash("sha256").update(payload, "utf8").digest("hex").slice(0, 12);
+}
+
 function canonicalConfigForHash(config: UnusedConfig): unknown {
   const workspaceKeys = Object.keys(config.workspaces).sort();
   return {
@@ -195,6 +257,34 @@ function canonicalConfigForHash(config: UnusedConfig): unknown {
     gate: config.gate === undefined ? null : { threshold: config.gate.threshold },
     presets: config.presets === undefined ? null : [...config.presets],
     ciSecondsPerTestFile: config.ciSecondsPerTestFile ?? null,
+  };
+}
+
+function canonicalBoundaryConfigForHash(config: UnusedConfig, presetsShadowed: boolean): unknown {
+  const workspaceKeys = Object.keys(config.workspaces).sort();
+  return {
+    entry: [...config.entry],
+    ...(config.entrySymbols.length === 0
+      ? {}
+      : { entrySymbols: config.entrySymbols.map(canonicalEntrySymbol) }),
+    project: [...config.project],
+    suppressions: config.suppressions.map(canonicalSuppression),
+    ignoreDependencies: [...config.ignoreDependencies],
+    workspaces: workspaceKeys.map((key) => {
+      const override = config.workspaces[key] as WorkspaceConfigOverride;
+      return {
+        key,
+        entry: [...override.entry],
+        ...((override.entrySymbols?.length ?? 0) === 0
+          ? {}
+          : { entrySymbols: override.entrySymbols?.map(canonicalEntrySymbol) }),
+        project: [...override.project],
+        suppressions: override.suppressions.map(canonicalSuppression),
+      };
+    }),
+    ...(presetsShadowed
+      ? {}
+      : { presets: config.presets === undefined ? null : [...config.presets] }),
   };
 }
 
@@ -660,23 +750,72 @@ export interface ConfigUnit {
   readonly name: string | null;
 }
 
-/**
- * The workspace override for `unit`, matched by root-relative directory first
- * (PRD §6's `"packages/api"` key form), then by package name — the
- * `"<pkg-dir-or-name>"` key the spec describes. `undefined` when the config
- * declares no override for this unit.
- */
-export function findWorkspaceOverride(
+/** Fail once when an ecosystem-name key could select multiple physical units. */
+export function assertUnambiguousWorkspaceKeys(
+  config: UnusedConfig,
+  units: readonly ConfigUnit[],
+): void {
+  const directories = new Set<string>();
+  const rootsByName = new Map<string, Set<string>>();
+  for (const unit of units) {
+    directories.add(unit.rootRelDir);
+    if (unit.name === null) continue;
+    const roots = rootsByName.get(unit.name) ?? new Set<string>();
+    roots.add(unit.rootRelDir);
+    rootsByName.set(unit.name, roots);
+  }
+  for (const key of Object.keys(config.workspaces).sort(compareCodeUnits)) {
+    if (directories.has(key)) {
+      const conflictingNameRoots = [...(rootsByName.get(key) ?? [])].filter((root) => root !== key);
+      if (conflictingNameRoots.length > 0) {
+        throw new ConfigError(
+          `unused.config: workspace key ${JSON.stringify(key)} identifies a physical directory and an ecosystem name at another workspace. ` +
+            "Fix: use unambiguous root-relative directory keys.",
+        );
+      }
+      continue;
+    }
+    const rootCount = rootsByName.get(key)?.size ?? 0;
+    if (rootCount > 1) {
+      throw new ConfigError(
+        `unused.config: workspace name ${JSON.stringify(key)} is ambiguous across ${rootCount} physical workspaces. ` +
+          "Fix: use a unique root-relative workspace directory key.",
+      );
+    }
+  }
+}
+
+export interface MatchingWorkspaceOverride {
+  readonly key: string;
+  readonly override: WorkspaceConfigOverride;
+  readonly specificity: 1 | 2;
+}
+
+/** Directory policy first, then the more-specific ecosystem-name policy. */
+export function findWorkspaceOverrides(
   config: UnusedConfig,
   unit: ConfigUnit,
-): WorkspaceConfigOverride | undefined {
+): readonly MatchingWorkspaceOverride[] {
+  const matches: MatchingWorkspaceOverride[] = [];
   if (unit.rootRelDir !== "" && config.workspaces[unit.rootRelDir] !== undefined) {
-    return config.workspaces[unit.rootRelDir];
+    matches.push({
+      key: unit.rootRelDir,
+      override: config.workspaces[unit.rootRelDir] as WorkspaceConfigOverride,
+      specificity: 1,
+    });
   }
-  if (unit.name !== null && config.workspaces[unit.name] !== undefined) {
-    return config.workspaces[unit.name];
+  if (
+    unit.name !== null &&
+    unit.name !== unit.rootRelDir &&
+    config.workspaces[unit.name] !== undefined
+  ) {
+    matches.push({
+      key: unit.name,
+      override: config.workspaces[unit.name] as WorkspaceConfigOverride,
+      specificity: 2,
+    });
   }
-  return undefined;
+  return matches;
 }
 
 /**
@@ -748,11 +887,10 @@ export function isClaimable(
   const idx = ownerIndex(units, fileRel);
   if (idx >= 0) {
     const unit = units[idx] as ConfigUnit;
-    const override = findWorkspaceOverride(config, unit);
-    const overrideProject = override?.project ?? [];
-    if (overrideProject.length > 0) {
+    for (const { override } of findWorkspaceOverrides(config, unit)) {
+      if (override.project.length === 0) continue;
       const pkgRel = toPackageRelative(fileRel, unit.rootRelDir);
-      if (!matchesOrderedProject(pkgRel, overrideProject)) return false;
+      if (!matchesOrderedProject(pkgRel, override.project)) return false;
     }
   }
   return true;
@@ -775,6 +913,8 @@ interface CompiledSuppression {
   readonly rule: SuppressionRule;
   readonly patterns: readonly { readonly value: string; readonly matcher: RegExp }[];
   readonly unitIndex: number | undefined;
+  /** root < physical directory < ecosystem name */
+  readonly specificity: 0 | 1 | 2;
   matchedFile: boolean;
   matchedClaim: boolean;
 }
@@ -804,7 +944,7 @@ export function collectConfigSuppressionAnnotations(
       const pattern = matchedSuppressionPattern(item, candidate.file, units);
       return pattern === undefined ? [] : [{ item, pattern }];
     });
-    const selected = matches.find((match) => match.item.unitIndex !== undefined) ?? matches[0];
+    const selected = highestSpecificity(matches);
     if (selected === undefined) continue;
     annotations.set(candidate.key, {
       reason: selected.item.rule.reason,
@@ -819,17 +959,19 @@ function compileSuppressions(
   config: UnusedConfig,
   units: readonly ConfigUnit[],
 ): CompiledSuppression[] {
+  const unitIndexes = indexConfigUnits(units);
   const compiled: CompiledSuppression[] = config.suppressions.map((rule, index) => ({
     label: `suppressions[${index}]`,
     rule,
     patterns: rule.files.map((value) => ({ value, matcher: globToRegExp(value) })),
     unitIndex: undefined,
+    specificity: 0,
     matchedFile: false,
     matchedClaim: false,
   }));
 
   for (const [key, override] of Object.entries(config.workspaces)) {
-    const unitIndex = units.findIndex((unit) => unit.rootRelDir === key || unit.name === key);
+    const unitIndex = unitIndexes.get(key) ?? -1;
     if (unitIndex < 0) continue;
     override.suppressions.forEach((rule, index) => {
       compiled.push({
@@ -837,12 +979,26 @@ function compileSuppressions(
         rule,
         patterns: rule.files.map((value) => ({ value, matcher: globToRegExp(value) })),
         unitIndex,
+        specificity:
+          units[unitIndex]?.rootRelDir === key ? 1 : units[unitIndex]?.name === key ? 2 : 0,
         matchedFile: false,
         matchedClaim: false,
       });
     });
   }
   return compiled;
+}
+
+function highestSpecificity<T extends { readonly item: CompiledSuppression }>(
+  matches: readonly T[],
+): T | undefined {
+  let selected: T | undefined;
+  for (const match of matches) {
+    if (selected === undefined || match.item.specificity > selected.item.specificity) {
+      selected = match;
+    }
+  }
+  return selected;
 }
 
 /**
@@ -882,7 +1038,7 @@ export function applyConfigSuppressions(
     if (claim.suppression !== undefined || matches.length === 0) return claim;
 
     // Workspace-local policy is more specific than root policy.
-    const selected = matches.find((match) => match.item.unitIndex !== undefined) ?? matches[0];
+    const selected = highestSpecificity(matches);
     return selected === undefined
       ? claim
       : {
@@ -953,10 +1109,12 @@ export function collectConfigEntrypoints(
   if (config.entry.length === 0 && Object.keys(config.workspaces).length === 0) return [];
 
   const rootEntry = config.entry.map(globToRegExp);
-  const overrideEntryByUnit = units.map((unit) => {
-    const override = findWorkspaceOverride(config, unit);
-    return (override?.entry ?? []).map(globToRegExp);
-  });
+  const overrideEntryByUnit = units.map((unit) =>
+    findWorkspaceOverrides(config, unit).map(({ key, override }) => ({
+      key,
+      matchers: override.entry.map(globToRegExp),
+    })),
+  );
 
   const seen = new Set<string>();
   const out: ConfigEntrypointHit[] = [];
@@ -972,21 +1130,13 @@ export function collectConfigEntrypoints(
     if (idx < 0) continue;
     const unit = units[idx] as ConfigUnit;
     const pkgRel = toPackageRelative(fileRel, unit.rootRelDir);
-    const overrideEntry = overrideEntryByUnit[idx] ?? [];
-    if (overrideEntry.some((re) => re.test(pkgRel))) {
-      add(fileRel, `config:workspaces.${displayUnitKey(config, unit)}.entry`);
+    for (const override of overrideEntryByUnit[idx] ?? []) {
+      if (override.matchers.some((re) => re.test(pkgRel))) {
+        add(fileRel, `config:workspaces.${override.key}.entry`);
+      }
     }
   }
   return out;
-}
-
-/** The workspace key (`rootRelDir` or `name`) an override was matched under, for the entry `reason` text. */
-function displayUnitKey(config: UnusedConfig, unit: ConfigUnit): string {
-  if (unit.rootRelDir !== "" && config.workspaces[unit.rootRelDir] !== undefined) {
-    return unit.rootRelDir;
-  }
-  if (unit.name !== null && config.workspaces[unit.name] !== undefined) return unit.name;
-  return unit.rootRelDir;
 }
 
 // ---------------------------------------------------------------------------
@@ -1044,8 +1194,9 @@ export function warnOnEmptyConfigMatches(
   if (Object.keys(config.workspaces).length === 0) return;
 
   const scopedByUnit = groupByUnit(scopedFiles, units);
+  const unitIndexes = indexConfigUnits(units);
   for (const [key, override] of Object.entries(config.workspaces)) {
-    const idx = units.findIndex((u) => u.rootRelDir === key || u.name === key);
+    const idx = unitIndexes.get(key) ?? -1;
     if (idx < 0) {
       warn(`config "workspaces" key "${key}" matched no workspace package (by directory or name)`);
       continue;
@@ -1062,6 +1213,215 @@ export function warnOnEmptyConfigMatches(
       }
     }
   }
+}
+
+export interface ConfigMatchProjection {
+  readonly id: string;
+  readonly category: "workspace" | "entry" | "project" | "suppression";
+  readonly label: string;
+  readonly workspaceKey?: string;
+  readonly workspaceMatches?: readonly {
+    readonly role: "directory" | "name";
+    readonly rootRelDir: string;
+  }[];
+  readonly pattern?: string;
+  readonly fileMatched: boolean;
+  /** Compact suppression matcher retained for post-reachability claim checks. */
+  readonly patterns?: readonly string[];
+  readonly scopeRootRelDir?: string;
+  readonly claimKinds?: readonly SubjectKind[];
+}
+
+/**
+ * Project deterministic warning facts while this frontend owns config-unit
+ * matching. Repository composition ORs these facts across same-root languages;
+ * it never needs the raw local config.
+ */
+export function projectConfigMatchInventory(
+  config: UnusedConfig,
+  scopedFiles: readonly string[],
+  units: readonly ConfigUnit[],
+): readonly ConfigMatchProjection[] {
+  const projections: ConfigMatchProjection[] = [];
+  config.entry.forEach((pattern, index) => {
+    projections.push({
+      id: configMatchId("entry", index),
+      category: "entry",
+      label: "entry",
+      pattern,
+      fileMatched: matchesAny(pattern, scopedFiles),
+    });
+  });
+  config.project.forEach((pattern, index) => {
+    projections.push({
+      id: configMatchId("project", index),
+      category: "project",
+      label: "project",
+      pattern,
+      fileMatched: matchesAny(projectPatternBody(pattern), scopedFiles),
+    });
+  });
+  config.suppressions.forEach((rule, index) => {
+    projections.push(
+      projectSuppression(
+        configMatchId("suppression", index),
+        `suppressions[${index}]`,
+        rule,
+        scopedFiles,
+      ),
+    );
+  });
+
+  const scopedByUnit = groupByUnit(scopedFiles, units);
+  const unitIndexes = indexConfigUnitLists(units);
+  for (const key of Object.keys(config.workspaces).sort(compareCodeUnits)) {
+    const override = config.workspaces[key] as WorkspaceConfigOverride;
+    const indexes = unitIndexes.get(key) ?? [];
+    const workspaceMatches: Array<{
+      readonly role: "directory" | "name";
+      readonly rootRelDir: string;
+    }> = [];
+    for (const unit of units) {
+      if (unit.rootRelDir === key) {
+        workspaceMatches.push({ role: "directory", rootRelDir: unit.rootRelDir });
+      } else if (unit.name === key) {
+        workspaceMatches.push({ role: "name", rootRelDir: unit.rootRelDir });
+      }
+    }
+    projections.push({
+      id: configMatchId("workspace", key),
+      category: "workspace",
+      label: key,
+      workspaceKey: key,
+      workspaceMatches,
+      fileMatched: indexes.length > 0,
+    });
+    if (indexes.length === 0) {
+      override.entry.forEach((pattern, index) => {
+        projections.push({
+          id: configMatchId("workspace-entry", key, index),
+          category: "entry",
+          label: `workspaces.${key}.entry`,
+          workspaceKey: key,
+          pattern,
+          fileMatched: false,
+        });
+      });
+      override.project.forEach((pattern, index) => {
+        projections.push({
+          id: configMatchId("workspace-project", key, index),
+          category: "project",
+          label: `workspaces.${key}.project`,
+          workspaceKey: key,
+          pattern,
+          fileMatched: false,
+        });
+      });
+      override.suppressions.forEach((rule, index) => {
+        projections.push(
+          projectSuppression(
+            configMatchId("workspace-suppression", key, index),
+            `workspaces.${key}.suppressions[${index}]`,
+            rule,
+            [],
+            "",
+            key,
+          ),
+        );
+      });
+      continue;
+    }
+    const workspaceFiles = [...new Set(indexes.flatMap((index) => scopedByUnit[index] ?? []))].sort(
+      compareCodeUnits,
+    );
+    override.entry.forEach((pattern, index) => {
+      projections.push({
+        id: configMatchId("workspace-entry", key, index),
+        category: "entry",
+        label: `workspaces.${key}.entry`,
+        workspaceKey: key,
+        pattern,
+        fileMatched: matchesAny(pattern, workspaceFiles),
+      });
+    });
+    override.project.forEach((pattern, index) => {
+      projections.push({
+        id: configMatchId("workspace-project", key, index),
+        category: "project",
+        label: `workspaces.${key}.project`,
+        workspaceKey: key,
+        pattern,
+        fileMatched: matchesAny(projectPatternBody(pattern), workspaceFiles),
+      });
+    });
+    override.suppressions.forEach((rule, index) => {
+      projections.push(
+        projectSuppression(
+          configMatchId("workspace-suppression", key, index),
+          `workspaces.${key}.suppressions[${index}]`,
+          rule,
+          workspaceFiles,
+          units[indexes[0] as number]?.rootRelDir ?? "",
+          key,
+        ),
+      );
+    });
+  }
+  return projections;
+}
+
+function projectSuppression(
+  id: string,
+  label: string,
+  rule: SuppressionRule,
+  files: readonly string[],
+  scopeRootRelDir = "",
+  workspaceKey?: string,
+): ConfigMatchProjection {
+  const matchers = rule.files.map(globToRegExp);
+  const fileMatched = files.some((file) => matchers.some((matcher) => matcher.test(file)));
+  return {
+    id,
+    category: "suppression",
+    label,
+    ...(workspaceKey === undefined ? {} : { workspaceKey }),
+    fileMatched,
+    patterns: rule.files,
+    scopeRootRelDir,
+    claimKinds: rule.kinds,
+  };
+}
+
+function configMatchId(...parts: readonly (string | number)[]): string {
+  return JSON.stringify(parts);
+}
+
+function indexConfigUnitLists(
+  units: readonly ConfigUnit[],
+): ReadonlyMap<string, readonly number[]> {
+  const index = new Map<string, number[]>();
+  units.forEach((unit, unitIndex) => {
+    if (unit.rootRelDir !== "") appendUnitIndex(index, unit.rootRelDir, unitIndex);
+    if (unit.name !== null && unit.name !== unit.rootRelDir) {
+      appendUnitIndex(index, unit.name, unitIndex);
+    }
+  });
+  return index;
+}
+
+function appendUnitIndex(index: Map<string, number[]>, key: string, unitIndex: number): void {
+  const indexes = index.get(key) ?? [];
+  indexes.push(unitIndex);
+  index.set(key, indexes);
+}
+
+function indexConfigUnits(units: readonly ConfigUnit[]): ReadonlyMap<string, number> {
+  const index = new Map<string, number>();
+  units.forEach((unit, unitIndex) => {
+    if (unit.rootRelDir !== "") index.set(unit.rootRelDir, unitIndex);
+    if (unit.name !== null && !index.has(unit.name)) index.set(unit.name, unitIndex);
+  });
+  return index;
 }
 
 function projectPatternBody(pattern: string): string {
@@ -1088,6 +1448,10 @@ function groupByUnit(files: readonly string[], units: readonly ConfigUnit[]): st
 // ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------
+
+function compareCodeUnits(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
 
 async function isReadableFile(path: string): Promise<boolean> {
   try {

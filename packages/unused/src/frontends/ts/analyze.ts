@@ -80,6 +80,7 @@ import {
   type IRGraph,
   type Site,
 } from "../../core/ir/index.js";
+import { createFrontendConfigContribution } from "../config-projection.js";
 import {
   applyConfigSymbolEntrypoints,
   graphSymbolLanguages,
@@ -92,6 +93,7 @@ import type {
 } from "../plugins/types.js";
 import {
   applyConfigSuppressions,
+  assertUnambiguousWorkspaceKeys,
   type ConfigUnit,
   collectConfigEntrypoints,
   computeConfigHash,
@@ -100,6 +102,8 @@ import {
   isClaimable,
   isIgnoredDependency,
   loadConfig,
+  type PresetName,
+  type UnusedConfig,
   warnOnEmptyConfigMatches,
 } from "./config.js";
 import {
@@ -183,6 +187,12 @@ export interface AnalyzeInternalOptions {
   readonly deferredConventions?: readonly DeferredConventionId[];
   /** Shared gitignore-bounded inventory supplied to the Elixir frontend. */
   readonly elixirSourceFiles?: readonly string[];
+  /** Already validated config for a repository-root boundary. */
+  readonly resolvedConfig?: UnusedConfig;
+  /** Repository-wide forced preset projection; presence, including [], wins. */
+  readonly forcedPresets?: readonly PresetName[];
+  /** Repository preset presence shadows this boundary's local preset identity. */
+  readonly boundaryPresetsShadowed?: boolean;
 }
 
 export type DeferredConventionId =
@@ -340,7 +350,7 @@ async function analyzeProjectGraph(
   // malformed JSON/JSONC, or a schema violation — the CLI maps it to exit 3.
   // Absent a config file this is `EMPTY_CONFIG`, under which every config-aware
   // step below is a documented no-op (the no-config regression contract).
-  const config = await loadConfig(root, options.configPath);
+  const config = internal.resolvedConfig ?? (await loadConfig(root, options.configPath));
 
   // Workspace auto-detect (T4.2, PRD §6). Throws `UnsupportedProjectError` on a
   // Yarn PnP layout BEFORE any analysis — a refusal, never a silent mis-answer;
@@ -356,6 +366,7 @@ async function analyzeProjectGraph(
   // workspace member classifies internal (its source), never external (T4.2).
   const workspacePackages = isWorkspace ? buildWorkspaceMap(units) : undefined;
   const configUnits: ConfigUnit[] = units.map((u) => ({ rootRelDir: u.rootRelDir, name: u.name }));
+  assertUnambiguousWorkspaceKeys(config, configUnits);
   if (fragmentOnly) performance?.increment("workspaces", units.length);
   else performance?.set("workspaces", units.length);
   if (workspaceStarted !== undefined) {
@@ -564,8 +575,10 @@ async function analyzeProjectGraph(
   // any top-level `index.html` for `<script src>` module references. No-op
   // when no preset is active for a unit (auto-detect finds no marker and
   // `config.presets` is unset) — the T4.4 no-config/no-marker regression path.
+  const presetConfig =
+    internal.forcedPresets === undefined ? config : { ...config, presets: internal.forcedPresets };
   for (const unit of units) {
-    const activePresets = await activePresetsForUnit(config, unit.dir);
+    const activePresets = await activePresetsForUnit(presetConfig, unit.dir);
     if (activePresets.length === 0) continue;
     // The unit's files, package-relative — the carrier presets (vite index.html,
     // storybook story globs, cdk `cdk.json#app`) all match against this set.
@@ -797,6 +810,15 @@ async function analyzeProjectGraph(
         units: configUnits,
         claimInputs,
       }),
+      configuration: createFrontendConfigContribution(
+        config,
+        configUnits,
+        "ts",
+        [...filesRel, ...dependencies.map((dependency) => dependency.loc.file)],
+        {
+          presetsShadowed: internal.boundaryPresetsShadowed === true,
+        },
+      ),
       metadata: {
         projectName: nameOfPackage(rootPkg) ?? basename(root),
         fileCount: files.length,

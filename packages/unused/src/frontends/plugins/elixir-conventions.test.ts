@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { fileId, IRGraph, symbolId } from "../../core/ir/index.js";
+import { EMPTY_CONFIG } from "../ts/config.js";
 import {
   ECTO_ADD_ERROR_AUDITED_RELEASES,
   ECTO_ADD_ERROR_AUDITED_VERSIONS,
@@ -155,6 +156,7 @@ function repository() {
     },
     now: new Date(0),
     toolVersion: "0.1.0",
+    repositoryConfig: EMPTY_CONFIG,
   } as const;
 }
 

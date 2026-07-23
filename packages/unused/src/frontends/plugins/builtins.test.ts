@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { PerformanceTracker } from "../../core/analysis/index.js";
 import { dependencyId, fileId, IRGraph } from "../../core/ir/index.js";
+import { EMPTY_CONFIG } from "../ts/config.js";
 import {
   BUILT_IN_LANGUAGE_PLUGINS,
   BUILT_IN_PLUGINS,
@@ -72,6 +73,7 @@ describe("built-in language plugins", () => {
       },
       now: new Date(0),
       toolVersion: "0.1.0",
+      repositoryConfig: EMPTY_CONFIG,
       performance,
     };
 

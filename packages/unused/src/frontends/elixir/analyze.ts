@@ -33,6 +33,7 @@ import {
   SCHEMA_VERSION,
 } from "../../core/claims/index.js";
 import { entrypointId, fileId, IRGraph } from "../../core/ir/index.js";
+import { createFrontendConfigContribution } from "../config-projection.js";
 import {
   applyConfigSymbolEntrypoints,
   graphSymbolLanguages,
@@ -47,6 +48,7 @@ import type {
 import type { AnalyzeInternalOptions, AnalyzeOptions, AnalyzeResult } from "../ts/analyze.js";
 import {
   applyConfigSuppressions,
+  assertUnambiguousWorkspaceKeys,
   collectConfigEntrypoints,
   computeConfigHash,
   isClaimable,
@@ -142,7 +144,8 @@ async function analyzeElixirProjectGraph(
   if (project === null) {
     throw new ElixirFrontendError(`not an Elixir project: no mix.exs found in ${rootDir}.`);
   }
-  const config = await loadConfig(project.projectDir, options.configPath);
+  const config =
+    internal.resolvedConfig ?? (await loadConfig(project.projectDir, options.configPath));
   if (fragmentOnly) performance?.increment("workspaces");
   else performance?.set("workspaces", 1);
   if (workspaceStarted !== undefined) {
@@ -169,6 +172,7 @@ async function analyzeElixirProjectGraph(
   const conventionStarted = performance?.now();
   const appName = readAppName(project.mixExsPath) ?? basename(project.projectDir);
   const configUnits = [{ rootRelDir: "", name: appName }] as const;
+  assertUnambiguousWorkspaceKeys(config, configUnits);
 
   // Config roots: modules named as tokens in config/*.exs are kept alive.
   const projectModules = new Set(traceResult.modules.map((m) => m.mod));
@@ -305,6 +309,9 @@ async function analyzeElixirProjectGraph(
         config,
         units: configUnits,
         claimInputs,
+      }),
+      configuration: createFrontendConfigContribution(config, configUnits, "ex", analyzedFiles, {
+        presetsShadowed: internal.boundaryPresetsShadowed === true,
       }),
       metadata: {
         projectName: appName,
