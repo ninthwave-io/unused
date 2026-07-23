@@ -276,6 +276,102 @@ end
     expect(subsequentCompile.stdout).not.toContain("Consolidated");
   });
 
+  it("accepts neutral structural spans across literals and token metadata", {
+    timeout: 60_000,
+  }, () => {
+    const projectDir = mkdtempSync(join(tmpdir(), "unused-ex-span-matrix-"));
+    dirs.push(projectDir);
+    mkdirSync(join(projectDir, "lib"));
+    writeFileSync(
+      join(projectDir, "mix.exs"),
+      `defmodule NeutralSpanMatrix.MixProject do
+  use Mix.Project
+  def project, do: [app: :neutral_span_matrix, version: "0.1.0"]
+end
+`,
+    );
+    writeFileSync(
+      join(projectDir, "lib", "neutral_span_matrix.ex"),
+      `defmodule NeutralSpanMatrix do
+  def combined(value), do: "é👨‍👩‍👧‍👦#{value}"
+  def modifier(value), do: "👍🏽#{value}"
+  def regional(value), do: "🇬🇧#{value}"
+  def keycap(value), do: "1️⃣#{value}"
+  def heredoc(_value), do: """
+  neutral #{inspect(String.trim(" value "))}
+  """
+  def charlist_heredoc(value), do: '''
+  neutral #{value}
+  '''
+  def sigil(value), do: ~s|neutral #{value}|
+  def literal_sigil(value), do: ~S|neutral #{value}|
+  def multiline_call(value), do: inspect(
+    value
+  )
+  def multiline_pipeline(value), do: value
+  |> inspect()
+  |> String.trim()
+  def multiline_tuple(value), do: {
+    :ok,
+    String.trim(inspect(value))
+  }
+  def multiline_map(value), do: %{
+    result: String.trim(inspect(value))
+  }
+  def binary(value), do: <<byte_size(String.trim(value))>>
+  def branch(value) do
+    case value do
+      nil -> inspect(:none)
+      other -> inspect(other)
+    end
+  end
+  def rescue_value(value) do
+    try do
+      inspect(value)
+    rescue
+      ArgumentError -> inspect(:invalid)
+    end
+  end
+  def anonymous(value), do: (fn
+    nil -> String.trim(inspect(:none))
+    other -> String.trim(inspect(other))
+  end).(value)
+  def trailing(value), do: inspect(value) # neutral
+  def semicolon(value), do: (inspect(value); :ok)
+end
+`,
+    );
+
+    const trace = runTracer(projectDir, { timeoutMs: 60_000 });
+    expect(trace.structuralFiles).toEqual([
+      expect.objectContaining({ status: "complete", reason: null }),
+    ]);
+    const structure = trace.structuralFiles?.[0];
+    expect(structure?.carriers).toHaveLength(18);
+    const carrierByFunction = new Map(
+      structure?.carriers.map((carrier) => [carrier.fun, carrier.id] as const),
+    );
+    expect(
+      structure?.facts.some(
+        (fact) =>
+          fact.carrier === carrierByFunction.get("heredoc/1") &&
+          fact.role === "call-argument" &&
+          fact.resolution === "exact",
+      ),
+    ).toBe(true);
+    for (const fun of ["multiline_tuple/1", "multiline_map/1", "binary/1"]) {
+      expect(
+        structure?.facts.some(
+          (fact) =>
+            fact.carrier === carrierByFunction.get(fun) &&
+            fact.role === "call-argument" &&
+            fact.resolution === "exact",
+        ),
+        fun,
+      ).toBe(true);
+    }
+  });
+
   it("refuses clearly when a fetched dependency has no compiled artifacts", {
     timeout: 60_000,
   }, () => {

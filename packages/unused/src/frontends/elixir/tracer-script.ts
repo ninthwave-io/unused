@@ -611,6 +611,10 @@ defmodule Unused.Structure do
           child = if match?({_key, _value}, value), do: elem(value, 1), else: value
           walk(child, carrier, acc, depth + 1)
         end)
+      tuple when is_tuple(tuple) ->
+        tuple
+        |> Tuple.to_list()
+        |> Enum.reduce(state, fn value, acc -> walk(value, carrier, acc, depth + 1) end)
       _ -> state
     end
   end
@@ -745,11 +749,19 @@ defmodule Unused.Structure do
   defp node_end(_), do: nil
 
   defp call_end(meta, name, args) do
-    token_point(Keyword.get(meta, :closing), 1) ||
-      token_point(Keyword.get(meta, :end), 3) ||
-      point(Keyword.get(meta, :end_of_expression)) ||
-      node_end(List.last(args)) ||
-      token_point(meta, String.length(to_string(name)))
+    if Keyword.has_key?(meta, :delimiter) do
+      # Quoted literals carry only the opening delimiter: strings use the
+      # internal :<<>> form and interpolated charlists use a generated
+      # List.to_charlist/1 call. Neither is a source call with a same-line
+      # function-name extent. Nested interpolation calls are still walked.
+      nil
+    else
+      token_point(Keyword.get(meta, :closing), 1) ||
+        token_point(Keyword.get(meta, :end), 3) ||
+        point(Keyword.get(meta, :end_of_expression)) ||
+        node_end(List.last(args)) ||
+        token_point(meta, String.length(to_string(name)))
+    end
   end
 
   defp point(meta) when is_list(meta) do
