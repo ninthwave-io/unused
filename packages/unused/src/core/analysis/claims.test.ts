@@ -10,6 +10,7 @@ import {
   fileId,
   type HazardClass,
   type HazardEffect,
+  type HazardWorld,
   IRGraph,
   type ReferenceKind,
   type Site,
@@ -651,6 +652,225 @@ describe("hazard registry — scoped effects (T3.1)", () => {
     expect(evaluation.effectsForSubject({ kind: "file", file: "lib/unrelated.ex" })).toEqual([]);
   });
 
+  it("filters a test-runtime unit hazard from test-only claims but not unused deletion", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addSymbol(g, "src/service.ts", "used");
+    addSymbol(g, "src/service.ts", "testOnly");
+    addSymbol(g, "src/service.ts", "dead");
+    addSymbol(g, "src/test-feature.ts", "run");
+    addSymbol(g, "test/support/selector.ts", "select");
+    addTestEntry(g, "test/service.test.ts");
+    ref(g, "src/index.ts", symbolId("src/service.ts", "used"), "static", "used");
+    for (const [file, name] of [
+      ["src/service.ts", "testOnly"],
+      ["src/test-feature.ts", "run"],
+      ["test/support/selector.ts", "select"],
+    ] as const) {
+      ref(g, "test/service.test.ts", symbolId(file, name), "static", name);
+    }
+    g.addHazard({
+      file: fileId("test/support/selector.ts"),
+      carrierSymbol: symbolId("test/support/selector.ts", "select"),
+      hazardClass: "elixir-computed-atom-escape",
+      detail: "neutral test-only computed value escape",
+      site: site("test/support/selector.ts"),
+      effect: { scope: { kind: "unit" }, worlds: ["test"] },
+    });
+
+    const reachability = computePartitionedReachability(g);
+    const evaluation = evaluateHazards({ graph: g, reachability });
+    const claims = emitClaims({
+      graph: g,
+      reachability,
+      provenance: PROVENANCE,
+      hazardEvaluation: evaluation,
+    });
+    expect(claims.find((claim) => claim.subject.name === "testOnly")).toMatchObject({
+      verdict: "test-only",
+      confidence: "high",
+    });
+    expect(claims.find((claim) => claim.subject.name === "src/test-feature.ts")).toMatchObject({
+      verdict: "test-only",
+      confidence: "high",
+    });
+    expect(claims.find((claim) => claim.subject.name === "dead")).toMatchObject({
+      verdict: "unused",
+      confidence: "medium",
+    });
+    expect(
+      evaluation.effectsForSubject({ kind: "export", file: "src/service.ts", name: "testOnly" }, [
+        "production",
+        "config",
+      ]),
+    ).toEqual([]);
+    expect(
+      computeDeletionPlan({
+        graph: g,
+        reachability,
+        subject: { kind: "export", file: "src/service.ts", name: "dead" },
+        hazardEvaluations: [evaluation],
+      }),
+    ).toMatchObject({
+      supported: false,
+      unsupportedReason: expect.stringContaining("in test and prevents proving deletion safe"),
+    });
+  });
+
+  it("inherits production facts into config and test while activating carriers per runtime world", () => {
+    const g = new IRGraph();
+    addEntry(g, "lib/application.ex");
+    addConfigEntry(g, "config/runtime.exs");
+    addSymbol(g, "lib/selector.ex", "Neutral.Selector.run/0");
+    addFile(g, "lib/candidate.ex");
+    ref(
+      g,
+      "config/runtime.exs",
+      symbolId("lib/selector.ex", "Neutral.Selector.run/0"),
+      "static",
+      "Neutral.Selector.run/0",
+    );
+    g.addHazard({
+      file: fileId("lib/selector.ex"),
+      carrierSymbol: symbolId("lib/selector.ex", "Neutral.Selector.run/0"),
+      hazardClass: "elixir-dynamic-dispatch",
+      detail: "neutral production fact reached from config",
+      site: site("lib/selector.ex"),
+      effect: { scope: { kind: "unit" }, worlds: ["production"] },
+    });
+
+    const reachability = computePartitionedReachability(g);
+    const evaluation = evaluateHazards({ graph: g, reachability });
+    expect(evaluation.activeHazardsByWorld.production.size).toBe(0);
+    expect(evaluation.activeHazardsByWorld.config.size).toBe(1);
+    expect(evaluation.activeHazardsByWorld.test.size).toBe(1);
+    expect(evaluation.effectsForSubject({ kind: "file", file: "lib/candidate.ex" })).toEqual([
+      expect.objectContaining({ worlds: ["config", "test"] }),
+    ]);
+    expect(claimConfidence(run(g), "lib/candidate.ex")).toBe("medium");
+  });
+
+  it("inherits a production fact into tests without leaking it into production claims", () => {
+    const g = new IRGraph();
+    addEntry(g, "lib/application.ex");
+    addSymbol(g, "lib/test_feature.ex", "Neutral.TestFeature.run/0");
+    addSymbol(g, "lib/selector.ex", "Neutral.Selector.run/0");
+    addTestEntry(g, "test/selector_test.exs");
+    ref(
+      g,
+      "test/selector_test.exs",
+      symbolId("lib/test_feature.ex", "Neutral.TestFeature.run/0"),
+      "static",
+    );
+    ref(
+      g,
+      "test/selector_test.exs",
+      symbolId("lib/selector.ex", "Neutral.Selector.run/0"),
+      "static",
+    );
+    g.addHazard({
+      file: fileId("lib/selector.ex"),
+      carrierSymbol: symbolId("lib/selector.ex", "Neutral.Selector.run/0"),
+      hazardClass: "elixir-computed-atom-escape",
+      detail: "neutral production fact reached only from tests",
+      site: site("lib/selector.ex"),
+      effect: { scope: { kind: "unit" }, worlds: ["production"] },
+    });
+
+    const reachability = computePartitionedReachability(g);
+    const evaluation = evaluateHazards({ graph: g, reachability });
+    const claims = emitClaims({
+      graph: g,
+      reachability,
+      provenance: PROVENANCE,
+      hazardEvaluation: evaluation,
+    });
+    expect(evaluation.activeHazardsByWorld.production.size).toBe(0);
+    expect(evaluation.activeHazardsByWorld.config.size).toBe(0);
+    expect(evaluation.activeHazardsByWorld.test.size).toBe(1);
+    expect(claims.find((claim) => claim.subject.name === "lib/test_feature.ex")).toMatchObject({
+      verdict: "test-only",
+      confidence: "high",
+    });
+    expect(evaluation.effectsForSubject({ kind: "file", file: "lib/test_feature.ex" })).toEqual([
+      expect.objectContaining({ worlds: ["test"] }),
+    ]);
+  });
+
+  it("enforces the complete origin-to-runtime availability matrix without backward flow", () => {
+    for (const [origin, activeWorlds, testOnlyConfidence] of [
+      ["production", ["production", "config", "test"], "medium"],
+      ["config", ["config", "test"], "medium"],
+      ["test", ["test"], "high"],
+    ] as const) {
+      const g = new IRGraph();
+      addEntry(g, "lib/application.ex");
+      addConfigEntry(g, "config/runtime.exs");
+      addTestEntry(g, "test/selector_test.exs");
+      addSymbol(g, "lib/selector.ex", "Neutral.Selector.run/0");
+      addSymbol(g, "lib/test_feature.ex", "Neutral.TestFeature.run/0");
+      addFile(g, "lib/candidate.ex");
+      for (const source of ["lib/application.ex", "config/runtime.exs", "test/selector_test.exs"]) {
+        ref(
+          g,
+          source,
+          symbolId("lib/selector.ex", "Neutral.Selector.run/0"),
+          "static",
+          "Neutral.Selector.run/0",
+        );
+      }
+      ref(
+        g,
+        "test/selector_test.exs",
+        symbolId("lib/test_feature.ex", "Neutral.TestFeature.run/0"),
+        "static",
+        "Neutral.TestFeature.run/0",
+      );
+      g.addHazard({
+        file: fileId("lib/selector.ex"),
+        carrierSymbol: symbolId("lib/selector.ex", "Neutral.Selector.run/0"),
+        hazardClass: "elixir-computed-atom-escape",
+        detail: `neutral ${origin} origin matrix fact`,
+        site: site("lib/selector.ex"),
+        effect: { scope: { kind: "unit" }, worlds: [origin] },
+      });
+
+      const reachability = computePartitionedReachability(g);
+      const evaluation = evaluateHazards({ graph: g, reachability });
+      const claims = emitClaims({
+        graph: g,
+        reachability,
+        provenance: PROVENANCE,
+        hazardEvaluation: evaluation,
+      });
+      const activeSet: ReadonlySet<HazardWorld> = new Set(activeWorlds);
+      for (const world of ["production", "config", "test"] as const) {
+        expect(evaluation.activeHazardsByWorld[world].size, `${origin} -> ${world}`).toBe(
+          activeSet.has(world) ? 1 : 0,
+        );
+      }
+      expect(evaluation.effectsForSubject({ kind: "file", file: "lib/candidate.ex" })).toEqual([
+        expect.objectContaining({ worlds: activeWorlds }),
+      ]);
+      expect(claims.find((claim) => claim.subject.name === "lib/candidate.ex")).toMatchObject({
+        verdict: "unused",
+        confidence: "medium",
+      });
+      expect(claims.find((claim) => claim.subject.name === "lib/test_feature.ex")).toMatchObject({
+        verdict: "test-only",
+        confidence: testOnlyConfidence,
+      });
+      expect(
+        computeDeletionPlan({
+          graph: g,
+          reachability,
+          subject: { kind: "file", file: "lib/candidate.ex" },
+          hazardEvaluations: [evaluation],
+        }),
+      ).toMatchObject({ supported: false });
+    }
+  });
+
   it("caps test-reachable targets reached independently by a production-active hazard", () => {
     const g = new IRGraph();
     addEntry(g, "lib/application.ex");
@@ -735,7 +955,7 @@ describe("hazard registry — scoped effects (T3.1)", () => {
         hazardEvaluations: [evaluation],
       }).supported,
     ).toBe(false);
-    expect(performance.snapshot().counters.fixedPointIterations).toBe(1);
+    expect(performance.snapshot().counters.fixedPointIterations).toBe(3);
   });
 
   it("combines overlapping subtree effects lazily while retaining the strongest cap", () => {
@@ -801,7 +1021,7 @@ describe("hazard registry — scoped effects (T3.1)", () => {
     const reachability = computePartitionedReachability(g);
     emitClaims({ graph: g, reachability, provenance: PROVENANCE, performance });
 
-    expect(performance.snapshot().counters.fixedPointIterations).toBe(1);
+    expect(performance.snapshot().counters.fixedPointIterations).toBe(3);
   });
 
   it("keeps many overlapping bounded sources on a delta-driven propagation curve", () => {
@@ -860,7 +1080,57 @@ describe("hazard registry — scoped effects (T3.1)", () => {
         name: `Neutral.Chain.step_${chainLength - 1}/0`,
       }),
     ).toHaveLength(sourceCount);
-    expect(performanceTracker.snapshot().counters.fixedPointIterations).toBe(1);
+    expect(performanceTracker.snapshot().counters.fixedPointIterations).toBe(3);
+    expect(elapsed).toBeLessThan(1_500);
+  });
+
+  it("keeps verdict-world cap lookup bounded across many irrelevant test hazards", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addTestEntry(g, "test/scale.test.ts");
+    const hazardCount = 400;
+    const subjectCount = 1_000;
+    for (let index = 0; index < hazardCount; index += 1) {
+      g.addHazard({
+        file: fileId("test/scale.test.ts"),
+        hazardClass: "elixir-computed-atom-escape",
+        detail: `neutral test-world escape ${index}`,
+        site: {
+          file: "test/scale.test.ts",
+          span: { ...SPAN, startLine: index + 1, endLine: index + 1 },
+        },
+        effect: { scope: { kind: "unit" }, worlds: ["test"] },
+      });
+    }
+    for (let index = 0; index < subjectCount; index += 1) {
+      const file = `src/generated/subject-${index}.ts`;
+      addFile(g, file);
+      ref(g, "test/scale.test.ts", fileId(file), "static", "*");
+    }
+
+    const performanceTracker = new PerformanceTracker();
+    const reachability = computePartitionedReachability(g);
+    const started = performance.now();
+    const evaluation = evaluateHazards({
+      graph: g,
+      reachability,
+      performance: performanceTracker,
+    });
+    const claims = emitClaims({
+      graph: g,
+      reachability,
+      provenance: PROVENANCE,
+      hazardEvaluation: evaluation,
+      performance: performanceTracker,
+    });
+    const elapsed = performance.now() - started;
+
+    const generated = claims.filter((claim) => claim.subject.loc.file.startsWith("src/generated/"));
+    expect(generated).toHaveLength(subjectCount);
+    expect(generated.every((claim) => claim.verdict === "test-only")).toBe(true);
+    expect(generated.every((claim) => claim.confidence === "high")).toBe(true);
+    expect(performanceTracker.snapshot().counters.fixedPointIterations).toBe(3);
+    expect(performanceTracker.snapshot().counters.deletionPlanSimulations).toBe(0);
     expect(elapsed).toBeLessThan(1_500);
   });
 
@@ -1332,6 +1602,60 @@ describe("tier-2 partition: zombie tests (T5.2 point 3)", () => {
     expect(files.every((c) => c.verdict === "test-only" && c.confidence === "high")).toBe(true);
   });
 
+  it("uses only test-world effects when assigning zombie-test confidence", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addSymbol(g, "src/helper.ts", "helper");
+    addTestEntry(g, "test/zombie.test.ts");
+    ref(g, "test/zombie.test.ts", symbolId("src/helper.ts", "helper"), "static", "helper");
+    g.addHazard({
+      file: fileId("test/zombie.test.ts"),
+      hazardClass: "elixir-computed-atom-escape",
+      detail: "neutral test-world uncertainty",
+      site: site("test/zombie.test.ts"),
+      effect: { scope: { kind: "unit" }, worlds: ["test"] },
+    });
+
+    const claims = run(g);
+    expect(claims.find((claim) => claim.subject.kind === "test")).toMatchObject({
+      verdict: "test-only",
+      confidence: "medium",
+    });
+    expect(claims.find((claim) => claim.subject.name === "src/helper.ts")).toMatchObject({
+      verdict: "test-only",
+      confidence: "high",
+    });
+  });
+
+  it("documents suite-wide test hazard confidence without per-test hazard walks", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addSymbol(g, "src/index.ts", "publicApi");
+    addSymbol(g, "src/helper.ts", "helper");
+    addTestEntry(g, "test/runtime.test.ts");
+    addTestEntry(g, "test/zombie.test.ts");
+    ref(g, "test/runtime.test.ts", symbolId("src/index.ts", "publicApi"), "static", "publicApi");
+    ref(g, "test/zombie.test.ts", symbolId("src/helper.ts", "helper"), "static", "helper");
+    g.addHazard({
+      file: fileId("test/runtime.test.ts"),
+      hazardClass: "elixir-computed-atom-escape",
+      detail: "neutral suite-global test uncertainty",
+      site: site("test/runtime.test.ts"),
+      effect: { scope: { kind: "unit" }, worlds: ["test"] },
+    });
+
+    const claims = run(g);
+    expect(claims.find((claim) => claim.subject.name === "test/runtime.test.ts")).toBeUndefined();
+    expect(claims.find((claim) => claim.subject.name === "test/zombie.test.ts")).toMatchObject({
+      verdict: "test-only",
+      confidence: "medium",
+    });
+    expect(claims.find((claim) => claim.subject.name === "src/helper.ts")).toMatchObject({
+      verdict: "test-only",
+      confidence: "high",
+    });
+  });
+
   it("does NOT flag a test that reaches production-alive code (conservative — not a zombie)", () => {
     const g = new IRGraph();
     addEntry(g, "src/index.ts");
@@ -1433,6 +1757,36 @@ describe("dependency claims (core)", () => {
     ]);
     expect(claims[0]?.evidence[0]?.type).toBe("test-only");
     expect(claims[0]?.evidence[0]?.detail).toContain("only from test files");
+  });
+
+  it("filters test-world unit effects from test-only dependencies but not unused ones", () => {
+    const g = new IRGraph();
+    addEntry(g, "src/index.ts");
+    addTestEntry(g, "test/dependency.test.ts");
+    g.addHazard({
+      file: fileId("test/dependency.test.ts"),
+      hazardClass: "elixir-computed-atom-escape",
+      detail: "neutral test dependency uncertainty",
+      site: site("test/dependency.test.ts"),
+      effect: { scope: { kind: "unit" }, worlds: ["test"] },
+    });
+    const claims = runWithDeps(g, [
+      DEP,
+      {
+        packageName: "supertest",
+        loc: { file: "package.json", span: [9, 9] },
+        verdict: "test-only",
+      },
+    ]);
+
+    expect(claims.find((claim) => claim.subject.name === "left-pad")).toMatchObject({
+      verdict: "unused",
+      confidence: "medium",
+    });
+    expect(claims.find((claim) => claim.subject.name === "supertest")).toMatchObject({
+      verdict: "test-only",
+      confidence: "high",
+    });
   });
 
   it("respects a project-scope cap: unresolvable-entrypoint-target downgrades deps to medium", () => {

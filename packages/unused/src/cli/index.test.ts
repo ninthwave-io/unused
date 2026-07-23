@@ -2352,7 +2352,7 @@ describe("unused CLI — why (T8.2, cli-ux §4)", () => {
       expect(JSON.parse(deletion.stdout)).toMatchObject({
         supported: false,
         unsupportedReason:
-          "active elixir-dynamic-dispatch hazard at lib/neutral_mfa/runtime.ex:4 in production " +
+          "active elixir-dynamic-dispatch hazard at lib/neutral_mfa/runtime.ex:4 in production/test " +
           "prevents proving deletion safe",
       });
     },

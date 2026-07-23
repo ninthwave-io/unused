@@ -176,7 +176,7 @@ describe("computeDeletionPlan", () => {
       ).toMatchObject({
         supported: false,
         unsupportedReason:
-          "active elixir-dynamic-dispatch hazard at lib/router.ex:8 in production " +
+          "active elixir-dynamic-dispatch hazard at lib/router.ex:8 in production/test " +
           "prevents proving deletion safe",
         stages: [],
       });
@@ -246,7 +246,7 @@ describe("computeDeletionPlan", () => {
     ).toMatchObject({
       supported: false,
       unsupportedReason:
-        "active elixir-dynamic-dispatch hazard at lib/router.ex:8 in production " +
+        "active elixir-dynamic-dispatch hazard at lib/router.ex:8 in production/test " +
         "prevents proving deletion safe",
       stages: [],
     });
@@ -273,7 +273,7 @@ describe("computeDeletionPlan", () => {
       supported: false,
       unsupportedReason:
         "active elixir-dynamic-dispatch hazard at lib/application.ex:12 " +
-        "in production/config/test prevents proving deletion safe",
+        "in production/test prevents proving deletion safe",
       stages: [],
     });
   });
@@ -299,7 +299,7 @@ describe("computeDeletionPlan", () => {
     ).toMatchObject({
       supported: false,
       unsupportedReason:
-        "computed atom escapes analysis at lib/application.ex:14 in production " +
+        "computed atom escapes analysis at lib/application.ex:14 in production/test " +
         "and prevents proving deletion safe",
       stages: [],
     });
@@ -325,7 +325,7 @@ describe("computeDeletionPlan", () => {
     expect(plan).toMatchObject({
       supported: false,
       unsupportedReason:
-        "computed atom escapes analysis at lib/application.ex:18 in production " +
+        "computed atom escapes analysis at lib/application.ex:18 in production/test " +
         "and prevents proving deletion safe",
       stages: [],
     });

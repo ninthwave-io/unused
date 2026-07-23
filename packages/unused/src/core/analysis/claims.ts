@@ -18,9 +18,10 @@
  * flagged). A subject reached only in the test world is `test-only`
  * (export/file/dependency); a test file exercising only test-only/dead code is a
  * zombie `test` claim. A subject reachable from nothing stays `unused`. The
- * `test-only` verdict runs through the identical hazard-cap machinery (`high`
- * when clean); its evidence names the actual effective-world root, which may be
- * production/config when a test-scoped edge leaves that root.
+ * `test-only` verdict runs through the shared hazard-cap machinery using only
+ * production/config effects (`high` when clean); a test-only hazard cannot
+ * undermine that verdict. Its evidence names the actual effective-world root,
+ * which may be production/config when a test-scoped edge leaves that root.
  *
  * ## Hazard scoping (T3.1 — replaces M2's blanket whole-project suppression)
  * Each hazard annotation is looked up in the registry (`hazard-registry.ts`),
@@ -87,13 +88,13 @@ import type {
   TestClaim,
   TestSubject,
 } from "../claims/types.js";
-import { fileId, type IRGraph, type IRNode } from "../ir/index.js";
+import { fileId, type HazardWorld, type IRGraph, type IRNode } from "../ir/index.js";
 import {
   type AppliedHazardCap,
   evaluateHazards,
   type HazardEvaluation,
 } from "./hazard-evaluation.js";
-import { type ConfidenceCap, capIsStrongerOrEqual } from "./hazard-registry.js";
+import type { ConfidenceCap } from "./hazard-registry.js";
 import type { PerformanceTracker } from "./performance.js";
 import {
   computeReachability,
@@ -104,6 +105,10 @@ import {
 
 /** The claim verdicts M5 emits for export/file/dependency subjects. */
 type LivenessVerdict = "unused" | "test-only";
+
+const UNUSED_CLAIM_WORLDS = ["production", "config", "test"] as const;
+const TEST_ONLY_CLAIM_WORLDS = ["production", "config"] as const;
+const ZOMBIE_TEST_CLAIM_WORLDS = ["test"] as const;
 
 const EVIDENCE_SOURCE = "reference-graph";
 
@@ -316,9 +321,9 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
   if (!hasProductionAnchor(production, input.analysisFiles)) return [];
 
   // --- registry-driven hazard caps ------------------------------------------
-  // `fileCap[F]`   caps F's file claim AND F's export claims (directory-subtree,
-  //                file scopes). `exportCap[F]` caps only F's export claims
-  //                (symbol-set scope). An unregistered class ⇒ project no-claim.
+  // Caps are indexed by subject and world. Claim verdicts select only the
+  // worlds that could invalidate that verdict; deletion planning deliberately
+  // asks the same evaluation for every world.
   const caps =
     input.hazardEvaluation?.graph === graph
       ? input.hazardEvaluation
@@ -335,7 +340,6 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
     finishClaimPerformance(input.performance, claimStarted, hazardBefore, evidenceBefore);
     return [];
   }
-  const { fileCap, fileOnlyCap, exportCap, symbolCap, unitCap, ownerRootRelDir } = caps;
 
   // Every root file (production, config, or test) — never itself flagged as a
   // file or export; a test root can only surface as a zombie `test` claim.
@@ -366,9 +370,7 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
       if (!isInScope(node.path, input.claimableFiles)) continue;
       const cls = fileClass.get(node.id);
       if (cls === undefined || cls === "alive") continue;
-      // A symbol-set (export-only) cap never applies to a file claim (file
-      // liveness is unaffected by a computed-CJS-export hazard).
-      const applied = strongerCap(fileCap.get(node.id), fileOnlyCap.get(node.id));
+      const applied = caps.capForSubject({ kind: "file", file: node.path }, claimWorlds(cls));
       if (applied?.cap === "no-claim") continue; // e.g. an unparseable file
       const confidence = confidenceForCap(applied);
       const span = spanForFile(node.id, input.fileLineCounts);
@@ -403,11 +405,10 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
       if (fileClass.get(fileNodeId) !== "alive" && !entrypointFiles.has(fileNodeId)) continue;
       if (surfaceEntrypointFiles.has(fileNodeId) && exportedSymbolIds.has(node.id)) continue;
       if (aliveSymbol(node.id)) continue; // used from production or config
-      // An export claim is capped by the stronger of the file-scoped and the
-      // export-only (symbol-set) hazard covering its file.
-      const applied = strongerCap(
-        strongerCap(fileCap.get(fileNodeId), exportCap.get(fileNodeId)),
-        symbolCap.get(node.id),
+      const verdict = test.reachableSymbols.has(node.id) ? "test-only" : "unused";
+      const applied = caps.capForSubject(
+        { kind: "export", file: node.file, name: node.exportedName },
+        claimWorlds(verdict),
       );
       if (applied?.cap === "no-claim") continue;
       const confidence = confidenceForCap(applied);
@@ -415,7 +416,7 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
       const suppression = suppressionOf(node.suppression, node.file, node.span.startLine);
       // A dead export in an alive file: `test-only` when a test still reaches it,
       // otherwise plainly `unused`.
-      if (test.reachableSymbols.has(node.id)) {
+      if (verdict === "test-only") {
         claims.push(
           buildExportClaim(
             node.exportedName,
@@ -450,7 +451,7 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
   // A test file that exercises nothing production-alive is a zombie: everything
   // it reaches is itself test-only or dead. Conservative — if it reaches ANY
   // production/config-reachable subject it is kept (not a zombie).
-  claims.push(...emitZombieTestClaims(graph, reachability, fileCap, input, context));
+  claims.push(...emitZombieTestClaims(graph, reachability, caps, input, context));
 
   // --- dependency claims (T4.1, T5.2 point 4) -------------------------------
   // The frontend already excluded referenced / kept-alive dependencies and
@@ -464,7 +465,10 @@ export function emitClaims(input: EmitClaimsInput): Claim[] {
     // (its declaring package.json's unit) — not a run-wide cap: a computed
     // require in one package must not downgrade a sibling package's dependency
     // claims. `dep.loc.file` is the declaring package.json's path.
-    const depCap = unitCap.get(ownerRootRelDir(dep.loc.file));
+    const depCap = caps.capForSubject(
+      { kind: "dependency", file: dep.loc.file, name: dep.packageName },
+      claimWorlds(dep.verdict ?? "unused"),
+    );
     const confidence = confidenceForCap(depCap);
     claims.push(buildDependencyClaim(dep, input, confidence, noteForCap(depCap)));
   }
@@ -534,10 +538,8 @@ function finishClaimPerformance(
   }
 }
 
-function strongerCap(a: AppliedCap | undefined, b: AppliedCap | undefined): AppliedCap | undefined {
-  if (a === undefined) return b;
-  if (b === undefined) return a;
-  return capIsStrongerOrEqual(a.cap, b.cap) ? a : b;
+function claimWorlds(verdict: LivenessVerdict): readonly HazardWorld[] {
+  return verdict === "test-only" ? TEST_ONLY_CLAIM_WORLDS : UNUSED_CLAIM_WORLDS;
 }
 
 /** Base confidence is `high`; a cap can only lower it (T3.3 assigns below the cap). */
@@ -582,7 +584,7 @@ function testWorldRootFor(
 function emitZombieTestClaims(
   graph: IRGraph,
   reachability: PartitionedReachability,
-  fileCap: ReadonlyMap<string, AppliedCap>,
+  hazards: HazardEvaluation,
   input: EmitClaimsInput,
   context: ClaimEmissionContext,
 ): TestClaim[] {
@@ -683,7 +685,10 @@ function emitZombieTestClaims(
     }
     if (!reachedOther || reachesAlive) continue;
 
-    const applied = fileCap.get(testFileId);
+    const applied = hazards.capForSubject(
+      { kind: "file", file: entry.file },
+      ZOMBIE_TEST_CLAIM_WORLDS,
+    );
     if (applied?.cap === "no-claim") continue; // e.g. an unparseable test file
     claims.push(
       buildTestClaim(

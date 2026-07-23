@@ -751,7 +751,7 @@ end
     expect(invoked.hazards).toContainEqual(
       expect.objectContaining({
         hazardClass: "elixir-dynamic-dispatch",
-        worlds: ["production"],
+        worlds: ["production", "test"],
         site: "lib/neutral_atom_roles/flows.ex:10",
       }),
     );
@@ -816,7 +816,7 @@ end
     expect(escaped.hazards).toContainEqual(
       expect.objectContaining({
         hazardClass: "elixir-computed-atom-escape",
-        worlds: ["production"],
+        worlds: ["production", "test"],
         site: "lib/neutral_atom_escape/flow.ex:3",
       }),
     );
@@ -936,12 +936,12 @@ end
       expect.objectContaining({
         hazardClass: "elixir-computed-atom-escape",
         site: "lib/neutral_private_unsafe/flow.ex:7",
-        worlds: ["production"],
+        worlds: ["production", "test"],
       }),
       expect.objectContaining({
         hazardClass: "elixir-dynamic-dispatch",
         site: "lib/neutral_private_unsafe/flow.ex:8",
-        worlds: ["production"],
+        worlds: ["production", "test"],
       }),
     ]);
     expect(
@@ -1038,17 +1038,17 @@ end
         expect.objectContaining({
           hazardClass: "elixir-computed-atom-escape",
           site: "lib/neutral_public_unsafe/flow.ex:4",
-          worlds: ["production"],
+          worlds: ["production", "test"],
         }),
         expect.objectContaining({
           hazardClass: "elixir-computed-atom-escape",
           site: "lib/neutral_public_unsafe/flow.ex:8",
-          worlds: ["production"],
+          worlds: ["production", "test"],
         }),
         expect.objectContaining({
           hazardClass: "elixir-dynamic-dispatch",
           site: "lib/neutral_public_unsafe/flow.ex:7",
-          worlds: ["production"],
+          worlds: ["production", "test"],
         }),
       ]),
     );
@@ -1165,22 +1165,22 @@ end
         expect.objectContaining({
           hazardClass: "elixir-dynamic-dispatch",
           site: "lib/neutral_cross_unsafe/target.ex:2",
-          worlds: ["production"],
+          worlds: ["production", "test"],
         }),
         expect.objectContaining({
           hazardClass: "elixir-computed-atom-escape",
           site: "lib/neutral_cross_unsafe/flow.ex:3",
-          worlds: ["production"],
+          worlds: ["production", "test"],
         }),
         expect.objectContaining({
           hazardClass: "elixir-computed-atom-escape",
           site: "lib/neutral_cross_unsafe/target.ex:4",
-          worlds: ["production"],
+          worlds: ["production", "test"],
         }),
         expect.objectContaining({
           hazardClass: "elixir-computed-atom-escape",
           site: "lib/neutral_cross_unsafe/flow.ex:5",
-          worlds: ["production"],
+          worlds: ["production", "test"],
         }),
       ]),
     );
@@ -1229,7 +1229,7 @@ end
         expect.objectContaining({
           hazardClass: "elixir-computed-atom-escape",
           site: "lib/neutral_ledger_use/entry.ex:2",
-          worlds: ["production"],
+          worlds: ["production", "test"],
         }),
       ]),
     );

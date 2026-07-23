@@ -34,7 +34,13 @@
  */
 
 import type { Claim, Confidence, DeletionPlanSubject, Evidence, Verdict } from "../claims/types.js";
-import { type EntrypointKind, fileId, type IRGraph, symbolId } from "../ir/index.js";
+import {
+  type EntrypointKind,
+  fileId,
+  type HazardWorld,
+  type IRGraph,
+  symbolId,
+} from "../ir/index.js";
 import { effectsForSubject, evaluateHazards, type HazardEvaluation } from "./hazard-evaluation.js";
 import type { PerformanceTracker } from "./performance.js";
 import { type PartitionedReachability, type Reachability, whyReachable } from "./reachability.js";
@@ -143,6 +149,8 @@ const PARTITION_KIND: Readonly<Record<keyof PartitionedReachability, EntrypointK
 };
 const MAX_PATHS = 3;
 const EVIDENCE_SOURCE = "reference-graph";
+const DEAD_WORLDS = ["production", "config", "test"] as const;
+const TEST_ONLY_WORLDS = ["production", "config"] as const;
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -482,12 +490,16 @@ function deadResult(
   hazardEvaluations: readonly HazardEvaluation[],
 ): WhyAliveResult {
   const claim = findClaim(claims, subject);
-  const hazards: WhyHazard[] = effectsForSubject(hazardEvaluations, subject).map((effect) => ({
-    hazardClass: effect.hazardClass,
-    detail: effect.detail,
-    worlds: effect.worlds,
-    site: `${effect.siteFile}:${effect.siteLine}`,
-  }));
+  const relevantWorlds: readonly HazardWorld[] =
+    claim?.verdict === "test-only" ? TEST_ONLY_WORLDS : DEAD_WORLDS;
+  const hazards: WhyHazard[] = effectsForSubject(hazardEvaluations, subject, relevantWorlds).map(
+    (effect) => ({
+      hazardClass: effect.hazardClass,
+      detail: effect.detail,
+      worlds: effect.worlds,
+      site: `${effect.siteFile}:${effect.siteLine}`,
+    }),
+  );
 
   const evidence: readonly Evidence[] =
     claim !== undefined

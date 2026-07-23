@@ -14,7 +14,7 @@ import {
   lookupHazard,
 } from "./hazard-registry.js";
 import type { PerformanceTracker } from "./performance.js";
-import type { PartitionedReachability } from "./reachability.js";
+import type { PartitionedReachability, Reachability } from "./reachability.js";
 
 export interface AppliedHazardCap {
   readonly cap: ConfidenceCap;
@@ -24,6 +24,7 @@ export interface AppliedHazardCap {
   readonly hazardClass: HazardAnnotation["hazardClass"];
   /** Present only when the frontend supplied an authoritative explicit scope. */
   readonly effectScope?: HazardEffectScope;
+  /** Runtime worlds in which the carrier activated this effect. */
   readonly worlds: readonly HazardWorld[];
 }
 
@@ -51,13 +52,16 @@ export interface HazardEvaluation {
   readonly graph: IRGraph;
   readonly projectNoClaim: boolean;
   readonly activeHazards: ReadonlySet<HazardAnnotation>;
-  readonly fileCap: ReadonlyMap<string, AppliedHazardCap>;
-  readonly fileOnlyCap: ReadonlyMap<string, AppliedHazardCap>;
-  readonly exportCap: ReadonlyMap<string, AppliedHazardCap>;
-  readonly symbolCap: ReadonlyMap<string, AppliedHazardCap>;
-  readonly unitCap: ReadonlyMap<string, AppliedHazardCap>;
+  readonly activeHazardsByWorld: Readonly<Record<HazardWorld, ReadonlySet<HazardAnnotation>>>;
   readonly ownerRootRelDir: (path: string) => string;
-  effectsForSubject(subject: HazardSubject): readonly AppliedHazardCap[];
+  capForSubject(
+    subject: HazardSubject,
+    worlds: readonly HazardWorld[],
+  ): AppliedHazardCap | undefined;
+  effectsForSubject(
+    subject: HazardSubject,
+    worlds?: readonly HazardWorld[],
+  ): readonly AppliedHazardCap[];
 }
 
 export interface HazardEvaluationContext {
@@ -88,6 +92,26 @@ interface RangeCap {
   readonly end: number;
   readonly applied: AppliedHazardCap;
 }
+
+interface WorldEffectState {
+  projectCap: AppliedHazardCap | undefined;
+  readonly projectEffects: AppliedHazardCap[];
+  readonly fileCap: Map<string, AppliedHazardCap>;
+  readonly fileOnlyCap: Map<string, AppliedHazardCap>;
+  readonly exportCap: Map<string, AppliedHazardCap>;
+  readonly symbolCap: Map<string, AppliedHazardCap>;
+  readonly unitCap: Map<string, AppliedHazardCap>;
+  readonly fileEffects: Map<string, AppliedHazardCap[]>;
+  readonly exportEffects: Map<string, AppliedHazardCap[]>;
+  readonly symbolEffects: Map<string, AppliedHazardCap[]>;
+  readonly unitEffects: Map<string, AppliedHazardCap[]>;
+  readonly prefixEffects: PrefixEffectIndex;
+  readonly rangeCaps: RangeCap[];
+  readonly syntheticSourcesBySymbol: Map<string, Set<HazardAnnotation>>;
+  readonly activeHazards: Set<HazardAnnotation>;
+}
+
+const HAZARD_WORLDS = ["production", "config", "test"] as const satisfies readonly HazardWorld[];
 
 /** Build graph-wide indexes once when several frontend fragments share a graph. */
 export function createHazardEvaluationContext(graph: IRGraph): HazardEvaluationContext {
@@ -129,19 +153,9 @@ export function evaluateHazards(input: HazardEvaluationInput): HazardEvaluation 
   const context =
     input.context?.graph === graph ? input.context : createHazardEvaluationContext(graph);
   const started = performance?.now();
-  const fileCap = new Map<string, AppliedHazardCap>();
-  const fileOnlyCap = new Map<string, AppliedHazardCap>();
-  const exportCap = new Map<string, AppliedHazardCap>();
-  const symbolCap = new Map<string, AppliedHazardCap>();
-  const fileEffects = new Map<string, AppliedHazardCap[]>();
-  const exportEffects = new Map<string, AppliedHazardCap[]>();
-  const symbolEffects = new Map<string, AppliedHazardCap[]>();
-  const unitEffects = new Map<string, AppliedHazardCap[]>();
-  const projectEffects: AppliedHazardCap[] = [];
-  const prefixEffects = new PrefixEffectIndex();
-  const rangeCaps: RangeCap[] = [];
   let projectNoClaim = false;
   const warned = new Set<string>();
+  const fallbackProjectEffects: AppliedHazardCap[] = [];
 
   const unitsByDepth = [...(input.units ?? DEFAULT_UNITS)].sort(
     (a, b) => b.rootRelDir.length - a.rootRelDir.length,
@@ -186,7 +200,7 @@ export function evaluateHazards(input: HazardEvaluationInput): HazardEvaluation 
     const entry = lookupHazard(hazard.hazardClass);
     if (entry === undefined) {
       projectNoClaim = true;
-      projectEffects.push(appliedCap(hazard, "no-claim"));
+      fallbackProjectEffects.push(appliedCap(hazard, "no-claim"));
       if (!warned.has(hazard.hazardClass)) {
         warned.add(hazard.hazardClass);
         console.warn(
@@ -205,173 +219,171 @@ export function evaluateHazards(input: HazardEvaluationInput): HazardEvaluation 
     if (entry.activation === "carrier-reachable") addToList(byCarrier, carrierNode, item);
   }
   const executableSymbolEdges = context.executableSymbolEdges;
-
-  const activeHazards = new Set<HazardAnnotation>();
-  // ADR 0014 Phase 1A records authoritative fact worlds but deliberately
-  // preserves the existing unioned activation behavior. Phase 4 will evaluate
-  // worlds independently; until then, filtering here could make a previously
-  // protected subject claimable and would violate this checkpoint's rollback.
-  const reachableCarrierNodes = reachableCarriers(context, reachability, analysisFiles);
-  const queue: Array<{ readonly carrier: string; readonly source?: HazardAnnotation }> = [
-    ...reachableCarrierNodes,
-  ].map((carrier) => ({ carrier }));
-  let queueIndex = 0;
-  const activatedCarriers = new Set<string>();
-  const syntheticSourcesBySymbol = new Map<string, Set<HazardAnnotation>>();
-  const unreachedFiles = new UnreachedFileIndex(fileNodes, ownerRootRelDir, reachableCarrierNodes);
-
-  const activate = (item: RegisteredHazard): void => {
-    if (activeHazards.has(item.hazard)) return;
-    activeHazards.add(item.hazard);
-    if (item.entry.propagation === "affected-symbols") {
-      const scope = item.hazard.effect?.scope;
-      for (const target of scope?.kind === "symbols" ? scope.ids : []) {
-        markSyntheticSymbol(target, item.hazard);
-      }
-      return;
-    }
-    for (const target of propagationTargets(item, unreachedFiles, ownerRootRelDir, graph)) {
-      if (reachableCarrierNodes.has(target)) continue;
-      reachableCarrierNodes.add(target);
-      queue.push({ carrier: target });
-    }
-  };
-
-  const markSyntheticSymbol = (target: string, source: HazardAnnotation): void => {
-    if (graph.getNode(target)?.kind !== "symbol") return;
-    let sources = syntheticSourcesBySymbol.get(target);
-    if (sources === undefined) {
-      sources = new Set();
-      syntheticSourcesBySymbol.set(target, sources);
-    }
-    if (sources.has(source)) return;
-    sources.add(source);
-    reachableCarrierNodes.add(target);
-    // Queue even when ordinary production/config/test reachability already
-    // contains the symbol: synthetic uncertainty has its own effect closure,
-    // and a test-only target still needs the production-active hazard cap.
-    // Each queue item is the newly discovered (symbol, source) delta. Processing
-    // the accumulated Set for every addition would make H overlapping hazards
-    // on an S-symbol chain O(S*H^2) instead of the necessary O(H*E).
-    queue.push({ carrier: target, source });
-  };
-
-  for (const item of registered) {
-    if (item.entry.activation === "always") activate(item);
-  }
   if (registered.some((item) => item.entry.activation === "carrier-reachable")) {
-    performance?.increment("fixedPointIterations");
+    performance?.increment("fixedPointIterations", HAZARD_WORLDS.length);
   }
-  while (queueIndex < queue.length) {
-    const item = queue[queueIndex];
-    queueIndex += 1;
-    if (item === undefined) continue;
-    if (!activatedCarriers.has(item.carrier)) {
-      activatedCarriers.add(item.carrier);
-      for (const registeredItem of byCarrier.get(item.carrier) ?? []) activate(registeredItem);
-    }
-    if (item.source !== undefined) {
-      for (const target of executableSymbolEdges.get(item.carrier) ?? []) {
-        markSyntheticSymbol(target, item.source);
-      }
-    }
-  }
-
-  const unitCap = new Map<string, AppliedHazardCap>();
-  const raiseUnitCap = (unit: string, applied: AppliedHazardCap): void => {
-    mergeCap(unitCap, unit, applied);
-    addEffect(unitEffects, unit, applied);
+  const states: Record<HazardWorld, WorldEffectState> = {
+    production: createWorldEffectState(),
+    config: createWorldEffectState(),
+    test: createWorldEffectState(),
   };
 
-  for (const item of registered) {
-    const { hazard, entry } = item;
-    if (!activeHazards.has(hazard)) continue;
-    const applied = appliedCap(hazard, entry.cap);
-    const explicitScope = hazard.effect?.scope;
-    if (explicitScope?.kind === "symbols") {
-      if (entry.propagation === "affected-symbols") {
-        // Synthetic propagation applies these effects below after computing the
-        // executable-symbol closure.
+  for (const world of HAZARD_WORLDS) {
+    const state = states[world];
+    const reachableCarrierNodes = reachableCarriers(context, reachability[world], analysisFiles);
+    const queue: Array<{ readonly carrier: string; readonly source?: HazardAnnotation }> = [
+      ...reachableCarrierNodes,
+    ].map((carrier) => ({ carrier }));
+    let queueIndex = 0;
+    const activatedCarriers = new Set<string>();
+    const unreachedFiles = new UnreachedFileIndex(
+      fileNodes,
+      ownerRootRelDir,
+      reachableCarrierNodes,
+    );
+
+    const markSyntheticSymbol = (target: string, source: HazardAnnotation): void => {
+      if (graph.getNode(target)?.kind !== "symbol") return;
+      let sources = state.syntheticSourcesBySymbol.get(target);
+      if (sources === undefined) {
+        sources = new Set();
+        state.syntheticSourcesBySymbol.set(target, sources);
+      }
+      if (sources.has(source)) return;
+      sources.add(source);
+      reachableCarrierNodes.add(target);
+      // Each queue item is one newly discovered (symbol, source, world) delta.
+      // Processing accumulated sources again would add an avoidable hazard
+      // factor to the finite executable-symbol closure.
+      queue.push({ carrier: target, source });
+    };
+
+    const activate = (item: RegisteredHazard): void => {
+      if (!hazardAppliesInWorld(item.hazard, world) || state.activeHazards.has(item.hazard)) {
+        return;
+      }
+      state.activeHazards.add(item.hazard);
+      if (item.entry.propagation === "affected-symbols") {
+        const scope = item.hazard.effect?.scope;
+        for (const target of scope?.kind === "symbols" ? scope.ids : []) {
+          markSyntheticSymbol(target, item.hazard);
+        }
+        return;
+      }
+      for (const target of propagationTargets(item, unreachedFiles, ownerRootRelDir, graph)) {
+        if (reachableCarrierNodes.has(target)) continue;
+        reachableCarrierNodes.add(target);
+        queue.push({ carrier: target });
+      }
+    };
+
+    for (const item of registered) {
+      if (item.entry.activation === "always") activate(item);
+    }
+    while (queueIndex < queue.length) {
+      const item = queue[queueIndex];
+      queueIndex += 1;
+      if (item === undefined) continue;
+      if (!activatedCarriers.has(item.carrier)) {
+        activatedCarriers.add(item.carrier);
+        for (const registeredItem of byCarrier.get(item.carrier) ?? []) activate(registeredItem);
+      }
+      if (item.source !== undefined) {
+        for (const target of executableSymbolEdges.get(item.carrier) ?? []) {
+          markSyntheticSymbol(target, item.source);
+        }
+      }
+    }
+
+    const raiseUnitCap = (unit: string, applied: AppliedHazardCap): void => {
+      mergeCap(state.unitCap, unit, applied);
+      addEffect(state.unitEffects, unit, applied);
+    };
+
+    for (const item of registered) {
+      const { hazard, entry } = item;
+      if (!state.activeHazards.has(hazard)) continue;
+      const applied = appliedCapForWorld(hazard, entry.cap, world);
+      const explicitScope = hazard.effect?.scope;
+      if (explicitScope?.kind === "symbols") {
+        if (entry.propagation === "affected-symbols") continue;
+        for (const id of explicitScope.ids) {
+          const symbol = graph.getNode(id);
+          if (symbol?.kind !== "symbol" || !isInScope(symbol.file, analysisFiles)) continue;
+          mergeCap(state.symbolCap, symbol.id, applied);
+          addEffect(state.symbolEffects, symbol.id, applied);
+          if (entry.scope !== "symbol-set") {
+            const containingFile = fileId(symbol.file);
+            mergeCap(state.fileOnlyCap, containingFile, applied);
+            addEffect(state.fileEffects, containingFile, applied);
+          }
+        }
         continue;
       }
-      for (const id of explicitScope.ids) {
-        const symbol = graph.getNode(id);
-        if (symbol?.kind !== "symbol" || !isInScope(symbol.file, analysisFiles)) continue;
-        mergeCap(symbolCap, symbol.id, applied);
-        addEffect(symbolEffects, symbol.id, applied);
-        if (entry.scope !== "symbol-set") {
-          const containingFile = fileId(symbol.file);
-          mergeCap(fileOnlyCap, containingFile, applied);
-          addEffect(fileEffects, containingFile, applied);
+      if (explicitScope?.kind === "file") {
+        mergeCap(state.fileCap, hazard.file, applied);
+        addEffect(state.fileEffects, hazard.file, applied);
+        addEffect(state.exportEffects, hazard.file, applied);
+        continue;
+      }
+      if (explicitScope?.kind === "unit") {
+        raiseUnitCap(ownerRootRelDir(carrierPath(hazard, graph)), applied);
+        continue;
+      }
+
+      switch (entry.scope) {
+        case "none":
+          break;
+        case "project":
+          if (entry.cap === "no-claim") {
+            state.projectCap = preferredCap(state.projectCap, applied);
+            state.projectEffects.push(applied);
+          } else raiseUnitCap(ownerRootRelDir(carrierPath(hazard, graph)), applied);
+          break;
+        case "file":
+          mergeCap(state.fileCap, hazard.file, applied);
+          addEffect(state.fileEffects, hazard.file, applied);
+          addEffect(state.exportEffects, hazard.file, applied);
+          break;
+        case "symbol-set":
+          mergeCap(state.exportCap, hazard.file, applied);
+          addEffect(state.exportEffects, hazard.file, applied);
+          break;
+        case "directory-subtree": {
+          const prefix = hazard.subtreePrefix ?? "";
+          if (prefix === "") {
+            raiseUnitCap(ownerRootRelDir(carrierPath(hazard, graph)), applied);
+          } else {
+            const [start, end] = prefixRange(fileNodes, prefix);
+            if (start < end) state.rangeCaps.push({ start, end, applied });
+            state.prefixEffects.add(prefix, applied);
+          }
+          break;
         }
       }
-      continue;
-    }
-    if (explicitScope?.kind === "file") {
-      mergeCap(fileCap, hazard.file, applied);
-      addEffect(fileEffects, hazard.file, applied);
-      addEffect(exportEffects, hazard.file, applied);
-      continue;
-    }
-    if (explicitScope?.kind === "unit") {
-      raiseUnitCap(ownerRootRelDir(carrierPath(hazard, graph)), applied);
-      continue;
     }
 
-    switch (entry.scope) {
-      case "none":
-        break;
-      case "project":
-        if (entry.cap === "no-claim") {
-          projectNoClaim = true;
-          projectEffects.push(applied);
-        } else raiseUnitCap(ownerRootRelDir(carrierPath(hazard, graph)), applied);
-        break;
-      case "file":
-        mergeCap(fileCap, hazard.file, applied);
-        addEffect(fileEffects, hazard.file, applied);
-        addEffect(exportEffects, hazard.file, applied);
-        break;
-      case "symbol-set":
-        mergeCap(exportCap, hazard.file, applied);
-        addEffect(exportEffects, hazard.file, applied);
-        break;
-      case "directory-subtree": {
-        const prefix = hazard.subtreePrefix ?? "";
-        if (prefix === "") {
-          raiseUnitCap(ownerRootRelDir(carrierPath(hazard, graph)), applied);
-        } else {
-          const [start, end] = prefixRange(fileNodes, prefix);
-          if (start < end) rangeCaps.push({ start, end, applied });
-          prefixEffects.add(prefix, applied);
-        }
-        break;
+    for (const [id, sources] of state.syntheticSourcesBySymbol) {
+      const symbol = graph.getNode(id);
+      if (symbol?.kind !== "symbol" || !isInScope(symbol.file, analysisFiles)) continue;
+      for (const source of sources) {
+        const entry = lookupHazard(source.hazardClass);
+        if (entry === undefined) continue;
+        const applied = appliedCapForWorld(source, entry.cap, world);
+        mergeCap(state.symbolCap, symbol.id, applied);
+        addEffect(state.symbolEffects, symbol.id, applied);
+        const containingFile = fileId(symbol.file);
+        mergeCap(state.fileOnlyCap, containingFile, applied);
+        addEffect(state.fileEffects, containingFile, applied);
       }
     }
-  }
 
-  for (const [id, sources] of syntheticSourcesBySymbol) {
-    const symbol = graph.getNode(id);
-    if (symbol?.kind !== "symbol" || !isInScope(symbol.file, analysisFiles)) continue;
-    for (const source of sources) {
-      const entry = lookupHazard(source.hazardClass);
-      if (entry === undefined) continue;
-      const applied = appliedCap(source, entry.cap);
-      mergeCap(symbolCap, symbol.id, applied);
-      addEffect(symbolEffects, symbol.id, applied);
-      const containingFile = fileId(symbol.file);
-      mergeCap(fileOnlyCap, containingFile, applied);
-      addEffect(fileEffects, containingFile, applied);
-    }
-  }
-
-  applyRangeCaps(fileNodes, rangeCaps, fileCap);
-
-  if (unitCap.size > 0) {
-    for (const file of fileNodes) {
-      const unit = ownerRootRelDir(file.path);
-      const cap = unitCap.get(unit);
-      if (cap !== undefined) mergeCap(fileCap, file.id, cap);
+    applyRangeCaps(fileNodes, state.rangeCaps, state.fileCap);
+    if (state.unitCap.size > 0) {
+      for (const file of fileNodes) {
+        const cap = state.unitCap.get(ownerRootRelDir(file.path));
+        if (cap !== undefined) mergeCap(state.fileCap, file.id, cap);
+      }
     }
   }
 
@@ -384,45 +396,45 @@ export function evaluateHazards(input: HazardEvaluationInput): HazardEvaluation 
           ),
         );
 
-  const effectsForSubject = (subject: HazardSubject): readonly AppliedHazardCap[] => {
-    if (subject.kind === "dependency") {
-      if (
-        dependencySubjects !== undefined &&
-        !dependencySubjects.has(dependencySubjectKey(subject.file, subject.name))
-      ) {
-        return [];
-      }
-      return stableEffects([
-        ...projectEffects,
-        ...(unitEffects.get(ownerRootRelDir(subject.file)) ?? []),
-      ]);
-    }
-    if (!isInScope(subject.file, analysisFiles)) return [];
-    const id = fileId(subject.file);
-    const scopedEffects = [
-      ...projectEffects,
-      ...(unitEffects.get(ownerRootRelDir(subject.file)) ?? []),
-      ...prefixEffects.forPath(subject.file),
-    ];
-    if (subject.kind === "file")
-      return stableEffects([...scopedEffects, ...(fileEffects.get(id) ?? [])]);
+  const effectsForSubject = (
+    subject: HazardSubject,
+    worlds: readonly HazardWorld[] = HAZARD_WORLDS,
+  ): readonly AppliedHazardCap[] => {
+    if (!subjectIsInEvaluation(subject, analysisFiles, dependencySubjects)) return [];
     return stableEffects([
-      ...scopedEffects,
-      ...(exportEffects.get(id) ?? []),
-      ...(symbolEffects.get(`symbol:${subject.file}#${subject.name}`) ?? []),
+      ...fallbackProjectEffects,
+      ...uniqueWorlds(worlds).flatMap((world) =>
+        effectsForSubjectInWorld(states[world], subject, ownerRootRelDir),
+      ),
     ]);
   };
+
+  const capForSubject = (
+    subject: HazardSubject,
+    worlds: readonly HazardWorld[],
+  ): AppliedHazardCap | undefined => {
+    if (projectNoClaim) return fallbackProjectEffects[0];
+    if (!subjectIsInEvaluation(subject, analysisFiles, dependencySubjects)) return undefined;
+    let cap: AppliedHazardCap | undefined;
+    for (const world of uniqueWorlds(worlds)) {
+      cap = preferredCap(cap, capForSubjectInWorld(states[world], subject, ownerRootRelDir));
+    }
+    return cap;
+  };
+
+  const activeHazards = new Set(HAZARD_WORLDS.flatMap((world) => [...states[world].activeHazards]));
 
   const result: HazardEvaluation = {
     graph,
     projectNoClaim,
     activeHazards,
-    fileCap,
-    fileOnlyCap,
-    exportCap,
-    symbolCap,
-    unitCap,
+    activeHazardsByWorld: {
+      production: states.production.activeHazards,
+      config: states.config.activeHazards,
+      test: states.test.activeHazards,
+    },
     ownerRootRelDir,
+    capForSubject,
     effectsForSubject,
   };
   if (started !== undefined) performance?.finish("hazard-activation", started);
@@ -432,10 +444,109 @@ export function evaluateHazards(input: HazardEvaluationInput): HazardEvaluation 
 export function effectsForSubject(
   evaluations: readonly HazardEvaluation[],
   subject: HazardSubject,
+  worlds: readonly HazardWorld[] = HAZARD_WORLDS,
 ): readonly AppliedHazardCap[] {
   return stableEffects(
-    evaluations.flatMap((evaluation) => [...evaluation.effectsForSubject(subject)]),
+    evaluations.flatMap((evaluation) => [...evaluation.effectsForSubject(subject, worlds)]),
   );
+}
+
+function createWorldEffectState(): WorldEffectState {
+  return {
+    projectCap: undefined,
+    projectEffects: [],
+    fileCap: new Map(),
+    fileOnlyCap: new Map(),
+    exportCap: new Map(),
+    symbolCap: new Map(),
+    unitCap: new Map(),
+    fileEffects: new Map(),
+    exportEffects: new Map(),
+    symbolEffects: new Map(),
+    unitEffects: new Map(),
+    prefixEffects: new PrefixEffectIndex(),
+    rangeCaps: [],
+    syntheticSourcesBySymbol: new Map(),
+    activeHazards: new Set(),
+  };
+}
+
+function hazardWorlds(hazard: HazardAnnotation): readonly HazardWorld[] {
+  return uniqueWorlds(hazard.effect?.worlds ?? HAZARD_WORLDS);
+}
+
+/**
+ * Production compiler facts are shared runtime facts. Config and the effective
+ * test environment may execute production-owned code, while config facts are
+ * additionally available to tests. Test-only facts never flow backwards into
+ * production or config. Carrier reachability is still checked independently in
+ * the selected runtime world.
+ */
+function hazardAppliesInWorld(hazard: HazardAnnotation, runtimeWorld: HazardWorld): boolean {
+  const origins = hazardWorlds(hazard);
+  switch (runtimeWorld) {
+    case "production":
+      return origins.includes("production");
+    case "config":
+      return origins.includes("production") || origins.includes("config");
+    case "test":
+      return origins.length > 0;
+  }
+}
+
+function uniqueWorlds(worlds: readonly HazardWorld[]): readonly HazardWorld[] {
+  const selected = new Set(worlds);
+  return HAZARD_WORLDS.filter((world) => selected.has(world));
+}
+
+function subjectIsInEvaluation(
+  subject: HazardSubject,
+  analysisFiles: ReadonlySet<string> | undefined,
+  dependencySubjects: ReadonlySet<string> | undefined,
+): boolean {
+  if (subject.kind === "dependency") {
+    return (
+      dependencySubjects === undefined ||
+      dependencySubjects.has(dependencySubjectKey(subject.file, subject.name))
+    );
+  }
+  return isInScope(subject.file, analysisFiles);
+}
+
+function effectsForSubjectInWorld(
+  state: WorldEffectState,
+  subject: HazardSubject,
+  ownerRootRelDir: (path: string) => string,
+): readonly AppliedHazardCap[] {
+  const scopedEffects = [
+    ...state.projectEffects,
+    ...(state.unitEffects.get(ownerRootRelDir(subject.file)) ?? []),
+  ];
+  if (subject.kind === "dependency") return scopedEffects;
+  const id = fileId(subject.file);
+  scopedEffects.push(...state.prefixEffects.forPath(subject.file));
+  if (subject.kind === "file") return [...scopedEffects, ...(state.fileEffects.get(id) ?? [])];
+  return [
+    ...scopedEffects,
+    ...(state.exportEffects.get(id) ?? []),
+    ...(state.symbolEffects.get(`symbol:${subject.file}#${subject.name}`) ?? []),
+  ];
+}
+
+function capForSubjectInWorld(
+  state: WorldEffectState,
+  subject: HazardSubject,
+  ownerRootRelDir: (path: string) => string,
+): AppliedHazardCap | undefined {
+  let cap = state.projectCap;
+  if (subject.kind === "dependency") {
+    return preferredCap(cap, state.unitCap.get(ownerRootRelDir(subject.file)));
+  }
+  const id = fileId(subject.file);
+  cap = preferredCap(cap, state.fileCap.get(id));
+  if (subject.kind === "file") return preferredCap(cap, state.fileOnlyCap.get(id));
+  cap = preferredCap(cap, state.exportCap.get(id));
+  return preferredCap(cap, state.symbolCap.get(`symbol:${subject.file}#${subject.name}`));
 }
 
 function propagationTargets(
@@ -755,6 +866,10 @@ function effectKey(effect: AppliedHazardCap): string {
   return `${effect.siteFile}\0${effect.siteLine}\0${effect.hazardClass}\0${effect.detail}\0${effect.cap}\0${effect.worlds.join(",")}\0${effect.effectScope === undefined ? "registry" : effectScopeKey(effect.effectScope)}`;
 }
 
+function effectIdentityKey(effect: AppliedHazardCap): string {
+  return `${effect.siteFile}\0${effect.siteLine}\0${effect.hazardClass}\0${effect.detail}\0${effect.cap}\0${effect.effectScope === undefined ? "registry" : effectScopeKey(effect.effectScope)}`;
+}
+
 function effectScopeKey(scope: HazardEffectScope): string {
   // Scope membership is already resolved by the indexed maps before this key
   // is consulted. Do not join a potentially large symbol set per claim.
@@ -775,6 +890,26 @@ function appliedCap(hazard: HazardAnnotation, cap: ConfidenceCap): AppliedHazard
     ...(hazard.effect === undefined ? {} : { effectScope: hazard.effect.scope }),
     worlds: hazard.effect?.worlds ?? ["production", "config", "test"],
   };
+}
+
+function appliedCapForWorld(
+  hazard: HazardAnnotation,
+  cap: ConfidenceCap,
+  world: HazardWorld,
+): AppliedHazardCap {
+  return { ...appliedCap(hazard, cap), worlds: [world] };
+}
+
+function preferredCap(
+  current: AppliedHazardCap | undefined,
+  candidate: AppliedHazardCap | undefined,
+): AppliedHazardCap | undefined {
+  if (current === undefined) return candidate;
+  if (candidate === undefined) return current;
+  if (current.cap !== candidate.cap) {
+    return capIsStrongerOrEqual(candidate.cap, current.cap) ? candidate : current;
+  }
+  return effectKey(candidate) < effectKey(current) ? candidate : current;
 }
 
 function mergeCap(
@@ -802,18 +937,28 @@ function addToList<T>(map: Map<string, T[]>, key: string, value: T): void {
 }
 
 function stableEffects(effects: readonly AppliedHazardCap[]): AppliedHazardCap[] {
-  const byKey = new Map<string, AppliedHazardCap>();
+  const byKey = new Map<string, { effect: AppliedHazardCap; worlds: Set<HazardWorld> }>();
   for (const effect of effects) {
-    const key = effectKey(effect);
-    if (!byKey.has(key)) byKey.set(key, effect);
+    const key = effectIdentityKey(effect);
+    const existing = byKey.get(key);
+    if (existing === undefined) {
+      byKey.set(key, { effect, worlds: new Set(effect.worlds) });
+    } else {
+      for (const world of effect.worlds) existing.worlds.add(world);
+    }
   }
-  return [...byKey.values()].sort(
-    (a, b) =>
-      a.siteFile.localeCompare(b.siteFile) ||
-      a.siteLine - b.siteLine ||
-      a.hazardClass.localeCompare(b.hazardClass) ||
-      a.detail.localeCompare(b.detail),
-  );
+  return [...byKey.values()]
+    .map(({ effect, worlds }) => ({
+      ...effect,
+      worlds: HAZARD_WORLDS.filter((world) => worlds.has(world)),
+    }))
+    .sort(
+      (a, b) =>
+        a.siteFile.localeCompare(b.siteFile) ||
+        a.siteLine - b.siteLine ||
+        a.hazardClass.localeCompare(b.hazardClass) ||
+        a.detail.localeCompare(b.detail),
+    );
 }
 
 /**
@@ -823,37 +968,20 @@ function stableEffects(effects: readonly AppliedHazardCap[]): AppliedHazardCap[]
  */
 function reachableCarriers(
   context: HazardEvaluationContext,
-  reachability: PartitionedReachability,
+  reachability: Reachability,
   analysisFiles: ReadonlySet<string> | undefined,
 ): Set<string> {
-  const { production, config, test } = reachability;
   if (analysisFiles === undefined) {
-    return new Set([
-      ...production.reachableFiles,
-      ...production.reachableSymbols,
-      ...config.reachableFiles,
-      ...config.reachableSymbols,
-      ...test.reachableFiles,
-      ...test.reachableSymbols,
-    ]);
+    return new Set([...reachability.reachableFiles, ...reachability.reachableSymbols]);
   }
   const reachable = new Set<string>();
   for (const file of analysisFiles) {
     const fileNode = context.fileNodeByPath.get(file);
-    if (
-      fileNode !== undefined &&
-      (production.reachableFiles.has(fileNode.id) ||
-        config.reachableFiles.has(fileNode.id) ||
-        test.reachableFiles.has(fileNode.id))
-    ) {
+    if (fileNode !== undefined && reachability.reachableFiles.has(fileNode.id)) {
       reachable.add(fileNode.id);
     }
     for (const symbolId of context.symbolIdsByFile.get(file) ?? []) {
-      if (
-        production.reachableSymbols.has(symbolId) ||
-        config.reachableSymbols.has(symbolId) ||
-        test.reachableSymbols.has(symbolId)
-      ) {
+      if (reachability.reachableSymbols.has(symbolId)) {
         reachable.add(symbolId);
       }
     }

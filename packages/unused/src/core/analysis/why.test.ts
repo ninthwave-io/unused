@@ -320,7 +320,7 @@ describe("whyAlive — resolution outcomes", () => {
         {
           hazardClass: "elixir-dynamic-dispatch",
           detail: "bounded neutral dispatch",
-          worlds: ["production"],
+          worlds: ["production", "test"],
           site: "lib/router.ex:9",
         },
       ]);
@@ -373,7 +373,7 @@ describe("whyAlive — resolution outcomes", () => {
         {
           hazardClass: "elixir-dynamic-dispatch",
           detail: "bounded neutral production dispatch",
-          worlds: ["production"],
+          worlds: ["production", "test"],
           site: "lib/router.ex:9",
         },
         {
@@ -406,7 +406,7 @@ describe("whyAlive — resolution outcomes", () => {
         {
           hazardClass: "elixir-computed-atom-escape",
           detail: "computed atom escapes before its consumer can be classified",
-          worlds: ["production"],
+          worlds: ["production", "test"],
           site: "lib/application.ex:14",
         },
       ]);

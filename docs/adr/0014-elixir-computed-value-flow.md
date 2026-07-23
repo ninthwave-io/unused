@@ -1,7 +1,7 @@
 # 0014 — Typed Elixir computed-value flow and explicit hazard scope
 
 Date: 2026-07-22
-Status: Accepted (through phase 1B2B; later phases pending)
+Status: Accepted (through phase 4 world partitioning; later phases pending)
 
 ## Context
 
@@ -858,6 +858,48 @@ The fixed-density 250/500/1,000/2,000 producer series asserts exact cause
 density plus constant-multiple role-edge and queue-visit bounds. Canonical
 stdout, public JSON, schemas, hazards, claims, and deletion planning remain
 unchanged.
+
+### Phase 4 world-partitioning checkpoint
+
+Hazard activation now runs one indexed fixed point per runtime world instead of
+seeding one union from production, config, and test reachability. A carrier must
+be reachable in the runtime world whose effect is being evaluated. Compiler-
+origin facts inherit along the same availability direction as executable code:
+a production fact can execute from production, config, or effective-test
+reach; a config fact can execute from config or effective-test reach; and a
+test fact can execute only from test reach. This inheritance is required because
+the isolated test merge deliberately discards exact production re-emissions.
+Active runtime worlds, rather than compiler-origin labels, are retained in
+`why` and deletion refusal evidence.
+
+Confidence lookup is verdict-specific. An `unused` verdict depends on absence
+from production, config, and test, so effects from any active world can cap it.
+A `test-only` verdict asserts absence only from production and config, so a
+test-only effect cannot lower that claim's confidence. A zombie-test verdict
+depends on the effective test world and consults that world only. Deletion
+planning still consults all three worlds and therefore continues to refuse a
+subject that unresolved test runtime behavior could reach.
+
+Zombie classification already performs one bounded reach from each test root,
+but hazard confidence uses the suite-wide indexed test closure. Recomputing a
+dynamic-hazard fixed point per test would restore the repeated graph work this
+architecture forbids. A hazard activated by test A may therefore conservatively
+cap an unrelated zombie test B in the same unit. This affects confidence and
+recall only: it cannot make a subject more deletable, and deletion still checks
+the all-world closure.
+
+Caps and effect lists are indexed by world, unit, file, and symbol. Claim
+generation performs a constant number of map lookups and no graph walk per
+claim. For the fixed three-world set W, base activation costs
+O(W × (V + E + H)). Affected-symbol hazards additionally retain output-sensitive
+provenance: P distinct source-hazard/symbol/world effects and Q corresponding
+source-hazard/edge/world propagation deltas cost O(P + Q) time and O(P) memory.
+That cost is necessary while `why` must retain every overlapping source; it is
+not multiplied by the number of claims. No producer, hazard, or claim triggers
+a fresh whole-graph traversal. Neutral controls cover the full origin/runtime
+availability matrix, test-only filtering, all-world deletion refusal, and both
+many-source propagation and many-hazard/many-subject lookup cases. The
+`fixedPointIterations` counter records all three runtime-world closures.
 
 ## Acceptance
 
