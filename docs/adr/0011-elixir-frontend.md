@@ -310,6 +310,20 @@ not merely the unsupported control-result facts. Private helpers participate onl
 proves a same-file carrier or call target; uncalled private definitions cannot
 affect producer flow.
 
+The first reviewed semantic consumers are deliberately closed and do not make
+the structural bundle a general AST transport. `runtime-mfa` joins an exact
+three-element tuple and its exact module-alias compiler event; the parent then
+rereads the digest-validated span and accepts only a literal function atom,
+adding references to every compiler-known arity of that named callback.
+`use-dispatcher` joins the exact second argument of a dynamic `Kernel.apply/3`
+or `:erlang.apply/3` inside the corresponding literal-selector `__using__/1`
+carrier. It can discharge only that dispatcher's existing dynamic hazard, and
+literal `use Module, :helper` sites must still be independently proven by the
+existing source and compiler-event checks. Missing, ambiguous, incomplete, or
+malformed evidence retains the prior conservative behavior. Neither role
+transports a module name, function atom, selector variable, or source text
+across the child boundary.
+
 After the JSON parser materializes one bounded output record, the parent checks
 declared array lengths before mapping them into normalized protocol arrays, then
 revalidates path ownership, regular-file/realpath containment, content digest,

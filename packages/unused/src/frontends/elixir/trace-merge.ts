@@ -789,6 +789,20 @@ function validPipelineEventPoint(
 }
 
 function validExactEventFact(event: TraceEvent, fact: ElixirStructuralFact): boolean {
+  if (
+    fact.role === "runtime-mfa" &&
+    fact.to !== null &&
+    event.kind === "alias" &&
+    event.callKind === null &&
+    event.name === undefined &&
+    event.arity === undefined &&
+    event.line > 0 &&
+    (event.column ?? 0) > 0 &&
+    fact.argument === null &&
+    fact.resolution === "exact"
+  ) {
+    return event.line === fact.to.sl && (event.column ?? 0) === fact.to.sc;
+  }
   return (
     (event.kind === "remote" || event.kind === "imported" || event.kind === "local") &&
     event.callKind !== null &&
@@ -800,6 +814,11 @@ function validExactEventFact(event: TraceEvent, fact: ElixirStructuralFact): boo
     fact.argument !== null &&
     fact.argument < event.arity &&
     fact.to !== null &&
+    (fact.role !== "use-dispatcher" ||
+      (event.name === "apply" &&
+        event.arity === 3 &&
+        event.dyn &&
+        (event.to_mod === "Kernel" || event.to_mod === ":erlang"))) &&
     (fact.role === "pipeline-argument"
       ? validPipelineEventPoint(event.line, event.column ?? 0, fact.from, fact.to)
       : event.line === fact.to.sl && (event.column ?? 0) === fact.to.sc)

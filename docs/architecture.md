@@ -53,7 +53,9 @@ The measured Rust compiler/tooling boundary is
   without changing the shared IR. Such a protocol is a semantic no-op until a
   reviewed consumer is enabled; strict ownership, completeness, content-digest,
   and work-cap validation happens before any structural fact can influence a
-  claim. Elixir protocol v2 is the first implementation (ADR 0011).
+  claim. Elixir protocol v2 is the first implementation. Its first reviewed
+  consumers are two closed runtime-convention roles: compiler-joined MFA tuples
+  and conventional literal-selector `__using__/1` dispatch (ADR 0011).
 
 ## 5. Performance strategy
 - Discovery produces one gitignore-bounded inventory of sources, JSON configs,

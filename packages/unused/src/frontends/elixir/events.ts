@@ -49,7 +49,9 @@ export type ElixirStructuralRole =
   | "rescue-result"
   | "call-argument"
   | "pipeline-argument"
-  | "carrier-result";
+  | "carrier-result"
+  | "runtime-mfa"
+  | "use-dispatcher";
 
 export interface ElixirStructuralCarrier {
   readonly id: number;

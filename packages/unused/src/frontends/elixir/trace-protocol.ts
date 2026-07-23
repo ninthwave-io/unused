@@ -201,6 +201,8 @@ const STRUCTURAL_ROLES = [
   "call-argument",
   "pipeline-argument",
   "carrier-result",
+  "runtime-mfa",
+  "use-dispatcher",
 ] as const;
 const STRUCTURAL_REASONS = ["read", "size", "parse", "limit", "ownership"] as const;
 const MAX_SOURCE_BYTES = 8 * 1024 * 1024;
@@ -394,7 +396,9 @@ function decodeStructuralFact(value: unknown): ElixirStructuralFact | null {
   const to = value.to === null ? null : decodeSpan(value.to);
   if (from === null || (value.to !== null && to === null)) return null;
   const role = value.role as ElixirStructuralFact["role"];
-  const callRole = role === "call-argument" || role === "pipeline-argument";
+  const callRole =
+    role === "call-argument" || role === "pipeline-argument" || role === "use-dispatcher";
+  const mfaRole = role === "runtime-mfa";
   const eventId = value.event_id;
   const argument = value.argument;
   const resolution = value.resolution;
@@ -408,8 +412,18 @@ function decodeStructuralFact(value: unknown): ElixirStructuralFact | null {
             (resolution === "opaque" && eventId === null)) &&
           to !== null
         )
-      : eventId !== null || argument !== null || resolution !== null
+      : mfaRole
+        ? !(
+            nonNegativeInteger(eventId) &&
+            argument === null &&
+            resolution === "exact" &&
+            to !== null
+          )
+        : eventId !== null || argument !== null || resolution !== null
   ) {
+    return null;
+  }
+  if (role === "use-dispatcher" && (eventId === null || argument !== 1 || resolution !== "exact")) {
     return null;
   }
   if (role === "carrier-result" ? to !== null : to === null) return null;

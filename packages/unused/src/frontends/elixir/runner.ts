@@ -747,24 +747,48 @@ function hasValidStructuralEventReferences(
       if (fact.eventId !== null) {
         if (!ids.has(fact.eventId)) return false;
         const event = eventsById.get(fact.eventId);
-        if (
-          event === undefined ||
-          event.line <= 0 ||
-          (event.column ?? 0) <= 0 ||
-          event.name === undefined ||
-          event.arity === undefined ||
-          fact.argument === null ||
-          fact.argument >= event.arity ||
-          fact.to === null ||
-          (fact.role === "pipeline-argument"
-            ? !validPipelineEventPoint(event.line, event.column ?? 0, fact.from, fact.to)
-            : event.line !== fact.to.sl || (event.column ?? 0) !== fact.to.sc)
-        )
-          return false;
+        if (event === undefined || !validStructuralEventFact(event, fact)) return false;
       }
     }
   }
   return true;
+}
+
+function validStructuralEventFact(
+  event: TraceEvent,
+  fact: ElixirStructuralFile["facts"][number],
+): boolean {
+  if (event.line <= 0 || (event.column ?? 0) <= 0 || fact.to === null) return false;
+  if (fact.role === "runtime-mfa") {
+    return (
+      event.kind === "alias" &&
+      event.callKind === null &&
+      event.name === undefined &&
+      event.arity === undefined &&
+      fact.argument === null &&
+      fact.resolution === "exact" &&
+      event.line === fact.to.sl &&
+      (event.column ?? 0) === fact.to.sc
+    );
+  }
+  if (
+    event.name === undefined ||
+    event.arity === undefined ||
+    fact.argument === null ||
+    fact.argument >= event.arity
+  )
+    return false;
+  if (
+    fact.role === "use-dispatcher" &&
+    (event.name !== "apply" ||
+      event.arity !== 3 ||
+      !event.dyn ||
+      (event.to_mod !== "Kernel" && event.to_mod !== ":erlang"))
+  )
+    return false;
+  return fact.role === "pipeline-argument"
+    ? validPipelineEventPoint(event.line, event.column ?? 0, fact.from, fact.to)
+    : event.line === fact.to.sl && (event.column ?? 0) === fact.to.sc;
 }
 
 function validPipelineEventPoint(

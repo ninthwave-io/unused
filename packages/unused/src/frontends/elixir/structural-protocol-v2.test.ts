@@ -308,9 +308,186 @@ describe("Elixir structural protocol v2 decoding", () => {
       ),
     ).toBeNull();
   });
+
+  it("accepts only the closed runtime-MFA fact shape", () => {
+    const fact = {
+      carrier: 0,
+      role: "runtime-mfa",
+      from: { sl: 1, sc: 1, el: 1, ec: 32 },
+      to: { sl: 1, sc: 3, el: 1, ec: 19 },
+      event_id: 0,
+      argument: null,
+      resolution: "exact",
+    };
+    const carrier = {
+      id: 0,
+      mod: "Neutral",
+      fun: "live/0",
+      def_line: 1,
+      body: { sl: 1, sc: 1, el: 1, ec: 64 },
+    };
+    expect(
+      decodeTraceRecord(structuralWire({ carriers: [carrier], facts: [fact] }), "production"),
+    ).not.toBeNull();
+    for (const override of [
+      { event_id: null },
+      { argument: 0 },
+      { resolution: "opaque" },
+      { to: null },
+    ]) {
+      expect(
+        decodeTraceRecord(
+          structuralWire({ carriers: [carrier], facts: [{ ...fact, ...override }] }),
+          "production",
+        ),
+      ).toBeNull();
+    }
+  });
+
+  it("accepts only an exact second-argument use-dispatcher fact", () => {
+    const fact = {
+      carrier: 0,
+      role: "use-dispatcher",
+      from: { sl: 1, sc: 1, el: 1, ec: 32 },
+      to: { sl: 1, sc: 3, el: 1, ec: 19 },
+      event_id: 0,
+      argument: 1,
+      resolution: "exact",
+    };
+    const carrier = {
+      id: 0,
+      mod: "Neutral",
+      fun: "__using__/1",
+      def_line: 1,
+      body: { sl: 1, sc: 1, el: 1, ec: 64 },
+    };
+    expect(
+      decodeTraceRecord(structuralWire({ carriers: [carrier], facts: [fact] }), "production"),
+    ).not.toBeNull();
+    for (const override of [
+      { event_id: null },
+      { argument: 0 },
+      { resolution: "opaque" },
+      { to: null },
+    ]) {
+      expect(
+        decodeTraceRecord(
+          structuralWire({ carriers: [carrier], facts: [{ ...fact, ...override }] }),
+          "production",
+        ),
+      ).toBeNull();
+    }
+  });
 });
 
 describe("Elixir structural ownership and spans", () => {
+  it("binds runtime-MFA facts to an exact alias event", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-structure-runtime-mfa-"));
+    temporaryRoots.push(root);
+    const file = "lib/neutral.ex";
+    const content = " ".repeat(63);
+    mkdirSync(join(root, "lib"));
+    writeFileSync(join(root, file), content);
+    const event: TraceEvent = {
+      k: "event",
+      eventId: 0,
+      kind: "alias",
+      callKind: null,
+      file,
+      line: 1,
+      column: 3,
+      from_mod: "Neutral",
+      from_fun: "live/0",
+      to_mod: "Neutral.Callback",
+      dyn: false,
+      partition: "prod",
+    };
+    const structure: ElixirStructuralFile = {
+      ...structuralFile(file, "Neutral", "prod", []),
+      digest: createHash("sha256").update(content).digest("hex"),
+      bytes: Buffer.byteLength(content),
+      facts: [
+        {
+          carrier: 0,
+          role: "runtime-mfa",
+          from: { sl: 1, sc: 1, el: 1, ec: 32 },
+          to: { sl: 1, sc: 3, el: 1, ec: 19 },
+          eventId: 0,
+          argument: null,
+          resolution: "exact",
+        },
+      ],
+    };
+    expect(
+      validateProductionTraceOwnership(
+        trace(file, "Neutral", "prod", [event], structure),
+        ["lib"],
+        root,
+      ).structuralFiles,
+    ).toHaveLength(1);
+    expect(() =>
+      validateProductionTraceOwnership(
+        trace(file, "Neutral", "prod", [{ ...event, kind: "remote" }], structure),
+        ["lib"],
+        root,
+      ),
+    ).toThrow(/invalid structural event ownership/);
+  });
+
+  it("binds use-dispatcher facts only to the exact dynamic apply event", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-structure-use-dispatcher-"));
+    temporaryRoots.push(root);
+    const file = "lib/neutral.ex";
+    const content = " ".repeat(63);
+    mkdirSync(join(root, "lib"));
+    writeFileSync(join(root, file), content);
+    const event: TraceEvent = {
+      ...eventRecord(0, file, "Neutral", "prod", 3),
+      from_fun: "__using__/1",
+      name: "apply",
+      arity: 3,
+      dyn: true,
+      to_mod: "Kernel",
+    };
+    const structure: ElixirStructuralFile = {
+      ...structuralFile(file, "Neutral", "prod", []),
+      digest: createHash("sha256").update(content).digest("hex"),
+      bytes: Buffer.byteLength(content),
+      carriers: [
+        {
+          id: 0,
+          mod: "Neutral",
+          fun: "__using__/1",
+          defLine: 1,
+          body: { sl: 1, sc: 1, el: 1, ec: 64 },
+        },
+      ],
+      facts: [
+        {
+          carrier: 0,
+          role: "use-dispatcher",
+          from: { sl: 1, sc: 1, el: 1, ec: 32 },
+          to: { sl: 1, sc: 3, el: 1, ec: 19 },
+          eventId: 0,
+          argument: 1,
+          resolution: "exact",
+        },
+      ],
+    };
+    const result: TraceResult = {
+      ...trace(file, "Neutral", "prod", [event], structure),
+      functions: [{ ...functionRecord(file, "Neutral", "prod"), name: "__using__", arity: 1 }],
+    };
+    expect(validateProductionTraceOwnership(result, ["lib"], root).structuralFiles).toHaveLength(1);
+    expect(() =>
+      validateProductionTraceOwnership(
+        { ...result, events: [{ ...event, dyn: false }] },
+        ["lib"],
+        root,
+      ),
+    ).toThrow(/invalid structural event ownership/);
+  });
+
   it("rejects a pre-canonical exact-event stream before ownership validation", () => {
     const file = "lib/neutral.ex";
     const event = eventRecord(0, file, "Neutral", "prod", 3);

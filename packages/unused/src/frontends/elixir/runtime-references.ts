@@ -16,8 +16,9 @@
  * reported, so arbitrary atoms never manufacture IR.
  */
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { closeSync, readFileSync, realpathSync } from "node:fs";
+import { join, relative, resolve, sep } from "node:path";
 import {
   createElixirAtomRoleSummaryLookup,
   type ElixirAtomRoleSummary,
@@ -25,7 +26,16 @@ import {
   type ElixirAtomRoleSummaryProvider,
   validateElixirAtomRoleSummaryProviders,
 } from "./atom-role-summaries.js";
-import type { FunctionRecord, ModuleRecord, TraceEvent, TraceResult } from "./events.js";
+import type {
+  ElixirStructuralCarrier,
+  ElixirStructuralFact,
+  ElixirStructuralSpan,
+  FunctionRecord,
+  ModuleRecord,
+  TraceEvent,
+  TraceResult,
+} from "./events.js";
+import { openRegularFileNoFollow, readExactBoundedFile } from "./mix-isolation.js";
 
 export interface ElixirRuntimeReference {
   readonly fromMod: string;
@@ -587,6 +597,174 @@ interface SourceIndex {
   readonly usingSignatures: readonly { readonly line: number; readonly selector: string }[];
 }
 
+interface StructuralSource {
+  readonly content: string;
+  readonly lineStarts: readonly number[];
+  readonly graphemeOffsetsByLine: Map<number, readonly number[]>;
+}
+
+const MAX_STRUCTURAL_SOURCE_BYTES = 8 * 1024 * 1024;
+
+const STRUCTURAL_GRAPHEME_SEGMENTER = new Intl.Segmenter("en", { granularity: "grapheme" });
+const STRUCTURAL_MFA_PREFIX_RE = new RegExp(
+  String.raw`^\{\s*${MODULE}\s*,\s*:(${FUNCTION})\s*,`,
+  "u",
+);
+
+interface StructuralMfaProof {
+  readonly file: string;
+  readonly carrier: ElixirStructuralCarrier;
+  readonly fact: ElixirStructuralFact;
+  readonly event: TraceEvent;
+}
+
+interface StructuralRuntimeProofIndex {
+  readonly mfa: readonly StructuralMfaProof[];
+  readonly dispatcherModules: ReadonlySet<string>;
+  readonly dispatcherEventKeys: ReadonlySet<string>;
+}
+
+function structuralSpanWithin(inner: ElixirStructuralSpan, outer: ElixirStructuralSpan): boolean {
+  const startsWithin = inner.sl > outer.sl || (inner.sl === outer.sl && inner.sc >= outer.sc);
+  const endsWithin = inner.el < outer.el || (inner.el === outer.el && inner.ec <= outer.ec);
+  return startsWithin && endsWithin;
+}
+
+function validStructuralRuntimeProof(
+  file: NonNullable<TraceResult["structuralFiles"]>[number],
+  carrier: ElixirStructuralCarrier,
+  fact: ElixirStructuralFact,
+  event: TraceEvent,
+): boolean {
+  if (
+    fact.to === null ||
+    !structuralSpanWithin(fact.from, carrier.body) ||
+    !structuralSpanWithin(fact.to, carrier.body) ||
+    event.partition !== file.partition ||
+    event.file !== file.file ||
+    event.from_mod !== carrier.mod ||
+    event.from_fun !== carrier.fun ||
+    event.line !== fact.to.sl ||
+    (event.column ?? 0) !== fact.to.sc
+  )
+    return false;
+  if (fact.role === "runtime-mfa") {
+    return (
+      fact.argument === null &&
+      fact.resolution === "exact" &&
+      event.kind === "alias" &&
+      event.callKind === null &&
+      event.name === undefined &&
+      event.arity === undefined
+    );
+  }
+  return (
+    fact.role === "use-dispatcher" &&
+    fact.argument === 1 &&
+    fact.resolution === "exact" &&
+    carrier.fun === "__using__/1" &&
+    (event.kind === "remote" || event.kind === "imported" || event.kind === "local") &&
+    event.callKind !== null &&
+    event.callKind !== undefined &&
+    event.name === "apply" &&
+    event.arity === 3 &&
+    event.dyn &&
+    (event.to_mod === "Kernel" || event.to_mod === ":erlang")
+  );
+}
+
+function indexStructuralRuntimeProofs(traceResult: TraceResult): StructuralRuntimeProofIndex {
+  const events = new Map<number, TraceEvent>();
+  for (const event of traceResult.events) {
+    if (event.eventId !== undefined) events.set(event.eventId, event);
+  }
+  for (const event of traceResult.structuralEvents ?? []) {
+    if (event.eventId !== undefined) events.set(event.eventId, event);
+  }
+  const mfa: StructuralMfaProof[] = [];
+  const dispatcherModules = new Set<string>();
+  const dispatcherEventKeys = new Set<string>();
+  for (const file of traceResult.structuralFiles ?? []) {
+    if (file.status !== "complete") continue;
+    const carriers = new Map(file.carriers.map((carrier) => [carrier.id, carrier] as const));
+    for (const fact of file.facts) {
+      if ((fact.role !== "runtime-mfa" && fact.role !== "use-dispatcher") || fact.eventId === null)
+        continue;
+      const event = events.get(fact.eventId);
+      if (event === undefined) continue;
+      const carrier = carriers.get(fact.carrier);
+      if (carrier === undefined || !validStructuralRuntimeProof(file, carrier, fact, event))
+        continue;
+      if (fact.role === "runtime-mfa") {
+        mfa.push({ file: file.file, carrier, fact, event });
+      } else {
+        if (event.from_mod !== null) dispatcherModules.add(event.from_mod);
+        dispatcherEventKeys.add(dynamicEventKey(event));
+      }
+    }
+  }
+  return { mfa, dispatcherModules, dispatcherEventKeys };
+}
+
+function structuralSpanOffset(
+  source: StructuralSource,
+  line: number,
+  column: number,
+): number | null {
+  let offsets = source.graphemeOffsetsByLine.get(line);
+  if (offsets === undefined) {
+    const lineStart = source.lineStarts[line - 1];
+    if (lineStart === undefined) return null;
+    const nextLine = source.lineStarts[line];
+    const lineEnd = nextLine === undefined ? source.content.length : nextLine - 1;
+    const indexedOffsets: number[] = [];
+    for (const segment of STRUCTURAL_GRAPHEME_SEGMENTER.segment(
+      source.content.slice(lineStart, lineEnd),
+    )) {
+      indexedOffsets.push(lineStart + segment.index);
+    }
+    indexedOffsets.push(lineEnd);
+    offsets = indexedOffsets;
+    source.graphemeOffsetsByLine.set(line, offsets);
+  }
+  return offsets[column - 1] ?? null;
+}
+
+function structuralSpanText(source: StructuralSource, span: ElixirStructuralSpan): string | null {
+  const start = structuralSpanOffset(source, span.sl, span.sc);
+  const end = structuralSpanOffset(source, span.el, span.ec);
+  return start === null || end === null || end <= start ? null : source.content.slice(start, end);
+}
+
+function extractStructuralMfaReferences(
+  proofs: readonly StructuralMfaProof[],
+  sources: ReadonlyMap<string, StructuralSource>,
+  functionsByModuleName: ReadonlyMap<string, FunctionRecord[]>,
+): readonly ElixirRuntimeReference[] {
+  const references: ElixirRuntimeReference[] = [];
+  for (const { file, carrier, fact, event } of proofs) {
+    const source = sources.get(file);
+    if (source === undefined) continue;
+    const tuple = structuralSpanText(source, fact.from);
+    const match = tuple === null ? null : STRUCTURAL_MFA_PREFIX_RE.exec(tuple);
+    const toName = match?.[1];
+    if (toName === undefined) continue;
+    for (const target of functionsByModuleName.get(`${event.to_mod}\0${toName}`) ?? []) {
+      references.push({
+        fromMod: carrier.mod,
+        fromFun: carrier.fun,
+        toMod: event.to_mod,
+        toName,
+        toArity: target.arity,
+        file,
+        line: fact.from.sl,
+        convention: "runtime-mfa",
+      });
+    }
+  }
+  return references;
+}
+
 /** Extract independently provable runtime references from traced project files. */
 export function extractElixirRuntimeReferences(
   projectDir: string,
@@ -708,17 +886,24 @@ export function extractElixirRuntimeConventions(
   const parsedBySite = indexParsedApplies(sources);
   const sourceApplyCountsBySite = indexSourceApplyCountsBySite(sources);
   const usingSelectorsByCarrier = indexUsingSelectorsByCarrier(traceResult.events, sources);
-  const dispatchModules = indexUseDispatcherModules(
-    traceResult.events,
-    parsedBySite,
-    usingSelectorsByCarrier,
+  const structuralRuntimeProofs = indexStructuralRuntimeProofs(traceResult);
+  const dispatchModules = new Set(
+    indexUseDispatcherModules(traceResult.events, parsedBySite, usingSelectorsByCarrier),
   );
+  for (const module of structuralRuntimeProofs.dispatcherModules) dispatchModules.add(module);
   const useEventsBySite = indexUseEventsBySite(traceResult.events);
   const useFactCountsBySite = indexUseFactCountsBySite(sources);
   const aliasTargetsByCarrierSite = indexAliasTargets(traceResult.events);
 
   const references: ElixirRuntimeReference[] = [];
   const seen = new Set<string>();
+  for (const reference of extractStructuralMfaReferences(
+    structuralRuntimeProofs.mfa,
+    readVerifiedStructuralMfaSources(projectDir, traceResult),
+    functionsByModuleName,
+  )) {
+    addReference(references, seen, reference);
+  }
   const provenUseEvents: TraceEvent[] = [];
   for (const [file, source] of sources) {
     const searchable = source.code;
@@ -795,6 +980,7 @@ export function extractElixirRuntimeConventions(
     references,
     seen,
     provenUseEvents,
+    structuralRuntimeProofs.dispatcherEventKeys,
     atomFlowStats,
     atomRoleSummaryLookup,
   );
@@ -1045,6 +1231,7 @@ function extractDynamicDispatches(
   references: ElixirRuntimeReference[],
   seenReferences: Set<string>,
   provenUseEvents: readonly TraceEvent[],
+  structuralDispatcherEventKeys: ReadonlySet<string>,
   atomFlowStats: MutableAtomFlowStats,
   atomRoleSummaryLookup: ElixirAtomRoleSummaryLookup,
 ): ElixirDynamicDispatch[] {
@@ -1069,6 +1256,7 @@ function extractDynamicDispatches(
     parsedBySite,
     functionsByModuleName,
     usingSelectorsByCarrier,
+    structuralDispatcherEventKeys,
   );
   const provenUseSites = new Set(provenUseEvents.map(generatedUseSiteKey));
   const phoenixActionUseSites = indexPhoenixActionUseSites(traceResult);
@@ -4871,6 +5059,7 @@ function exactUseDispatcherEvents(
   parsedBySite: ReadonlyMap<string, ParsedApply[]>,
   functionsByModuleName: ReadonlyMap<string, FunctionRecord[]>,
   usingSelectorsByCarrier: ReadonlyMap<string, number>,
+  structuralDispatchers: ReadonlySet<string>,
 ): ReadonlyMap<TraceEvent, readonly FunctionRecord[]> {
   const useReferencesByModule = new Map<string, ElixirRuntimeReference[]>();
   for (const reference of references) {
@@ -4892,18 +5081,15 @@ function exactUseDispatcherEvents(
     if (dispatcherEvents.length !== 1 || dispatcherEvents[0] === undefined) continue;
     const event = dispatcherEvents[0];
     const parsed = parsedBySite.get(dispatchSiteKey(event.file, event.line)) ?? [];
-    if (parsed.length !== 1) continue;
     const call = parsed[0];
-    if (
-      call === undefined ||
-      call.moduleExpr !== "__MODULE__" ||
-      call.functionExpr.startsWith(":") ||
-      call.arity !== 0
-    ) {
-      continue;
-    }
-    if (usingSelectorsByCarrier.get(usingSelectorCarrierKey(event, call.functionExpr)) !== 1)
-      continue;
+    const legacyProof =
+      parsed.length === 1 &&
+      call !== undefined &&
+      call.moduleExpr === "__MODULE__" &&
+      !call.functionExpr.startsWith(":") &&
+      call.arity === 0 &&
+      usingSelectorsByCarrier.get(usingSelectorCarrierKey(event, call.functionExpr)) === 1;
+    if (!legacyProof && !structuralDispatchers.has(dynamicEventKey(event))) continue;
 
     const useEvents = useEventsByModule.get(dispatcherModule) ?? [];
     const useReferences = useReferencesByModule.get(dispatcherModule) ?? [];
@@ -5155,6 +5341,52 @@ function readProjectSources(projectDir: string, traceResult: TraceResult): Map<s
     }
   }
   return contents;
+}
+
+function readVerifiedStructuralMfaSources(
+  projectDir: string,
+  traceResult: TraceResult,
+): ReadonlyMap<string, StructuralSource> {
+  const projectRoot = resolve(projectDir);
+  let realRoot: string;
+  try {
+    realRoot = realpathSync(projectRoot);
+  } catch {
+    return new Map();
+  }
+  const result = new Map<string, StructuralSource>();
+  for (const file of traceResult.structuralFiles ?? []) {
+    if (file.status !== "complete" || !file.facts.some((fact) => fact.role === "runtime-mfa"))
+      continue;
+    let opened: ReturnType<typeof openRegularFileNoFollow> | undefined;
+    try {
+      const path = resolve(projectRoot, file.file);
+      const pathRel = relative(projectRoot, path);
+      if (pathRel === ".." || pathRel.startsWith(`..${sep}`)) continue;
+      opened = openRegularFileNoFollow(path);
+      const realRel = relative(realRoot, opened.canonicalPath);
+      if (realRel === ".." || realRel.startsWith(`..${sep}`)) continue;
+      if (opened.size !== file.bytes || opened.size > MAX_STRUCTURAL_SOURCE_BYTES) continue;
+      const buffer = readExactBoundedFile(
+        opened.descriptor,
+        file.bytes,
+        MAX_STRUCTURAL_SOURCE_BYTES,
+      );
+      if (createHash("sha256").update(buffer).digest("hex") !== file.digest) continue;
+      const content = buffer.toString("utf8");
+      const lineStarts = [0];
+      for (let index = 0; index < content.length; index += 1) {
+        if (content.charCodeAt(index) === 10) lineStarts.push(index + 1);
+      }
+      result.set(file.file, { content, lineStarts, graphemeOffsetsByLine: new Map() });
+    } catch {
+      // A source changed after trace validation. Drop only its structural proof;
+      // the independently conservative legacy extraction still runs below.
+    } finally {
+      if (opened !== undefined) closeSync(opened.descriptor);
+    }
+  }
+  return result;
 }
 
 interface OwnerIndex {

@@ -1,4 +1,13 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -297,6 +306,317 @@ describe("extractElixirRuntimeReferences", () => {
     ]);
     expect(references.every((reference) => reference.fromFun === "callback/0")).toBe(true);
   });
+
+  it("does not let one exact structural MFA suppress a second same-line legacy MFA", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-structural-mfa-same-line-"));
+    try {
+      const file = "lib/neutral.ex";
+      const content =
+        "defmodule Neutral do\n  def callback, do: [{Neutral.One, :one, []}, {Neutral.Two, :two, []}]\nend\n";
+      mkdirSync(join(root, "lib"));
+      writeFileSync(join(root, file), content);
+      const line = content.split("\n")[1] ?? "";
+      const tupleStart = line.indexOf("{Neutral.One");
+      const tupleEnd = line.indexOf("}", tupleStart) + 1;
+      const aliasStart = line.indexOf("Neutral.One", tupleStart);
+      const trace: TraceResult = {
+        appMod: null,
+        deps: [],
+        compileOk: true,
+        testPartition: "complete",
+        modules: [
+          mod("Neutral", file),
+          mod("Neutral.One", "lib/one.ex"),
+          mod("Neutral.Two", "lib/two.ex"),
+        ],
+        functions: [
+          fn("Neutral", "callback", 0, file),
+          fn("Neutral.One", "one", 0, "lib/one.ex"),
+          fn("Neutral.Two", "two", 0, "lib/two.ex"),
+        ],
+        events: [
+          {
+            k: "event",
+            eventId: 0,
+            kind: "alias",
+            callKind: null,
+            file,
+            line: 2,
+            column: aliasStart + 1,
+            from_mod: "Neutral",
+            from_fun: "callback/0",
+            to_mod: "Neutral.One",
+            dyn: false,
+            partition: "prod",
+          },
+          {
+            k: "event",
+            kind: "alias",
+            file,
+            line: 2,
+            from_mod: "Neutral",
+            from_fun: "callback/0",
+            to_mod: "Neutral.Two",
+            dyn: false,
+            partition: "prod",
+          },
+        ],
+        structuralFiles: [
+          {
+            k: "structure_file",
+            file,
+            partition: "prod",
+            digest: createHash("sha256").update(content).digest("hex"),
+            bytes: Buffer.byteLength(content),
+            status: "complete",
+            reason: null,
+            astNodes: 1,
+            maxDepth: 1,
+            carriers: [
+              {
+                id: 0,
+                mod: "Neutral",
+                fun: "callback/0",
+                defLine: 2,
+                body: { sl: 2, sc: 1, el: 2, ec: line.length + 1 },
+              },
+            ],
+            facts: [
+              {
+                carrier: 0,
+                role: "runtime-mfa",
+                from: { sl: 2, sc: tupleStart + 1, el: 2, ec: tupleEnd + 1 },
+                to: {
+                  sl: 2,
+                  sc: aliasStart + 1,
+                  el: 2,
+                  ec: aliasStart + "Neutral.One".length + 1,
+                },
+                eventId: 0,
+                argument: null,
+                resolution: "exact",
+              },
+            ],
+          },
+        ],
+      };
+      expect(
+        extractElixirRuntimeReferences(root, trace).map(
+          (reference) => `${reference.toMod}.${reference.toName}/${reference.toArity}`,
+        ),
+      ).toEqual(["Neutral.One.one/0", "Neutral.Two.two/0"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("indexes one adversarial MFA line once across many exact facts", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-structural-mfa-dense-line-"));
+    try {
+      const file = "lib/neutral.ex";
+      const tuple = "{Neutral.Target, :callback_name, []}";
+      const count = 1_000;
+      const prefix = "  def callback, do: [";
+      const line = `${prefix}${new Array(count).fill(tuple).join(", ")}]`;
+      const content = `defmodule Neutral do\n${line}\nend\n`;
+      mkdirSync(join(root, "lib"));
+      writeFileSync(join(root, file), content);
+      const starts = new Array<number>(count);
+      let cursor = prefix.length;
+      for (let index = 0; index < count; index += 1) {
+        starts[index] = cursor;
+        cursor += tuple.length + (index + 1 === count ? 0 : 2);
+      }
+      const events: TraceEvent[] = starts.map((start, eventId) => ({
+        k: "event",
+        eventId,
+        kind: "alias",
+        callKind: null,
+        file,
+        line: 2,
+        column: start + 2,
+        from_mod: "Neutral",
+        from_fun: "callback/0",
+        to_mod: "Neutral.Target",
+        dyn: false,
+        partition: "prod",
+      }));
+      const trace: TraceResult = {
+        appMod: null,
+        deps: [],
+        compileOk: true,
+        testPartition: "complete",
+        modules: [mod("Neutral", file), mod("Neutral.Target", "lib/target.ex")],
+        functions: [
+          fn("Neutral", "callback", 0, file),
+          fn("Neutral.Target", "callback_name", 0, "lib/target.ex"),
+        ],
+        events,
+        structuralFiles: [
+          {
+            k: "structure_file",
+            file,
+            partition: "prod",
+            digest: createHash("sha256").update(content).digest("hex"),
+            bytes: Buffer.byteLength(content),
+            status: "complete",
+            reason: null,
+            astNodes: count,
+            maxDepth: 2,
+            carriers: [
+              {
+                id: 0,
+                mod: "Neutral",
+                fun: "callback/0",
+                defLine: 2,
+                body: { sl: 2, sc: 1, el: 2, ec: line.length + 1 },
+              },
+            ],
+            facts: starts.map((start, eventId) => ({
+              carrier: 0,
+              role: "runtime-mfa",
+              from: { sl: 2, sc: start + 1, el: 2, ec: start + tuple.length + 1 },
+              to: {
+                sl: 2,
+                sc: start + 2,
+                el: 2,
+                ec: start + "Neutral.Target".length + 2,
+              },
+              eventId,
+              argument: null,
+              resolution: "exact",
+            })),
+          },
+        ],
+      };
+      const started = performance.now();
+      expect(extractElixirRuntimeReferences(root, trace)).toHaveLength(1);
+      expect(performance.now() - started).toBeLessThan(2_000);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["mutated", "symlinked", "forged-event", "forged-role"] as const)(
+    "drops %s evidence from exact structural MFA consumption",
+    (change) => {
+      const root = mkdtempSync(join(tmpdir(), `unused-structural-mfa-${change}-`));
+      try {
+        const file = "lib/neutral.ex";
+        const content =
+          "defmodule Neutral do\n  def callback do\n    {Neutral.Callback, :callback_name, []}\n  end\nend\n";
+        mkdirSync(join(root, "lib"));
+        const path = join(root, file);
+        writeFileSync(path, content);
+        const callbackLine = content.split("\n")[2] ?? "";
+        const tupleStart = callbackLine.indexOf("{");
+        const aliasStart = callbackLine.indexOf("Neutral.Callback");
+        const aliasEvent: TraceEvent = {
+          k: "event",
+          eventId: 0,
+          kind: "alias",
+          callKind: null,
+          file,
+          line: 3,
+          column: aliasStart + 1,
+          from_mod: "Neutral",
+          from_fun: "callback/0",
+          to_mod: "Neutral.Callback",
+          dyn: false,
+          partition: "prod",
+        };
+        const trace: TraceResult = {
+          appMod: null,
+          deps: [],
+          compileOk: true,
+          testPartition: "complete",
+          modules: [mod("Neutral", file), mod("Neutral.Callback", "lib/callback.ex")],
+          functions: [
+            fn("Neutral", "callback", 0, file),
+            fn("Neutral.Callback", "callback_name", 0, "lib/callback.ex"),
+          ],
+          events: [{ ...aliasEvent, line: 2 }],
+          structuralEvents: [
+            change === "forged-event"
+              ? {
+                  ...aliasEvent,
+                  kind: "remote",
+                  callKind: "function",
+                  name: "run",
+                  arity: 0,
+                }
+              : aliasEvent,
+          ],
+          structuralFiles: [
+            {
+              k: "structure_file",
+              file,
+              partition: "prod",
+              digest: createHash("sha256").update(content).digest("hex"),
+              bytes: Buffer.byteLength(content),
+              status: "complete",
+              reason: null,
+              astNodes: 1,
+              maxDepth: 1,
+              carriers: [
+                {
+                  id: 0,
+                  mod: "Neutral",
+                  fun: "callback/0",
+                  defLine: 2,
+                  body: { sl: 2, sc: 3, el: 4, ec: 6 },
+                },
+              ],
+              facts: [
+                {
+                  carrier: 0,
+                  role: change === "forged-role" ? "use-dispatcher" : "runtime-mfa",
+                  from: {
+                    sl: 3,
+                    sc: tupleStart + 1,
+                    el: 3,
+                    ec: callbackLine.indexOf("}") + 2,
+                  },
+                  to: {
+                    sl: 3,
+                    sc: aliasStart + 1,
+                    el: 3,
+                    ec: aliasStart + "Neutral.Callback".length + 1,
+                  },
+                  eventId: 0,
+                  argument: null,
+                  resolution: "exact",
+                },
+              ],
+            },
+          ],
+        };
+        if (change === "mutated") {
+          writeFileSync(path, content.replace(":callback_name", ":callback_nome"));
+        } else if (change === "symlinked") {
+          const target = join(root, "replacement.ex");
+          writeFileSync(target, content);
+          unlinkSync(path);
+          symlinkSync(target, path);
+        }
+        const references = extractElixirRuntimeReferences(root, trace);
+        if (change === "mutated") {
+          expect(references).toEqual([]);
+        } else {
+          expect(references).toEqual([
+            expect.objectContaining({
+              toName: "callback_name",
+              toArity: 0,
+              fromMod: "Neutral",
+            }),
+          ]);
+          expect(references[0]?.fromFun).toBeUndefined();
+        }
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("resolves only a literal selected helper in a conventional self-apply dispatcher", () => {
     const trace: TraceResult = {

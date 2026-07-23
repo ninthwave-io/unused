@@ -21,9 +21,117 @@ afterEach(async () => {
 });
 
 describe.skipIf(!isMixAvailable())("real Elixir dynamic-hazard roles", () => {
+  it("limits macro structural carriers to the conventional public __using__/1 dispatcher", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unused-structural-macro-carrier-"));
+    temporaryRoots.push(root);
+    await mkdir(join(root, "lib"));
+    await writeFile(
+      join(root, "mix.exs"),
+      `defmodule NeutralMacroCarrier.MixProject do
+  use Mix.Project
+  def project, do: [app: :neutral_macro_carrier, version: "0.1.0", elixir: "~> 1.17"]
+end
+`,
+    );
+    await writeFile(
+      join(root, "lib", "neutral_macro_carrier.ex"),
+      `defmodule NeutralMacroCarrier do
+  defmacro __using__(which) when is_atom(which) do
+    apply(__MODULE__, which, [])
+  end
+
+  def router, do: quote(do: :ok)
+  defmacro unrelated(value), do: quote(do: unquote(value))
+end
+`,
+    );
+
+    const trace = runTracer(root);
+    const file = trace.structuralFiles?.find(
+      (candidate) => candidate.file === "lib/neutral_macro_carrier.ex",
+    );
+    expect(file?.carriers.map((carrier) => carrier.fun)).toContain("__using__/1");
+    expect(file?.carriers.map((carrier) => carrier.fun)).not.toContain("unrelated/1");
+    expect(file?.facts.filter((fact) => fact.role === "use-dispatcher")).toHaveLength(1);
+  }, 60_000);
+
+  it("consumes an exact structural MFA tuple without widening its live surface", async () => {
+    const root = fixture("runtime-mfa-callback");
+    const trace = runTracer(root);
+    const mfaFacts = (trace.structuralFiles ?? []).flatMap((file) =>
+      file.facts.filter((fact) => fact.role === "runtime-mfa").map((fact) => ({ file, fact })),
+    );
+    expect(mfaFacts).toHaveLength(1);
+    expect(trace.structuralSummary?.roles["runtime-mfa"]).toBe(1);
+    const mfaEvent = trace.structuralEvents?.find(
+      (event) => event.eventId === mfaFacts[0]?.fact.eventId,
+    );
+    expect(mfaEvent).toMatchObject({
+      kind: "alias",
+      from_mod: "NeutralMfa.RuntimeConfig",
+      from_fun: "callback/0",
+      to_mod: "NeutralMfa.Callback",
+    });
+    expect(
+      extractElixirRuntimeConventions(root, trace).references.filter(
+        (reference) => reference.convention === "runtime-mfa",
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        fromMod: "NeutralMfa.RuntimeConfig",
+        fromFun: "callback/0",
+        toMod: "NeutralMfa.Callback",
+        toName: "callback_name",
+        toArity: 1,
+      }),
+    ]);
+
+    const analysis = await analyzeElixirProjectWithGraph(root, { now: new Date(0) });
+    const callback = whyAlive({
+      graph: analysis.graph,
+      reachability: analysis.reachability,
+      claims: analysis.result.claims,
+      query: "NeutralMfa.Callback.callback_name/1",
+      hazardEvaluations: [analysis.hazardEvaluation],
+    });
+    expect(callback).toMatchObject({ outcome: "alive", entrypointKind: "production" });
+    if (callback.outcome !== "alive") throw new Error("expected runtime callback to be alive");
+    expect(
+      computeDeletionPlan({
+        graph: analysis.graph,
+        reachability: analysis.reachability,
+        subject: callback.subject,
+        hazardEvaluations: [analysis.hazardEvaluation],
+      }),
+    ).toMatchObject({ supported: false });
+
+    const unrelated = whyAlive({
+      graph: analysis.graph,
+      reachability: analysis.reachability,
+      claims: analysis.result.claims,
+      query: "NeutralMfa.Callback.genuinely_unused/0",
+      hazardEvaluations: [analysis.hazardEvaluation],
+    });
+    expect(unrelated).toMatchObject({ outcome: "dead" });
+  }, 60_000);
+
   it("accounts for every literal guarded use-helper invocation without an opaque cap", async () => {
     const root = fixture("dynamic-use-helpers");
     const trace = runTracer(root);
+    const dispatcherFacts = (trace.structuralFiles ?? []).flatMap((file) =>
+      file.facts.filter((fact) => fact.role === "use-dispatcher"),
+    );
+    expect(dispatcherFacts).toHaveLength(1);
+    expect(trace.structuralSummary?.roles["use-dispatcher"]).toBe(1);
+    expect(
+      trace.structuralEvents?.find((event) => event.eventId === dispatcherFacts[0]?.eventId),
+    ).toMatchObject({
+      name: "apply",
+      arity: 3,
+      from_mod: "NeutralUse.Web",
+      from_fun: "__using__/1",
+      dyn: true,
+    });
     expect(
       trace.events
         .filter(

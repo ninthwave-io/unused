@@ -237,6 +237,7 @@ defmodule Unused.Structure do
   @max_depth 256
   @max_carriers 20_000
   @max_facts 500_000
+  @function_atom ~r/^[a-z_][A-Za-z0-9_]*[!?]?$/
 
   def dump(emit, root, partition, events) do
     owners =
@@ -510,9 +511,10 @@ defmodule Unused.Structure do
   end
 
   defp visit_definition({kind, meta, [head, body]}, mod, file, event_index, state, depth)
-       when kind in [:def, :defp] and is_list(body) do
+       when kind in [:def, :defp, :defmacro, :defmacrop] and is_list(body) do
     case definition_identity(head) do
-      {name, arity} ->
+      {name, arity}
+      when kind in [:def, :defp] or (kind == :defmacro and name == :__using__ and arity == 1) ->
         fun = "#{name}/#{arity}"
         compiler_known = MapSet.member?(event_index.carriers, {file, mod, fun}) or
           (kind == :def) or MapSet.member?(event_index.by_target, {file, mod, fun})
@@ -527,10 +529,10 @@ defmodule Unused.Structure do
                            carriers: [carrier | state.carriers]}
           if state.carrier_count > @max_carriers, do: throw(:structure_limit)
           carrier = %{id: id, mod: mod, fun: fun, file: file, span: span,
-                      event_index: event_index}
+                      event_index: event_index, using_selector: using_selector(head)}
           visit_function_body(body, carrier, state, depth + 1)
         end
-      nil -> state
+      _ -> state
     end
   end
   defp visit_definition(_value, _mod, _file, _event_index, state, _depth), do: state
@@ -540,6 +542,11 @@ defmodule Unused.Structure do
   defp definition_identity({name, _meta, args})
        when is_atom(name) and (is_list(args) or is_nil(args)), do: {name, length(args || [])}
   defp definition_identity(_head), do: nil
+
+  defp using_selector({:when, _meta, [head | _guards]}), do: using_selector(head)
+  defp using_selector({:__using__, _meta, [{selector, _selector_meta, context}]})
+       when is_atom(selector) and (is_atom(context) or is_nil(context)), do: selector
+  defp using_selector(_head), do: nil
 
   defp visit_function_body(body, carrier, state, depth) do
     facts_before = state.facts
@@ -567,6 +574,7 @@ defmodule Unused.Structure do
   defp walk(nil, _carrier, state, _depth), do: state
   defp walk(node, carrier, state, depth) do
     state = tick(state, depth)
+    state = add_runtime_reference_fact(state, carrier, node)
     case node do
       {:|>, meta, [left, right]} ->
         walk_pipeline(meta, left, right, carrier, state, depth)
@@ -622,6 +630,42 @@ defmodule Unused.Structure do
       _ -> state
     end
   end
+
+  defp add_runtime_reference_fact(state, carrier,
+       {:{}, _meta, [{:__aliases__, alias_meta, parts}, function, _arguments]} = tuple)
+       when is_list(alias_meta) and is_list(parts) and is_atom(function) do
+    tuple_span = node_span(tuple)
+    module_span = node_span({:__aliases__, alias_meta, parts})
+    matches = matching_alias_events(carrier.event_index, carrier.file, carrier.mod, carrier.fun,
+      alias_meta)
+    if Regex.match?(@function_atom, Atom.to_string(function)) and tuple_span != nil and
+         module_span != nil and length(matches) == 1 do
+      {event_id, _kind, _call_kind, _to_mod} = hd(matches)
+      add_fact(state, carrier.id, "runtime-mfa", tuple_span, module_span, event_id, nil, "exact")
+    else
+      state
+    end
+  end
+  defp add_runtime_reference_fact(state, carrier,
+       {:apply, meta, [{:__MODULE__, _module_meta, nil},
+                       {selector, _selector_meta, context}, []]} = call)
+       when is_list(meta) and is_atom(selector) and (is_atom(context) or is_nil(context)) do
+    target = node_span(call)
+    matches = matching_call_events(carrier.event_index, carrier.file, carrier.mod, carrier.fun,
+      meta, :apply, 3)
+    exact = Enum.filter(matches, fn {_id, kind, call_kind, to_mod} ->
+      kind in ["remote", "imported", "local"] and call_kind != nil and
+        to_mod in ["Kernel", ":erlang"]
+    end)
+    if carrier.fun == "__using__/1" and carrier.using_selector == selector and target != nil and
+         length(exact) == 1 do
+      {event_id, _kind, _call_kind, _to_mod} = hd(exact)
+      add_fact(state, carrier.id, "use-dispatcher", target, target, event_id, 1, "exact")
+    else
+      state
+    end
+  end
+  defp add_runtime_reference_fact(state, _carrier, _node), do: state
 
   defp walk_pipeline(meta, left, right, carrier, state, depth) do
     target = pipeline_span(left, right, meta)
@@ -716,6 +760,15 @@ defmodule Unused.Structure do
     column = Keyword.get(meta, :column, 0)
     if column > 0,
       do: Map.get(event_index.by_call, {file, line, column, mod, fun, to_string(name), arity}, []),
+      else: []
+  end
+
+  defp matching_alias_events(event_index, file, mod, fun, meta) do
+    line = Keyword.get(meta, :line, 0)
+    column = Keyword.get(meta, :column, 0)
+    if column > 0,
+      do: Map.get(event_index.by_call, {file, line, column, mod, fun, nil, nil}, [])
+        |> Enum.filter(fn {_id, kind, call_kind, _to_mod} -> kind == "alias" and call_kind == nil end),
       else: []
   end
 
