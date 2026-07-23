@@ -305,6 +305,32 @@ describe("computeDeletionPlan", () => {
     });
   });
 
+  it("does not treat absent atom-flow cause diagnostics as deletion evidence", () => {
+    const graph = new IRGraph();
+    addEntry(graph, "lib/application.ex");
+    addFile(graph, "lib/candidate.ex");
+    graph.addHazard({
+      file: fileId("lib/application.ex"),
+      hazardClass: "elixir-computed-atom-escape",
+      detail: "computed atom escape retained independently of diagnostic counters",
+      site: site("lib/application.ex", 18),
+      effect: { scope: { kind: "unit" }, worlds: ["production"] },
+    });
+
+    const plan = computeDeletionPlan({
+      graph,
+      reachability: computePartitionedReachability(graph),
+      subject: { kind: "file", file: "lib/candidate.ex" },
+    });
+    expect(plan).toMatchObject({
+      supported: false,
+      unsupportedReason:
+        "computed atom escapes analysis at lib/application.ex:18 in production " +
+        "and prevents proving deletion safe",
+      stages: [],
+    });
+  });
+
   it("refuses a subject selected by a reachable literal runtime convention", () => {
     const graph = new IRGraph();
     addEntry(graph, "lib/application.ex");

@@ -587,6 +587,44 @@ only by `use`, including a generated private carrier, remain conservatively
 unindexed and activate carrier-scoped escape/deletion refusal; no final
 generated-clause provenance is claimed.
 
+### Phase 1B2B.2 local-cause and caller-eligibility checkpoint
+
+This instrumentation-only checkpoint adds two diagnostic masks that are
+separate from both semantic outcomes and the Phase 1B2B.1 cross-call decision
+mask. The 22-bit local escape-cause mask distinguishes assignment,
+container/return, call/event/summary, callback/role, private-result, SCC, bound,
+and defensive root fallbacks. The 11-bit caller-eligibility mask distinguishes
+supported source-shape, direct ownership, module safety, and reflection
+failures. Each vocabulary is independently guarded below 31 signed bits.
+
+Both masks propagate only through the existing value-node queue, parameter
+summary arrays, private-result arrays, and SCC delta queues. They cannot change
+data, invocation, escape, hazard, claim, explanation, deletion, or canonical
+JSON behavior. Joined escaping producers have exactly one local primary bucket
+(`multiple` for overlap and `unattributed` only for a defensive zero mask).
+Every joined producer, regardless of disposition, has exactly one caller-
+exposure primary bucket. Caller-ineligible decisions have their own exact
+primary sum and overlapping causes/module-safety flags. Unjoined producer
+fallbacks remain outside the value graph and are partitioned separately among
+missing source, ambiguous source, and ambiguous producer event.
+
+No-parentheses definitions remain a deliberate attribution limit. Their source
+range does not supply the arity required by the existing source/compiler join,
+so the compiler event remains `source-call-unindexed`; Phase 1B2B.2 does not add
+a reverse lookup or guess a caller syntax. Likewise, structurally unreachable
+defensive graph fallbacks retain explicit zero-count controls rather than
+synthetic executable fixtures. These limits preserve the frozen bounded model
+and do not weaken the existing conservative escape/deletion behavior.
+
+Neutral fixtures cover each executable local branch, caller source and
+reflection rejection, nested ownership, real `use`/`defoverridable`/generated
+caller safety, no-caller and unsafe-caller private results, parameter and
+private-result SCC cycles, the 64-degree bound, and all three unjoined causes.
+The fixed-density 250/500/1,000/2,000 producer series asserts exact cause
+density plus constant-multiple role-edge and queue-visit bounds. Canonical
+stdout, public JSON, schemas, hazards, claims, and deletion planning remain
+unchanged.
+
 ## Acceptance
 
 Implementation is complete only when all of the following hold:

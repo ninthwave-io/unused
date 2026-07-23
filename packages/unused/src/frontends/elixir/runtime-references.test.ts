@@ -6,6 +6,12 @@ import { describe, expect, it } from "vitest";
 import { ectoElixirAtomRoleSummaryProvider } from "../plugins/elixir-conventions.js";
 import type { FunctionRecord, ModuleRecord, TraceEvent, TraceResult } from "./events.js";
 import {
+  type AtomFlowEscapeCause,
+  type AtomFlowEscapePrimaryCause,
+  type AtomFlowUnjoinedProducerCause,
+  type CallerEligibilityCause,
+  type CallerEligibilityExposureCause,
+  type CallerEligibilityPrimaryCause,
   type CrossModuleDecisionReason,
   type CrossModuleProducerEscapeReason,
   dynamicEventKey,
@@ -136,6 +142,113 @@ function exactProducerPrimaryCounts(
     multiple: entries.multiple ?? 0,
     unattributed: entries.unattributed ?? 0,
   };
+}
+
+const LOCAL_ESCAPE_CAUSES: readonly AtomFlowEscapeCause[] = [
+  "assignment-owner-missing",
+  "assignment-interpolation",
+  "assignment-rebound",
+  "assignment-unused",
+  "container-unclosed",
+  "return-unsupported",
+  "value-context-unsupported",
+  "call-argument-unresolved",
+  "function-summary-argument-missing",
+  "source-call-cardinality",
+  "compiler-event-missing",
+  "compiler-event-ambiguous",
+  "project-function-unsummarized",
+  "external-role-unsummarized",
+  "callback-containment",
+  "role-omitted",
+  "private-result-no-callers",
+  "private-result-unsafe-callers",
+  "parameter-cycle-unresolved",
+  "private-result-cycle-unresolved",
+  "summary-degree-bound",
+  "root-no-outcome",
+];
+
+function exactEscapePrimaryCounts(
+  entries: Partial<Record<AtomFlowEscapePrimaryCause, number>>,
+): Record<AtomFlowEscapePrimaryCause, number> {
+  const reasons: readonly AtomFlowEscapePrimaryCause[] = [
+    ...LOCAL_ESCAPE_CAUSES,
+    "multiple",
+    "unattributed",
+  ];
+  return Object.fromEntries(reasons.map((reason) => [reason, entries[reason] ?? 0])) as Record<
+    AtomFlowEscapePrimaryCause,
+    number
+  >;
+}
+
+function exactEscapeOverlapCounts(
+  entries: Partial<Record<AtomFlowEscapeCause, number>>,
+): Record<AtomFlowEscapeCause, number> {
+  return Object.fromEntries(
+    LOCAL_ESCAPE_CAUSES.map((reason) => [reason, entries[reason] ?? 0]),
+  ) as Record<AtomFlowEscapeCause, number>;
+}
+
+function exactUnjoinedCounts(
+  entries: Partial<Record<AtomFlowUnjoinedProducerCause, number>>,
+): Record<AtomFlowUnjoinedProducerCause, number> {
+  return {
+    "producer-source-missing": entries["producer-source-missing"] ?? 0,
+    "producer-source-ambiguous": entries["producer-source-ambiguous"] ?? 0,
+    "producer-event-ambiguous": entries["producer-event-ambiguous"] ?? 0,
+  };
+}
+
+const CALLER_ELIGIBILITY_CAUSES: readonly CallerEligibilityCause[] = [
+  "caller-source-no-paren",
+  "caller-guard",
+  "caller-default",
+  "caller-pattern",
+  "caller-multiple",
+  "caller-nested-or-not-direct",
+  "caller-module-unsafe",
+  "caller-reflection-missing",
+  "caller-reflection-duplicate",
+  "caller-reflection-line-mismatch",
+  "caller-reflection-world-mismatch",
+];
+
+function exactCallerPrimaryCounts(
+  entries: Partial<Record<CallerEligibilityPrimaryCause, number>>,
+): Record<CallerEligibilityPrimaryCause, number> {
+  const reasons: readonly CallerEligibilityPrimaryCause[] = [
+    ...CALLER_ELIGIBILITY_CAUSES,
+    "multiple",
+    "unclassified",
+  ];
+  return Object.fromEntries(reasons.map((reason) => [reason, entries[reason] ?? 0])) as Record<
+    CallerEligibilityPrimaryCause,
+    number
+  >;
+}
+
+function exactCallerExposureCounts(
+  entries: Partial<Record<CallerEligibilityExposureCause, number>>,
+): Record<CallerEligibilityExposureCause, number> {
+  const reasons: readonly CallerEligibilityExposureCause[] = [
+    ...CALLER_ELIGIBILITY_CAUSES,
+    "multiple",
+    "unexposed",
+  ];
+  return Object.fromEntries(reasons.map((reason) => [reason, entries[reason] ?? 0])) as Record<
+    CallerEligibilityExposureCause,
+    number
+  >;
+}
+
+function exactCallerOverlapCounts(
+  entries: Partial<Record<CallerEligibilityCause, number>>,
+): Record<CallerEligibilityCause, number> {
+  return Object.fromEntries(
+    CALLER_ELIGIBILITY_CAUSES.map((reason) => [reason, entries[reason] ?? 0]),
+  ) as Record<CallerEligibilityCause, number>;
 }
 
 describe("extractElixirRuntimeReferences", () => {
@@ -769,6 +882,155 @@ describe("extractElixirRuntimeReferences", () => {
           summaryProviders,
         ).dynamicDispatches.find((fact) => fact.fromFun === "map_key/2"),
       ).toMatchObject({ factKind: "computed-atom", flow: "escape", kind: "opaque" });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("attributes joined local escapes without changing their semantic disposition", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-atom-cause-ledger-"));
+    const file = "atom_cause_ledger.ex";
+    const moduleName = "NeutralCause.Ledger";
+    const lines = [
+      `defmodule ${moduleName} do`,
+      "  def interpolation(raw) do",
+      "    key = String.to_atom(raw)",
+      '    "#{key}"',
+      "  end",
+      "  def rebound(raw) do",
+      "    key = String.to_atom(raw)",
+      "    key = :known",
+      "    key",
+      "  end",
+      "  def unused(raw) do",
+      "    key = String.to_atom(raw)",
+      "    :ok",
+      "  end",
+      "  def standalone(raw) do",
+      "    String.to_atom(raw)",
+      "    :ok",
+      "  end",
+      "  def returned_tuple(raw), do: {:ok, String.to_atom(raw)}",
+      "  def unknown(raw), do: NeutralCause.External.keep(String.to_atom(raw))",
+      "  def missing_event(raw), do: NeutralCause.External.missing(String.to_atom(raw))",
+      "  def ambiguous_event(raw), do: NeutralCause.External.ambiguous(String.to_atom(raw))",
+      "  def project(raw), do: NeutralCause.Target.keep(String.to_atom(raw))",
+      "  def callback(values, raw), do: Map.new(values, fn _ -> String.to_atom(raw); {:known, :known} end)",
+      "  def omitted(raw), do: Map.update(%{kind: String.to_atom(raw)}, :kind, :known, fn value -> value end)",
+      "  def cardinality(map, raw) do",
+      "    key = String.to_atom(raw)",
+      "    {Map.has_key?(map, key), Map.has_key?(map, key)}",
+      "  end",
+      "end",
+      "defmodule NeutralCause.Target do",
+      "  def keep(value), do: value",
+      "end",
+      "",
+    ];
+    const lineOf = (needle: string): number => lines.findIndex((line) => line.includes(needle)) + 1;
+    const producers = [
+      ["interpolation/1", "key = String", lineOf("def interpolation")],
+      ["rebound/1", "key = String", lineOf("def rebound")],
+      ["unused/1", "key = String", lineOf("def unused")],
+      ["standalone/1", "String.to_atom", lineOf("def standalone")],
+      ["returned_tuple/1", "def returned_tuple", 0],
+      ["unknown/1", "def unknown", 0],
+      ["missing_event/1", "def missing_event", 0],
+      ["ambiguous_event/1", "def ambiguous_event", 0],
+      ["project/1", "def project", 0],
+      ["callback/2", "def callback", 0],
+      ["omitted/1", "def omitted", 0],
+      ["cardinality/2", "key = String", lineOf("def cardinality")],
+    ] as const;
+    const event = (
+      fromFun: string,
+      needle: string,
+      toMod: string,
+      name: string,
+      arity: number,
+      dyn = false,
+      fromLine = 0,
+    ): TraceEvent => ({
+      k: "event",
+      kind: "remote",
+      file,
+      line: lines.findIndex((line, index) => index >= fromLine && line.includes(needle)) + 1,
+      from_mod: moduleName,
+      from_fun: fromFun,
+      to_mod: toMod,
+      name,
+      arity,
+      dyn,
+      partition: "prod",
+    });
+    const ambiguousCall = event(
+      "ambiguous_event/1",
+      "def ambiguous_event",
+      "NeutralCause.External",
+      "ambiguous",
+      1,
+    );
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod(moduleName, file), mod("NeutralCause.Target", file)],
+      functions: [],
+      events: [
+        ...producers.map(([fromFun, needle, fromLine]) =>
+          event(fromFun, needle, "String", "to_atom", 1, true, fromLine),
+        ),
+        event("unknown/1", "def unknown", "NeutralCause.External", "keep", 1),
+        ambiguousCall,
+        { ...ambiguousCall },
+        event("project/1", "def project", "NeutralCause.Target", "keep", 1),
+        event("callback/2", "def callback", "Map", "new", 2),
+        event("omitted/1", "def omitted", "Map", "update", 4),
+        event("cardinality/2", "{Map.has_key?", "Map", "has_key?", 2),
+      ],
+    };
+
+    try {
+      writeFileSync(join(root, file), lines.join("\n"));
+      const extraction = extractElixirRuntimeConventions(root, trace);
+      expect(
+        extraction.dynamicDispatches.map((fact) =>
+          fact.factKind === "computed-atom" ? fact.flow : "invocation",
+        ),
+      ).toEqual(Array.from({ length: producers.length }, () => "escape"));
+      expect(extraction.atomFlowStats.atomFlowEscapeCausePrimaryCounts).toEqual(
+        exactEscapePrimaryCounts({
+          "assignment-interpolation": 1,
+          "assignment-rebound": 1,
+          "assignment-unused": 1,
+          "value-context-unsupported": 1,
+          "return-unsupported": 1,
+          "external-role-unsummarized": 1,
+          "compiler-event-missing": 1,
+          "compiler-event-ambiguous": 1,
+          "project-function-unsummarized": 1,
+          "callback-containment": 1,
+          "role-omitted": 1,
+          "source-call-cardinality": 1,
+        }),
+      );
+      expect(extraction.atomFlowStats.atomFlowEscapeCauseOverlapCounts).toEqual(
+        exactEscapeOverlapCounts({
+          "assignment-interpolation": 1,
+          "assignment-rebound": 1,
+          "assignment-unused": 1,
+          "value-context-unsupported": 1,
+          "return-unsupported": 1,
+          "external-role-unsummarized": 1,
+          "compiler-event-missing": 1,
+          "compiler-event-ambiguous": 1,
+          "project-function-unsummarized": 1,
+          "callback-containment": 1,
+          "role-omitted": 1,
+          "source-call-cardinality": 1,
+        }),
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -1780,6 +2042,284 @@ describe("extractElixirRuntimeReferences", () => {
       );
       expect(extraction.atomFlowStats.crossModuleProducerEscapePrimaryCounts).toEqual(
         exactProducerPrimaryCounts({}),
+      );
+      expect(extraction.atomFlowStats).toMatchObject({
+        crossModuleCallerIneligibleDecisions: 2,
+      });
+      expect(extraction.atomFlowStats.crossModuleCallerEligibilityPrimaryCounts).toEqual(
+        exactCallerPrimaryCounts({ "caller-guard": 2 }),
+      );
+      expect(extraction.atomFlowStats.crossModuleCallerEligibilityOverlapCounts).toEqual(
+        exactCallerOverlapCounts({ "caller-guard": 2 }),
+      );
+      expect(extraction.atomFlowStats.atomFlowProducerCallerEligibilityPrimaryCounts).toEqual(
+        exactCallerExposureCounts({ "caller-guard": 1 }),
+      );
+      expect(extraction.atomFlowStats.atomFlowProducerCallerEligibilityOverlapCounts).toEqual(
+        exactCallerOverlapCounts({ "caller-guard": 1 }),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    [
+      "guard",
+      "  def run(raw) when is_binary(raw), do: TARGET.consume(String.to_atom(raw))",
+      "caller-guard",
+      -2,
+    ],
+    [
+      "default",
+      "  def run(raw \\\\ :known), do: TARGET.consume(String.to_atom(raw))",
+      "caller-default",
+      -2,
+    ],
+    [
+      "pattern",
+      "  def run({:ok, raw}), do: TARGET.consume(String.to_atom(raw))",
+      "caller-pattern",
+      -2,
+    ],
+    [
+      "multiple",
+      "  def run(raw), do: TARGET.consume(String.to_atom(raw))\n  def run(raw), do: raw",
+      "caller-multiple",
+      -2,
+    ],
+    [
+      "reflection-missing",
+      "  def run(raw), do: TARGET.consume(String.to_atom(raw))",
+      "caller-reflection-missing",
+      0,
+    ],
+    [
+      "reflection-duplicate",
+      "  def run(raw), do: TARGET.consume(String.to_atom(raw))",
+      "caller-reflection-duplicate",
+      2,
+    ],
+    [
+      "reflection-line",
+      "  def run(raw), do: TARGET.consume(String.to_atom(raw))",
+      "caller-reflection-line-mismatch",
+      3,
+    ],
+    [
+      "reflection-world",
+      "  def run(raw), do: TARGET.consume(String.to_atom(raw))",
+      "caller-reflection-world-mismatch",
+      -1,
+    ],
+    [
+      "nested",
+      "  if true do\n    def run(raw), do: TARGET.consume(String.to_atom(raw))\n  end",
+      "caller-nested-or-not-direct",
+      -2,
+    ],
+  ] as const)(
+    "attributes the %s caller eligibility branch",
+    (_label, callerSource, expectedCause, reflectionMode) => {
+      const root = mkdtempSync(join(tmpdir(), "unused-caller-eligibility-ledger-"));
+      const callerFile = "caller_eligibility.ex";
+      const targetFile = "caller_eligibility_target.ex";
+      const callerModule = "NeutralCallerEligibility.Entry";
+      const targetModule = "NeutralCallerEligibility.Target";
+      const callerLine = callerSource.split("\n").findIndex((line) => line.includes("String")) + 2;
+      const callerFunction = { ...fn(callerModule, "run", 1, callerFile), line: callerLine };
+      const callerFunctions: FunctionRecord[] =
+        reflectionMode === 0
+          ? []
+          : reflectionMode === -2
+            ? [callerFunction]
+            : reflectionMode === 2
+              ? [callerFunction, { ...callerFunction }]
+              : reflectionMode === -1
+                ? [{ ...callerFunction, partition: "test" }]
+                : [{ ...callerFunction, line: reflectionMode }];
+      const trace: TraceResult = {
+        appMod: null,
+        deps: [],
+        compileOk: true,
+        testPartition: "complete",
+        modules: [mod(callerModule, callerFile), mod(targetModule, targetFile)],
+        functions: [...callerFunctions, { ...fn(targetModule, "consume", 1, targetFile), line: 2 }],
+        events: [
+          {
+            k: "event",
+            kind: "remote",
+            file: callerFile,
+            line: callerLine,
+            from_mod: callerModule,
+            from_fun: "run/1",
+            to_mod: "String",
+            name: "to_atom",
+            arity: 1,
+            dyn: true,
+            partition: "prod",
+          },
+          {
+            k: "event",
+            kind: "remote",
+            file: callerFile,
+            line: callerLine,
+            from_mod: callerModule,
+            from_fun: "run/1",
+            to_mod: targetModule,
+            name: "consume",
+            arity: 1,
+            dyn: false,
+            partition: "prod",
+          },
+          {
+            k: "event",
+            kind: "remote",
+            file: targetFile,
+            line: 2,
+            from_mod: targetModule,
+            from_fun: "consume/1",
+            to_mod: "Atom",
+            name: "to_string",
+            arity: 1,
+            dyn: false,
+            partition: "prod",
+          },
+        ],
+      };
+      try {
+        writeFileSync(
+          join(root, callerFile),
+          `defmodule ${callerModule} do\n${callerSource.replaceAll("TARGET", targetModule)}\nend\n`,
+        );
+        writeFileSync(
+          join(root, targetFile),
+          `defmodule ${targetModule} do\n  def consume(value), do: Atom.to_string(value)\nend\n`,
+        );
+        const extraction = extractElixirRuntimeConventions(
+          root,
+          withExactPrivateModuleScaffolding(root, trace),
+        );
+        expect(
+          extraction.dynamicDispatches.find((fact) => fact.factKind === "computed-atom"),
+        ).toMatchObject({ flow: "data" });
+        expect(extraction.atomFlowStats.crossModuleCallerEligibilityPrimaryCounts).toEqual(
+          exactCallerPrimaryCounts({ [expectedCause]: 2 }),
+        );
+        expect(extraction.atomFlowStats.crossModuleCallerEligibilityOverlapCounts).toEqual(
+          exactCallerOverlapCounts({ [expectedCause]: 2 }),
+        );
+        expect(extraction.atomFlowStats.atomFlowProducerCallerEligibilityPrimaryCounts).toEqual(
+          exactCallerExposureCounts({ [expectedCause]: 1 }),
+        );
+        expect(
+          extraction.atomFlowStats.crossModuleCallerEligibilityPrimaryCounts.unclassified,
+        ).toBe(0);
+        expect(
+          extraction.atomFlowStats.crossModuleCallerEligibilityPrimaryCounts[
+            "caller-source-no-paren"
+          ],
+        ).toBe(0);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("attributes real use, defoverridable, and generated caller safety without changing flow", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-caller-safety-ledger-"));
+    const callerFile = "caller_safety.ex";
+    const targetFile = "caller_safety_target.ex";
+    const callerModule = "NeutralCallerSafety.Entry";
+    const targetModule = "NeutralCallerSafety.Target";
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod(callerModule, callerFile), mod(targetModule, targetFile)],
+      functions: [
+        { ...fn(callerModule, "run", 1, callerFile), line: 3 },
+        { ...fn(targetModule, "consume", 1, targetFile), line: 2 },
+      ],
+      events: [
+        {
+          k: "event",
+          kind: "remote",
+          file: callerFile,
+          line: 3,
+          from_mod: callerModule,
+          from_fun: "run/1",
+          to_mod: "String",
+          name: "to_atom",
+          arity: 1,
+          dyn: true,
+          partition: "prod",
+        },
+        {
+          k: "event",
+          kind: "remote",
+          file: callerFile,
+          line: 3,
+          from_mod: callerModule,
+          from_fun: "run/1",
+          to_mod: targetModule,
+          name: "consume",
+          arity: 1,
+          dyn: false,
+          partition: "prod",
+        },
+        {
+          k: "event",
+          kind: "remote",
+          file: targetFile,
+          line: 2,
+          from_mod: targetModule,
+          from_fun: "consume/1",
+          to_mod: "Atom",
+          name: "to_string",
+          arity: 1,
+          dyn: false,
+          partition: "prod",
+        },
+      ],
+    };
+    try {
+      writeFileSync(
+        join(root, callerFile),
+        [
+          `defmodule ${callerModule} do`,
+          "  use NeutralCallerSafety.Framework",
+          `  def run(raw), do: ${targetModule}.consume(String.to_atom(raw))`,
+          "  defoverridable run: 1",
+          "  quote do: :generated_marker",
+          "end",
+          "",
+        ].join("\n"),
+      );
+      writeFileSync(
+        join(root, targetFile),
+        `defmodule ${targetModule} do\n  def consume(value), do: Atom.to_string(value)\nend\n`,
+      );
+      const extraction = extractElixirRuntimeConventions(
+        root,
+        withExactPrivateModuleScaffolding(root, trace),
+      );
+      expect(
+        extraction.dynamicDispatches.find((fact) => fact.factKind === "computed-atom"),
+      ).toMatchObject({ flow: "data" });
+      expect(extraction.atomFlowStats.crossModuleCallerEligibilityPrimaryCounts).toEqual(
+        exactCallerPrimaryCounts({ "caller-module-unsafe": 2 }),
+      );
+      expect(extraction.atomFlowStats.crossModuleCallerEligibilityOverlapCounts).toEqual(
+        exactCallerOverlapCounts({ "caller-module-unsafe": 2 }),
+      );
+      expect(extraction.atomFlowStats.crossModuleCallerModuleSafetyFlags).toMatchObject({
+        use: 2,
+        generated: 2,
+      });
+      expect(extraction.atomFlowStats.atomFlowProducerCallerEligibilityPrimaryCounts).toEqual(
+        exactCallerExposureCounts({ "caller-module-unsafe": 1 }),
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -3933,6 +4473,9 @@ describe("extractElixirRuntimeReferences", () => {
         dataSinks: 0,
         escapes: 1,
       });
+      expect(extraction.atomFlowStats.atomFlowEscapeCausePrimaryCounts).toEqual(
+        exactEscapePrimaryCounts({ "summary-degree-bound": 1 }),
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -4099,6 +4642,9 @@ describe("extractElixirRuntimeReferences", () => {
       );
       expect(extraction.atomFlowStats.crossModuleProducerEscapeOverlapCounts).toEqual(
         exactDecisionCounts(terminal ? {} : { admitted: 1 }),
+      );
+      expect(extraction.atomFlowStats.atomFlowEscapeCausePrimaryCounts).toEqual(
+        exactEscapePrimaryCounts(terminal ? {} : { "parameter-cycle-unresolved": 1 }),
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -4779,16 +5325,133 @@ describe("extractElixirRuntimeReferences", () => {
             "",
           ].join("\n"),
         );
+        const extraction = extractElixirRuntimeConventions(
+          root,
+          withExactPrivateModuleScaffolding(root, trace),
+        );
         expect(
-          extractElixirRuntimeConventions(root, trace).dynamicDispatches.find(
-            (fact) => fact.factKind === "computed-atom",
-          ),
+          extraction.dynamicDispatches.find((fact) => fact.factKind === "computed-atom"),
         ).toMatchObject({ fromFun: "make/1", flow: "escape" });
+        const reason = copies === 0 ? "private-result-no-callers" : "private-result-unsafe-callers";
+        expect(extraction.atomFlowStats.atomFlowEscapeCausePrimaryCounts).toEqual(
+          exactEscapePrimaryCounts({ [reason]: 1 }),
+        );
+        expect(extraction.atomFlowStats.atomFlowEscapeCauseOverlapCounts).toEqual(
+          exactEscapeOverlapCounts({ [reason]: 1 }),
+        );
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
     }
   });
+
+  it("attributes a terminal-free private result cycle through existing SCC state", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-private-result-cycle-ledger-"));
+    const file = "private_result_cycle.ex";
+    const moduleName = "NeutralPrivate.ResultCycle";
+    const event = (line: number, fromFun: string, name: string, dyn = false): TraceEvent => ({
+      k: "event",
+      kind: dyn ? "remote" : "local",
+      file,
+      line,
+      from_mod: moduleName,
+      from_fun: fromFun,
+      to_mod: dyn ? "String" : moduleName,
+      name,
+      arity: 1,
+      dyn,
+      partition: "prod",
+    });
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod(moduleName, file)],
+      functions: [],
+      events: [
+        event(2, "left/1", "to_atom", true),
+        event(2, "left/1", "right"),
+        event(3, "right/1", "left"),
+      ],
+    };
+    try {
+      writeFileSync(
+        join(root, file),
+        [
+          `defmodule ${moduleName} do`,
+          "  defp left(raw), do: {String.to_atom(raw), right(raw)}",
+          "  defp right(raw), do: left(raw)",
+          "end",
+          "",
+        ].join("\n"),
+      );
+      const extraction = extractElixirRuntimeConventions(
+        root,
+        withExactPrivateModuleScaffolding(root, trace),
+      );
+      expect(
+        extraction.dynamicDispatches.find((fact) => fact.factKind === "computed-atom"),
+      ).toMatchObject({ fromFun: "left/1", flow: "escape" });
+      expect(extraction.atomFlowStats.atomFlowEscapeCausePrimaryCounts).toEqual(
+        exactEscapePrimaryCounts({ "private-result-cycle-unresolved": 1 }),
+      );
+      expect(extraction.atomFlowStats.atomFlowEscapeCauseOverlapCounts).toEqual(
+        exactEscapeOverlapCounts({ "private-result-cycle-unresolved": 1 }),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["missing source site", 99, 1, "producer-source-missing"],
+    ["ambiguous producer event", 2, 2, "producer-event-ambiguous"],
+  ] as const)(
+    "attributes the unjoined %s outside the value graph",
+    (_label, line, copies, reason) => {
+      const root = mkdtempSync(join(tmpdir(), "unused-unjoined-producer-ledger-"));
+      const file = "unjoined_producer.ex";
+      const moduleName = "NeutralUnjoined.Producer";
+      const producer: TraceEvent = {
+        k: "event",
+        kind: "remote",
+        file,
+        line,
+        from_mod: moduleName,
+        from_fun: "run/1",
+        to_mod: "String",
+        name: "to_atom",
+        arity: 1,
+        dyn: true,
+        partition: "prod",
+      };
+      try {
+        writeFileSync(
+          join(root, file),
+          `defmodule ${moduleName} do\n  def run(raw), do: String.to_atom(raw)\nend\n`,
+        );
+        const extraction = extractElixirRuntimeConventions(root, {
+          appMod: null,
+          deps: [],
+          compileOk: true,
+          testPartition: "complete",
+          modules: [mod(moduleName, file)],
+          functions: [],
+          events: Array.from({ length: copies }, () => ({ ...producer })),
+        });
+        expect(extraction.atomFlowStats).toMatchObject({
+          joinedProducerOutcomes: 0,
+          unjoinedOpaqueFallbacks: copies,
+        });
+        expect(extraction.atomFlowStats.atomFlowUnjoinedProducerCauseCounts).toEqual(
+          exactUnjoinedCounts({ [reason]: copies }),
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("joins one source producer independently by exact carrier and partition", () => {
     const root = mkdtempSync(join(tmpdir(), "unused-indexed-atom-partitions-"));
@@ -4962,6 +5625,9 @@ describe("extractElixirRuntimeReferences", () => {
         dataSinks: 1,
         escapes: 7,
       });
+      expect(extraction.atomFlowStats.atomFlowUnjoinedProducerCauseCounts).toEqual(
+        exactUnjoinedCounts({ "producer-source-ambiguous": 2 }),
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -6607,6 +7273,30 @@ describe("extractElixirRuntimeReferences", () => {
         });
         expect(run.extraction.atomFlowStats.roleEdges).toBeLessThanOrEqual(count * 8);
         expect(run.extraction.atomFlowStats.queueVisits).toBeLessThanOrEqual(count * 8);
+        expect(run.extraction.atomFlowStats.atomFlowEscapeCausePrimaryCounts).toEqual(
+          exactEscapePrimaryCounts({ "role-omitted": count }),
+        );
+        expect(run.extraction.atomFlowStats.atomFlowEscapeCauseOverlapCounts).toEqual(
+          exactEscapeOverlapCounts({ "role-omitted": count }),
+        );
+        expect(run.extraction.atomFlowStats.atomFlowProducerCallerEligibilityPrimaryCounts).toEqual(
+          exactCallerExposureCounts({ multiple: count }),
+        );
+        expect(run.extraction.atomFlowStats.atomFlowProducerCallerEligibilityOverlapCounts).toEqual(
+          exactCallerOverlapCounts({
+            "caller-module-unsafe": count,
+            "caller-reflection-missing": count,
+          }),
+        );
+        expect(run.extraction.atomFlowStats.crossModuleCallerEligibilityPrimaryCounts).toEqual(
+          exactCallerPrimaryCounts({ multiple: count * 2 }),
+        );
+        expect(run.extraction.atomFlowStats.crossModuleCallerEligibilityOverlapCounts).toEqual(
+          exactCallerOverlapCounts({
+            "caller-module-unsafe": count * 2,
+            "caller-reflection-missing": count * 2,
+          }),
+        );
       }
       const smallRuns = [measure(250), measure(250), measure(250)];
       const largeRuns = [measure(2_000), measure(2_000), measure(2_000)];
