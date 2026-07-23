@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { fileId, IRGraph, symbolId } from "../../core/ir/index.js";
 import {
+  ECTO_ADD_ERROR_AUDITED_RELEASES,
+  ECTO_ADD_ERROR_AUDITED_VERSIONS,
   ectoElixirAtomRoleSummaryProvider,
   ectoElixirConventionPlugin,
   elixirRuntimeConventionPlugin,
@@ -25,6 +27,31 @@ describe("ectoElixirConventionPlugin", () => {
     expect(
       ectoElixirAtomRoleSummaryProvider.auditedReleases.map((release) => release.version),
     ).toEqual(["3.14.1"]);
+    expect(ECTO_ADD_ERROR_AUDITED_VERSIONS).toEqual([
+      "3.12.0",
+      "3.12.1",
+      "3.12.2",
+      "3.12.3",
+      "3.12.4",
+      "3.12.5",
+      "3.12.6",
+      "3.13.0",
+      "3.13.1",
+      "3.13.2",
+      "3.13.3",
+      "3.13.4",
+      "3.13.5",
+      "3.13.6",
+      "3.14.0",
+      "3.14.1",
+    ]);
+    expect(ECTO_ADD_ERROR_AUDITED_RELEASES).toHaveLength(16);
+    expect(ectoElixirAtomRoleSummaryProvider.additionalReleaseGroups).toHaveLength(1);
+    expect(
+      ectoElixirAtomRoleSummaryProvider.additionalReleaseGroups?.[0]?.summaries.map(
+        (summary) => `${summary.module}.${summary.name}/${summary.arity}`,
+      ),
+    ).toEqual(["Ecto.Changeset.add_error/3", "Ecto.Changeset.add_error/4"]);
     for (const summary of ectoElixirAtomRoleSummaryProvider.summaries) {
       expect(summary.origin).toEqual({ pluginId: "convention:ecto", hexPackage: "ecto" });
     }
@@ -43,6 +70,10 @@ describe("ectoElixirConventionPlugin", () => {
         },
       ],
     ]);
+    for (const audited of ECTO_ADD_ERROR_AUDITED_RELEASES) {
+      expect(audited.innerChecksum).toMatch(/^[0-9a-f]{64}$/);
+      expect(audited.outerChecksum).toMatch(/^[0-9a-f]{64}$/);
+    }
   });
 });
 

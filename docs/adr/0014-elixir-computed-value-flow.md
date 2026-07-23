@@ -727,6 +727,46 @@ Generated 250/500/1,000/2,000-site series retain three role-summary matches per
 producer with bounded role-edge and queue work. No graph pass, public JSON
 schema, claim rule, or deletion rule changes.
 
+### Phase 1B2B.6 audited release-group checkpoint
+
+An Elixir semantic provider may now carry supplemental release groups whose
+audited versions are disjoint from its base release set. Each group activates
+only its own summaries. Validation rejects empty groups, duplicate versions
+across base and supplemental groups, malformed checksums, invalid roles, and
+ownership mismatches. This prevents a historical audit of one API from
+silently widening unrelated summaries owned by the same dependency.
+
+The Ecto provider retains its full Phase 1B2B.4 surface only at `3.14.1`.
+Exact releases `3.12.0` through `3.12.6`, `3.13.0` through `3.13.6`, and
+`3.14.0` gain only the already-audited `Ecto.Changeset.add_error/3,4` result
+roles. The exact published implementation block is byte-identical across all
+16 releases; argument 2 remains omitted because the successful clause requires
+a binary message. Every release is pinned by its lowercase archive `CHECKSUM`
+and whole-tar/API checksum.
+
+A provider-only `convention:ex-money` plugin declares compiler application,
+OTP application, lock key, and Hex package `ex_money`. It owns only
+`Money.new/2` at exact releases `6.0.0-rc.0`, `6.0.0`, `6.1.0`, and `6.1.1`.
+Those releases accept amount and currency in either order, so both arguments
+propagate into the successful result; neither is a `consume-data` terminal.
+Each exact archive and Hex release identity is checksum-pinned. Older, future,
+path, git, aliased, or otherwise mismatched identities remain conservative.
+
+The existing static collision rule remains deliberate: `money` and `ex_money`
+may both declare `Money.new/2`, but if both exact providers are applicable in
+one analysis, that callee is omitted instead of merged or selected by plugin
+order. Neutral compiler coverage proves exact activation, `why` evidence,
+deletion refusal for live subjects, safe deletion of an unrelated control, and
+fail-closed ambiguity. Fixed-density 250/500/1,000/2,000-site tests alternate
+both argument orders and bound role edges and queue visits. Applicability is
+O(recursive artifacts + providers + release groups + summaries); no graph pass,
+claim rule, public schema, or deletion rule changes.
+
+Primary evidence is the [ex_money release inventory](https://hex.pm/api/packages/ex_money),
+the exact public archives at `https://repo.hex.pm/tarballs/ex_money-VERSION.tar`,
+the [Ecto release inventory](https://hex.pm/api/packages/ecto), and the exact
+public archives at `https://repo.hex.pm/tarballs/ecto-VERSION.tar`.
+
 ### Phase 1B2B.2 local-cause and caller-eligibility checkpoint
 
 This instrumentation-only checkpoint adds two diagnostic masks that are

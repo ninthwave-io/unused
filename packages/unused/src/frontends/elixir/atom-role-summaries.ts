@@ -53,6 +53,17 @@ export interface ElixirAtomRoleSummaryProvider {
   /** Immutable public release identity whose semantics were audited. */
   readonly auditedReleases: readonly ElixirAuditedHexRelease[];
   readonly summaries: readonly ElixirAtomRoleSummary[];
+  /**
+   * Additional release-specific summaries. Releases are disjoint from the
+   * provider's base release set, so activating a historical API cannot widen
+   * unrelated summaries owned by the same dependency.
+   */
+  readonly additionalReleaseGroups?: readonly ElixirAtomRoleSummaryReleaseGroup[];
+}
+
+export interface ElixirAtomRoleSummaryReleaseGroup {
+  readonly auditedReleases: readonly ElixirAuditedHexRelease[];
+  readonly summaries: readonly ElixirAtomRoleSummary[];
 }
 
 export interface ElixirAuditedHexRelease {
@@ -361,48 +372,65 @@ export function validateElixirAtomRoleSummaryProviders(
       throw new Error(`Elixir atom role summary provider ${provider.id} has no audited releases`);
     }
     const versions = new Set<string>();
-    for (const release of provider.auditedReleases) {
-      if (!EXACT_SEMVER_RE.test(release.version)) {
+    validateProviderReleaseGroup(provider, provider.auditedReleases, provider.summaries, versions);
+    for (const group of provider.additionalReleaseGroups ?? []) {
+      if (group.auditedReleases.length === 0) {
         throw new Error(
-          `invalid audited Elixir dependency version for ${provider.id}: ${release.version}`,
+          `Elixir atom role summary provider ${provider.id} has an empty additional release group`,
         );
       }
-      if (versions.has(release.version)) {
-        throw new Error(
-          `duplicate audited Elixir dependency version for ${provider.id}: ${release.version}`,
-        );
-      }
-      versions.add(release.version);
-      if (
-        !HEX_CHECKSUM_RE.test(release.innerChecksum) ||
-        !HEX_CHECKSUM_RE.test(release.outerChecksum)
-      ) {
-        throw new Error(
-          `invalid audited Elixir dependency checksum for ${provider.id}: ${release.version}`,
-        );
-      }
+      validateProviderReleaseGroup(provider, group.auditedReleases, group.summaries, versions);
     }
-    if (provider.summaries.length === 0) {
-      throw new Error(`Elixir atom role summary provider ${provider.id} has no summaries`);
+  }
+}
+
+function validateProviderReleaseGroup(
+  provider: ElixirAtomRoleSummaryProvider,
+  releases: readonly ElixirAuditedHexRelease[],
+  summaries: readonly ElixirAtomRoleSummary[],
+  versions: Set<string>,
+): void {
+  for (const release of releases) {
+    if (!EXACT_SEMVER_RE.test(release.version)) {
+      throw new Error(
+        `invalid audited Elixir dependency version for ${provider.id}: ${release.version}`,
+      );
     }
-    validateElixirAtomRoleSummaries(provider.summaries);
-    const providerKeys = new Set<string>();
-    for (const summary of provider.summaries) {
-      if (
-        summary.origin.pluginId !== provider.id ||
-        !("hexPackage" in summary.origin) ||
-        summary.origin.hexPackage !== provider.hexPackage
-      ) {
-        throw new Error(`Elixir atom role summary is not owned by provider ${provider.id}`);
-      }
-      providerKeys.add(`${summary.module}\0${summary.name}\0${summary.arity}`);
+    if (versions.has(release.version)) {
+      throw new Error(
+        `duplicate audited Elixir dependency version for ${provider.id}: ${release.version}`,
+      );
     }
-    for (const coreSummary of ELIXIR_ATOM_ROLE_SUMMARIES) {
-      if (providerKeys.has(`${coreSummary.module}\0${coreSummary.name}\0${coreSummary.arity}`)) {
-        throw new Error(
-          `duplicate Elixir atom role summary: ${coreSummary.module}\0${coreSummary.name}\0${coreSummary.arity}`,
-        );
-      }
+    versions.add(release.version);
+    if (
+      !HEX_CHECKSUM_RE.test(release.innerChecksum) ||
+      !HEX_CHECKSUM_RE.test(release.outerChecksum)
+    ) {
+      throw new Error(
+        `invalid audited Elixir dependency checksum for ${provider.id}: ${release.version}`,
+      );
+    }
+  }
+  if (summaries.length === 0) {
+    throw new Error(`Elixir atom role summary provider ${provider.id} has no summaries`);
+  }
+  validateElixirAtomRoleSummaries(summaries);
+  const providerKeys = new Set<string>();
+  for (const summary of summaries) {
+    if (
+      summary.origin.pluginId !== provider.id ||
+      !("hexPackage" in summary.origin) ||
+      summary.origin.hexPackage !== provider.hexPackage
+    ) {
+      throw new Error(`Elixir atom role summary is not owned by provider ${provider.id}`);
+    }
+    providerKeys.add(`${summary.module}\0${summary.name}\0${summary.arity}`);
+  }
+  for (const coreSummary of ELIXIR_ATOM_ROLE_SUMMARIES) {
+    if (providerKeys.has(`${coreSummary.module}\0${coreSummary.name}\0${coreSummary.arity}`)) {
+      throw new Error(
+        `duplicate Elixir atom role summary: ${coreSummary.module}\0${coreSummary.name}\0${coreSummary.arity}`,
+      );
     }
   }
 }

@@ -2,7 +2,14 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ectoElixirAtomRoleSummaryProvider } from "../plugins/elixir-conventions.js";
+import {
+  ECTO_ADD_ERROR_AUDITED_VERSIONS,
+  ectoElixirAtomRoleSummaryProvider,
+} from "../plugins/elixir-conventions.js";
+import {
+  EX_MONEY_AUDITED_VERSIONS,
+  exMoneyElixirAtomRoleSummaryProvider,
+} from "../plugins/ex-money-conventions.js";
 import {
   MONEY_AUDITED_VERSIONS,
   moneyElixirAtomRoleSummaryProvider,
@@ -13,6 +20,7 @@ import { extractElixirRuntimeConventions } from "./runtime-references.js";
 
 const providers: readonly ElixirAtomRoleSummaryProvider[] = [
   ectoElixirAtomRoleSummaryProvider,
+  exMoneyElixirAtomRoleSummaryProvider,
   moneyElixirAtomRoleSummaryProvider,
 ];
 
@@ -224,6 +232,184 @@ describe("audited dependency constructor-result summaries", () => {
     }
   });
 
+  it("activates both ex_money argument orders only for exact audited releases", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-ex-money-versions-"));
+    const file = "ex_money_versions.ex";
+    const source = [
+      "defmodule NeutralExMoney.Version do",
+      "  def amount_first(raw), do: Money.new(100, String.to_atom(raw)) |> Map.fetch!(:currency) |> Atom.to_string()",
+      "  def currency_first(raw), do: Money.new(String.to_atom(raw), 100) |> Map.fetch!(:currency) |> Atom.to_string()",
+      "end",
+      "",
+    ].join("\n");
+    const events = ["amount_first", "currency_first"].flatMap((name, index) => [
+      remote(file, index + 2, "NeutralExMoney.Version", `${name}/1`, "String", "to_atom", 1, true),
+      remote(file, index + 2, "NeutralExMoney.Version", `${name}/1`, "Money", "new", 2),
+      remote(file, index + 2, "NeutralExMoney.Version", `${name}/1`, "Map", "fetch!", 2),
+      remote(file, index + 2, "NeutralExMoney.Version", `${name}/1`, "Atom", "to_string", 1),
+    ]);
+    const trace: TraceResult = {
+      appMod: null,
+      deps: ["ex_money"],
+      dependencyApplications: [{ compilerApp: "ex_money", otpApp: "ex_money" }],
+      hexDependencyApplications: [
+        providerApplication(exMoneyElixirAtomRoleSummaryProvider, "6.1.1"),
+      ],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod("NeutralExMoney.Version", file)],
+      functions: [],
+      events,
+    };
+    const flows = (candidate: TraceResult): string[] =>
+      extractElixirRuntimeConventions(root, candidate, providers)
+        .dynamicDispatches.filter((fact) => fact.factKind === "computed-atom")
+        .map((fact) => fact.flow);
+
+    try {
+      writeFileSync(join(root, file), source);
+      for (const version of EX_MONEY_AUDITED_VERSIONS) {
+        writeFileSync(join(root, "mix.lock"), exMoneyLock(version));
+        expect(
+          flows({
+            ...trace,
+            hexDependencyApplications: [
+              providerApplication(exMoneyElixirAtomRoleSummaryProvider, version),
+            ],
+          }),
+          version,
+        ).toEqual(["data", "data"]);
+      }
+      for (const version of ["5.19.0", "6.1.2"]) {
+        writeFileSync(join(root, "mix.lock"), exMoneyLock(version));
+        expect(
+          flows({
+            ...trace,
+            hexDependencyApplications: [
+              providerApplication(exMoneyElixirAtomRoleSummaryProvider, version),
+            ],
+          }),
+        ).toEqual(["escape", "escape"]);
+      }
+      writeFileSync(join(root, "mix.lock"), exMoneyLock("6.1.1"));
+      expect(
+        flows({
+          ...trace,
+          hexDependencyApplications: [
+            {
+              ...providerApplication(exMoneyElixirAtomRoleSummaryProvider, "6.1.1"),
+              outerChecksum: "0".repeat(64),
+            },
+          ],
+        }),
+      ).toEqual(["escape", "escape"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("activates historical Ecto add_error summaries without widening other APIs", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-ecto-version-groups-"));
+    const file = "ecto_version_groups.ex";
+    const source = [
+      "defmodule NeutralEcto.VersionGroup do",
+      '  def error(changeset, raw), do: Ecto.Changeset.add_error(changeset, String.to_atom(raw), "invalid") |> Map.has_key?(:errors)',
+      "  def lookup(changeset, raw), do: Ecto.Changeset.get_change(changeset, String.to_atom(raw)) |> Atom.to_string()",
+      "end",
+      "",
+    ].join("\n");
+    const events = [
+      remote(file, 2, "NeutralEcto.VersionGroup", "error/2", "String", "to_atom", 1, true),
+      remote(file, 2, "NeutralEcto.VersionGroup", "error/2", "Ecto.Changeset", "add_error", 3),
+      remote(file, 2, "NeutralEcto.VersionGroup", "error/2", "Map", "has_key?", 2),
+      remote(file, 3, "NeutralEcto.VersionGroup", "lookup/2", "String", "to_atom", 1, true),
+      remote(file, 3, "NeutralEcto.VersionGroup", "lookup/2", "Ecto.Changeset", "get_change", 2),
+      remote(file, 3, "NeutralEcto.VersionGroup", "lookup/2", "Atom", "to_string", 1),
+    ];
+    const trace: TraceResult = {
+      appMod: null,
+      deps: ["ecto"],
+      dependencyApplications: [{ compilerApp: "ecto", otpApp: "ecto" }],
+      hexDependencyApplications: [providerApplication(ectoElixirAtomRoleSummaryProvider, "3.14.1")],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod("NeutralEcto.VersionGroup", file)],
+      functions: [],
+      events,
+    };
+    const flows = (version: string): Map<string, string> =>
+      new Map(
+        extractElixirRuntimeConventions(
+          root,
+          {
+            ...trace,
+            hexDependencyApplications: [
+              providerApplication(ectoElixirAtomRoleSummaryProvider, version),
+            ],
+          },
+          providers,
+        )
+          .dynamicDispatches.filter((fact) => fact.factKind === "computed-atom")
+          .map((fact) => [fact.fromFun ?? "", fact.flow]),
+      );
+
+    try {
+      writeFileSync(join(root, file), source);
+      for (const version of ECTO_ADD_ERROR_AUDITED_VERSIONS) {
+        writeFileSync(join(root, "mix.lock"), dependencyLock(undefined, version));
+        const actual = flows(version);
+        expect(actual.get("error/2"), version).toBe("data");
+        expect(actual.get("lookup/2"), version).toBe(version === "3.14.1" ? "data" : "escape");
+      }
+      writeFileSync(join(root, "mix.lock"), dependencyLock(undefined, "3.11.2"));
+      expect(flows("3.11.2")).toEqual(
+        new Map([
+          ["error/2", "escape"],
+          ["lookup/2", "escape"],
+        ]),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when money and ex_money both own Money.new/2", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-money-provider-ambiguity-"));
+    const file = "money_ambiguity.ex";
+    const trace = moneyTrace(file);
+    try {
+      writeFileSync(
+        join(root, file),
+        "defmodule NeutralMoney.Version do\n  def run(raw), do: Money.new(100, String.to_atom(raw)) |> Map.fetch!(:currency) |> Atom.to_string()\nend\n",
+      );
+      writeFileSync(
+        join(root, "mix.lock"),
+        `%{\n  "money": ${hexTuple("money", "1.15.0")},\n  "ex_money": ${exMoneyTuple("6.1.1")},\n}\n`,
+      );
+      const extraction = extractElixirRuntimeConventions(
+        root,
+        {
+          ...trace,
+          dependencyApplications: [
+            ...(trace.dependencyApplications ?? []),
+            { compilerApp: "ex_money", otpApp: "ex_money" },
+          ],
+          hexDependencyApplications: [
+            providerApplication(moneyElixirAtomRoleSummaryProvider, "1.15.0"),
+            providerApplication(exMoneyElixirAtomRoleSummaryProvider, "6.1.1"),
+          ],
+        },
+        providers,
+      );
+      expect(extraction.dynamicDispatches[0]).toMatchObject({
+        factKind: "computed-atom",
+        flow: "escape",
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("refuses a project-owned Ecto.Changeset module", () => {
     const root = mkdtempSync(join(tmpdir(), "unused-ecto-constructor-spoof-"));
     const file = "ecto_spoof.ex";
@@ -270,12 +456,12 @@ describe("audited dependency constructor-result summaries", () => {
     const root = mkdtempSync(join(tmpdir(), "unused-constructor-scaling-"));
     const file = "constructor_scaling.ex";
     try {
-      writeFileSync(join(root, "mix.lock"), dependencyLock("1.15.0"));
+      writeFileSync(join(root, "mix.lock"), exMoneyLock("6.1.1"));
       for (const count of [250, 500, 1_000, 2_000]) {
-        const functions = Array.from(
-          { length: count },
-          (_, index) =>
-            `  def run_${index}(raw), do: Money.new(100, String.to_atom(raw)) |> Map.fetch!(:currency) |> Atom.to_string()`,
+        const functions = Array.from({ length: count }, (_, index) =>
+          index % 2 === 0
+            ? `  def run_${index}(raw), do: Money.new(100, String.to_atom(raw)) |> Map.fetch!(:currency) |> Atom.to_string()`
+            : `  def run_${index}(raw), do: Money.new(String.to_atom(raw), 100) |> Map.fetch!(:currency) |> Atom.to_string()`,
         );
         writeFileSync(
           join(root, file),
@@ -298,10 +484,10 @@ describe("audited dependency constructor-result summaries", () => {
         ]);
         const trace: TraceResult = {
           appMod: null,
-          deps: ["money"],
-          dependencyApplications: [{ compilerApp: "money", otpApp: "money" }],
+          deps: ["ex_money"],
+          dependencyApplications: [{ compilerApp: "ex_money", otpApp: "ex_money" }],
           hexDependencyApplications: [
-            providerApplication(moneyElixirAtomRoleSummaryProvider, "1.15.0"),
+            providerApplication(exMoneyElixirAtomRoleSummaryProvider, "6.1.1"),
           ],
           compileOk: true,
           testPartition: "complete",
@@ -397,10 +583,23 @@ function dependencyLock(money?: string, ecto?: string): string {
   return [`%{`, ...entries, `}`, ``].join("\n");
 }
 
+function exMoneyLock(version: string): string {
+  return `%{\n  "ex_money": ${exMoneyTuple(version)},\n}\n`;
+}
+
+function exMoneyTuple(version: string): string {
+  const audited = exMoneyElixirAtomRoleSummaryProvider.auditedReleases.find(
+    (release) => release.version === version,
+  );
+  const inner = audited?.innerChecksum ?? "1".repeat(64);
+  const outer = audited?.outerChecksum ?? "2".repeat(64);
+  return `{:hex, :ex_money, "${version}", "${inner}", [:mix], [], "hexpm", "${outer}"}`;
+}
+
 function hexTuple(dependency: string, version: string): string {
   const provider =
     dependency === "money" ? moneyElixirAtomRoleSummaryProvider : ectoElixirAtomRoleSummaryProvider;
-  const audited = provider.auditedReleases.find((release) => release.version === version);
+  const audited = providerRelease(provider, version);
   const inner = audited?.innerChecksum ?? "1".repeat(64);
   const outer = audited?.outerChecksum ?? "2".repeat(64);
   return `{:hex, :${dependency}, "${version}", "${inner}", [:mix], [], "hexpm", "${outer}"}`;
@@ -410,7 +609,7 @@ function providerApplication(
   provider: ElixirAtomRoleSummaryProvider,
   version: string,
 ): HexDependencyApplication {
-  const audited = provider.auditedReleases.find((release) => release.version === version);
+  const audited = providerRelease(provider, version);
   return {
     compilerApp: provider.compilerApp,
     otpApp: provider.otpApp,
@@ -421,4 +620,11 @@ function providerApplication(
     repository: provider.repository,
     outerChecksum: audited?.outerChecksum ?? "2".repeat(64),
   };
+}
+
+function providerRelease(provider: ElixirAtomRoleSummaryProvider, version: string) {
+  return [
+    ...provider.auditedReleases,
+    ...(provider.additionalReleaseGroups ?? []).flatMap((group) => group.auditedReleases),
+  ].find((release) => release.version === version);
 }

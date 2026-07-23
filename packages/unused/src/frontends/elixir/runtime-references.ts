@@ -826,17 +826,22 @@ function applicableAtomRoleSummaries(
     ) {
       continue;
     }
-    const audited = provider.auditedReleases.find(
-      (release) => release.version === application.version,
-    );
-    if (
-      audited === undefined ||
-      audited.innerChecksum !== application.innerChecksum ||
-      audited.outerChecksum !== application.outerChecksum
-    ) {
-      continue;
+    for (const group of [
+      { auditedReleases: provider.auditedReleases, summaries: provider.summaries },
+      ...(provider.additionalReleaseGroups ?? []),
+    ]) {
+      const audited = group.auditedReleases.find(
+        (release) => release.version === application.version,
+      );
+      if (
+        audited === undefined ||
+        audited.innerChecksum !== application.innerChecksum ||
+        audited.outerChecksum !== application.outerChecksum
+      ) {
+        continue;
+      }
+      active.push(...group.summaries.map((summary) => ({ providerId: provider.id, summary })));
     }
-    active.push(...provider.summaries.map((summary) => ({ providerId: provider.id, summary })));
   }
   const ownersByCallee = new Map<string, Set<string>>();
   for (const entry of active) {

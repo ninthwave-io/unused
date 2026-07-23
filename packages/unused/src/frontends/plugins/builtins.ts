@@ -11,6 +11,7 @@ import {
   elixirRuntimeConventionPlugin,
   elixirScriptConventionPlugin,
 } from "./elixir-conventions.js";
+import { exMoneyElixirConventionPlugin } from "./ex-money-conventions.js";
 import { moneyElixirConventionPlugin } from "./money-conventions.js";
 import {
   prefixRepositoryPath,
@@ -226,6 +227,7 @@ export const BUILT_IN_PLUGINS: readonly AnalyzerPlugin[] = [
   ectoElixirConventionPlugin,
   elixirRuntimeConventionPlugin,
   elixirScriptConventionPlugin,
+  exMoneyElixirConventionPlugin,
   moneyElixirConventionPlugin,
   rustlerElixirConventionPlugin,
   rustlerRustConventionPlugin,

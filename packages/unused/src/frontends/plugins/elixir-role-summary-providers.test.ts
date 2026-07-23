@@ -57,6 +57,12 @@ describe("Elixir atom role summary provider inventory", () => {
     );
     expect(collectElixirAtomRoleSummaryProviders(conventions)).toMatchObject([
       { id: "convention:ecto", compilerApp: "ecto", hexPackage: "ecto", otpApp: "ecto" },
+      {
+        id: "convention:ex-money",
+        compilerApp: "ex_money",
+        hexPackage: "ex_money",
+        otpApp: "ex_money",
+      },
       { id: "convention:money", compilerApp: "money", hexPackage: "money", otpApp: "money" },
     ]);
   });
@@ -116,6 +122,30 @@ describe("Elixir atom role summary provider inventory", () => {
       /invalid audited.*checksum/,
     ],
     ["empty summaries", { ...provider, summaries: [] }, /no summaries/],
+    [
+      "empty supplemental releases",
+      {
+        ...provider,
+        additionalReleaseGroups: [{ auditedReleases: [], summaries: [summary] }],
+      },
+      /empty additional release group/,
+    ],
+    [
+      "overlapping supplemental release",
+      {
+        ...provider,
+        additionalReleaseGroups: [{ auditedReleases: [auditedRelease()], summaries: [summary] }],
+      },
+      /duplicate audited/,
+    ],
+    [
+      "empty supplemental summaries",
+      {
+        ...provider,
+        additionalReleaseGroups: [{ auditedReleases: [auditedRelease("1.2.4")], summaries: [] }],
+      },
+      /no summaries/,
+    ],
     [
       "leading module whitespace",
       { ...provider, summaries: [{ ...summary, module: " Neutral.Dependency" }] },

@@ -7,11 +7,19 @@ export {
   typescriptLanguagePlugin,
 } from "./builtins.js";
 export {
+  ECTO_ADD_ERROR_AUDITED_RELEASES,
+  ECTO_ADD_ERROR_AUDITED_VERSIONS,
   ectoElixirAtomRoleSummaryProvider,
   ectoElixirConventionPlugin,
   elixirRuntimeConventionPlugin,
 } from "./elixir-conventions.js";
 export { collectElixirAtomRoleSummaryProviders } from "./elixir-role-summary-providers.js";
+export {
+  EX_MONEY_AUDITED_RELEASES,
+  EX_MONEY_AUDITED_VERSIONS,
+  exMoneyElixirAtomRoleSummaryProvider,
+  exMoneyElixirConventionPlugin,
+} from "./ex-money-conventions.js";
 export {
   MONEY_AUDITED_VERSIONS,
   moneyElixirAtomRoleSummaryProvider,
