@@ -1037,6 +1037,248 @@ describe("extractElixirRuntimeReferences", () => {
     }
   });
 
+  it("summarizes an exact remote public parameter across project-owned module files", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-public-atom-cross-file-"));
+    const callerFile = "cross_file_caller.ex";
+    const targetFile = "cross_file_target.ex";
+    const callerModule = "NeutralCrossFile.Caller";
+    const targetModule = "NeutralCrossFile.Target";
+    const callerLines = [
+      `defmodule ${callerModule} do`,
+      `  def safe(map, raw), do: ${targetModule}.consume(map, String.to_atom(raw))`,
+      "end",
+      "",
+    ];
+    const targetLines = [
+      `defmodule ${targetModule} do`,
+      "  def consume(map, key), do: Map.has_key?(map, key)",
+      "end",
+      "",
+    ];
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [mod(callerModule, callerFile), mod(targetModule, targetFile)],
+      functions: [
+        { ...fn(callerModule, "safe", 2, callerFile), line: 2 },
+        { ...fn(targetModule, "consume", 2, targetFile), line: 2 },
+      ],
+      events: [
+        {
+          k: "event",
+          kind: "remote",
+          file: callerFile,
+          line: 2,
+          from_mod: callerModule,
+          from_fun: "safe/2",
+          to_mod: "String",
+          name: "to_atom",
+          arity: 1,
+          dyn: true,
+          partition: "prod",
+        },
+        {
+          k: "event",
+          kind: "remote",
+          file: callerFile,
+          line: 2,
+          from_mod: callerModule,
+          from_fun: "safe/2",
+          to_mod: targetModule,
+          name: "consume",
+          arity: 2,
+          dyn: false,
+          partition: "prod",
+        },
+        {
+          k: "event",
+          kind: "remote",
+          file: targetFile,
+          line: 2,
+          from_mod: targetModule,
+          from_fun: "consume/2",
+          to_mod: "Map",
+          name: "has_key?",
+          arity: 2,
+          dyn: false,
+          partition: "prod",
+        },
+      ],
+    };
+    try {
+      writeFileSync(join(root, callerFile), callerLines.join("\n"));
+      writeFileSync(join(root, targetFile), targetLines.join("\n"));
+      const extraction = extractElixirRuntimeConventions(
+        root,
+        withExactPrivateModuleScaffolding(root, trace),
+      );
+      expect(
+        extraction.dynamicDispatches.find((fact) => fact.factKind === "computed-atom"),
+      ).toMatchObject({ fromFun: "safe/2", flow: "data" });
+      expect(extraction.atomFlowStats).toMatchObject({
+        publicSummaryFunctions: 2,
+        publicCallEdges: 0,
+        publicSummaryMatches: 0,
+        crossModuleSummaryFunctions: 2,
+        crossModuleCallEdges: 1,
+        crossModuleSummaryMatches: 1,
+        crossModuleCanonicalIdentityRejections: 0,
+        crossModuleBoundaryEscapes: 0,
+        crossModuleOpaqueFunctions: 0,
+        joinedProducerOutcomes: 1,
+        dataSinks: 1,
+        escapes: 0,
+      });
+      expect(extraction.atomFlowStats.crossModuleSccIterations).toBeGreaterThan(0);
+      expect(extraction.atomFlowStats.crossModuleSummaryUpdates).toBeGreaterThan(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["guarded target", "guard"],
+    ["defaulted target", "default"],
+    ["pattern target", "pattern"],
+    ["multiple-clause target", "multiple"],
+    ["generated target module", "generated"],
+    ["wrong-world reflection", "wrong-world"],
+    ["wrong-world call event", "wrong-partition-event"],
+    ["unowned caller identity", "unowned-caller"],
+    ["duplicate canonical target", "duplicate-target"],
+    ["missing call event", "missing-event"],
+    ["duplicate call event", "duplicate-event"],
+    ["unsupported no-paren call", "no-paren"],
+    ["external dependency target", "external"],
+    ["incomplete trace boundary", "incomplete"],
+  ] as const)("keeps a cross-module public call opaque for a %s", (_label, mode) => {
+    const root = mkdtempSync(join(tmpdir(), "unused-public-atom-cross-reject-"));
+    const callerFile = "cross_reject_caller.ex";
+    const targetFile = "cross_reject_target.ex";
+    const duplicateFile = "cross_reject_duplicate.ex";
+    const callerModule = "NeutralCrossReject.Caller";
+    const targetModule =
+      mode === "external" ? "NeutralDependency.Target" : "NeutralCrossReject.Target";
+    const callerLines = [
+      `defmodule ${callerModule} do`,
+      mode === "no-paren"
+        ? `  def run(raw), do: ${targetModule}.consume String.to_atom(raw)`
+        : `  def run(raw), do: ${targetModule}.consume(String.to_atom(raw))`,
+      "end",
+      "",
+    ];
+    const targetDefinition =
+      mode === "guard"
+        ? "  def consume(value) when is_atom(value), do: Atom.to_string(value)"
+        : mode === "default"
+          ? "  def consume(value \\\\ :fallback), do: Atom.to_string(value)"
+          : mode === "pattern"
+            ? "  def consume({:ok, value}), do: Atom.to_string(value)"
+            : "  def consume(value), do: Atom.to_string(value)";
+    const targetLines = [
+      `defmodule ${targetModule} do`,
+      ...(mode === "generated" ? ["  use NeutralCrossReject.Generated"] : []),
+      targetDefinition,
+      ...(mode === "multiple" ? ["  def consume(value), do: value.run()"] : []),
+      "end",
+      "",
+    ];
+    const modules = [mod(callerModule, callerFile)];
+    const functions: FunctionRecord[] = [{ ...fn(callerModule, "run", 1, callerFile), line: 2 }];
+    if (mode !== "external") {
+      modules.push(mod(targetModule, targetFile));
+      functions.push({
+        ...fn(targetModule, "consume", 1, targetFile),
+        line: mode === "generated" ? 3 : 2,
+        partition: mode === "wrong-world" ? "test" : "prod",
+      });
+    }
+    if (mode === "duplicate-target") {
+      modules.push(mod(targetModule, duplicateFile));
+      functions.push({ ...fn(targetModule, "consume", 1, duplicateFile), line: 2 });
+    }
+    const producerEvent: TraceEvent = {
+      k: "event",
+      kind: "remote",
+      file: callerFile,
+      line: 2,
+      from_mod: callerModule,
+      from_fun: "run/1",
+      to_mod: "String",
+      name: "to_atom",
+      arity: 1,
+      dyn: true,
+      partition: "prod",
+    };
+    const callEvent: TraceEvent = {
+      k: "event",
+      kind: "remote",
+      file: callerFile,
+      line: 2,
+      from_mod: mode === "unowned-caller" ? "NeutralOutside.Caller" : callerModule,
+      from_fun: "run/1",
+      to_mod: targetModule,
+      name: "consume",
+      arity: 1,
+      dyn: false,
+      partition: mode === "wrong-partition-event" ? "test" : "prod",
+    };
+    const callEvents =
+      mode === "missing-event"
+        ? []
+        : mode === "duplicate-event"
+          ? [callEvent, callEvent]
+          : [callEvent];
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: mode === "incomplete" ? "incomplete" : "complete",
+      modules,
+      functions,
+      events: [producerEvent, ...callEvents],
+    };
+    try {
+      writeFileSync(join(root, callerFile), callerLines.join("\n"));
+      if (mode !== "external") writeFileSync(join(root, targetFile), targetLines.join("\n"));
+      if (mode === "duplicate-target") {
+        writeFileSync(join(root, duplicateFile), targetLines.join("\n"));
+      }
+      const extraction = extractElixirRuntimeConventions(
+        root,
+        withExactPrivateModuleScaffolding(root, trace),
+      );
+      expect(
+        extraction.dynamicDispatches.find((fact) => fact.factKind === "computed-atom"),
+      ).toMatchObject({ fromFun: "run/1", flow: "escape" });
+      expect(extraction.atomFlowStats).toMatchObject({
+        crossModuleCallEdges: 0,
+        crossModuleSummaryMatches: 0,
+      });
+      if (
+        [
+          "guard",
+          "default",
+          "pattern",
+          "multiple",
+          "generated",
+          "wrong-world",
+          "wrong-partition-event",
+          "duplicate-target",
+        ].includes(mode)
+      ) {
+        expect(extraction.atomFlowStats.crossModuleCanonicalIdentityRejections).toBe(1);
+      }
+      if (mode === "external" || mode === "incomplete") {
+        expect(extraction.atomFlowStats.crossModuleBoundaryEscapes).toBe(1);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     ["guard", "def helper(value) when is_atom(value), do: Atom.to_string(value)"],
     ["default", "def helper(value \\\\ :fallback), do: Atom.to_string(value)"],
@@ -1223,7 +1465,7 @@ describe("extractElixirRuntimeReferences", () => {
     }
   });
 
-  it("rejects an otherwise exact public summary target across modules", () => {
+  it("accepts an otherwise exact public summary target across modules", () => {
     const root = mkdtempSync(join(tmpdir(), "unused-public-atom-cross-module-"));
     const callerFile = "public_atom_cross_module.ex";
     const targetFile = "public_atom_cross_target.ex";
@@ -1302,11 +1544,14 @@ describe("extractElixirRuntimeReferences", () => {
       );
       expect(
         extraction.dynamicDispatches.find((fact) => fact.factKind === "computed-atom"),
-      ).toMatchObject({ fromFun: "run/1", flow: "escape" });
+      ).toMatchObject({ fromFun: "run/1", flow: "data" });
       expect(extraction.atomFlowStats).toMatchObject({
         publicSummaryFunctions: 2,
         publicCallEdges: 0,
         publicSummaryMatches: 0,
+        crossModuleSummaryFunctions: 2,
+        crossModuleCallEdges: 1,
+        crossModuleSummaryMatches: 1,
       });
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -2254,9 +2499,6 @@ describe("extractElixirRuntimeReferences", () => {
 
     for (const count of [250, 500, 1_000]) {
       const extraction = run(count);
-      expect(
-        extraction.dynamicDispatches.find((fact) => fact.factKind === "computed-atom"),
-      ).toMatchObject({ fromFun: "safe/2", flow: "data" });
       expect(extraction.atomFlowStats).toMatchObject({
         privateFunctions: count,
         privateSummaries: count,
@@ -2265,6 +2507,9 @@ describe("extractElixirRuntimeReferences", () => {
         dataSinks: 1,
         escapes: 0,
       });
+      expect(
+        extraction.dynamicDispatches.find((fact) => fact.factKind === "computed-atom"),
+      ).toMatchObject({ fromFun: "safe/2", flow: "data" });
       expect(extraction.atomFlowStats.privateSccIterations).toBeLessThanOrEqual(count * 4);
       expect(extraction.atomFlowStats.roleEdges).toBeLessThanOrEqual(count * 7 + 10);
       expect(extraction.atomFlowStats.queueVisits).toBeLessThanOrEqual(count * 18 + 20);
@@ -2369,9 +2614,6 @@ describe("extractElixirRuntimeReferences", () => {
 
     for (const count of [250, 500, 1_000]) {
       const extraction = run(count);
-      expect(
-        extraction.dynamicDispatches.find((fact) => fact.factKind === "computed-atom"),
-      ).toMatchObject({ fromFun: "safe/2", flow: "data" });
       expect(extraction.atomFlowStats).toMatchObject({
         privateFunctions: 0,
         privateSummaries: 0,
@@ -2385,10 +2627,439 @@ describe("extractElixirRuntimeReferences", () => {
         dataSinks: 1,
         escapes: 0,
       });
+      expect(
+        extraction.dynamicDispatches.find((fact) => fact.factKind === "computed-atom"),
+      ).toMatchObject({ fromFun: "safe/2", flow: "data" });
       expect(extraction.atomFlowStats.publicSccIterations).toBeLessThanOrEqual((count + 1) * 4);
       expect(extraction.atomFlowStats.publicSummaryUpdates).toBeLessThanOrEqual((count + 2) * 3);
       expect(extraction.atomFlowStats.roleEdges).toBeLessThanOrEqual(count * 7 + 20);
       expect(extraction.atomFlowStats.queueVisits).toBeLessThanOrEqual(count * 18 + 30);
+    }
+  });
+
+  it("keeps cross-module public summary work linear from 250 through 1,000 files", () => {
+    const run = (count: number) => {
+      const root = mkdtempSync(join(tmpdir(), `unused-cross-module-atom-scale-${count}-`));
+      const entryFile = "cross_scale_entry.ex";
+      const entryModule = "NeutralCrossScale.Entry";
+      const modules: ModuleRecord[] = [mod(entryModule, entryFile)];
+      const functions: FunctionRecord[] = [{ ...fn(entryModule, "safe", 2, entryFile), line: 2 }];
+      const events: TraceEvent[] = [
+        {
+          k: "event",
+          kind: "remote",
+          file: entryFile,
+          line: 2,
+          from_mod: entryModule,
+          from_fun: "safe/2",
+          to_mod: "String",
+          name: "to_atom",
+          arity: 1,
+          dyn: true,
+          partition: "prod",
+        },
+        {
+          k: "event",
+          kind: "remote",
+          file: entryFile,
+          line: 2,
+          from_mod: entryModule,
+          from_fun: "safe/2",
+          to_mod: "NeutralCrossScale.Step0",
+          name: "step_0",
+          arity: 1,
+          dyn: false,
+          partition: "prod",
+        },
+        {
+          k: "event",
+          kind: "remote",
+          file: entryFile,
+          line: 2,
+          from_mod: entryModule,
+          from_fun: "safe/2",
+          to_mod: "Map",
+          name: "has_key?",
+          arity: 2,
+          dyn: false,
+          partition: "prod",
+        },
+      ];
+      try {
+        writeFileSync(
+          join(root, entryFile),
+          [
+            `defmodule ${entryModule} do`,
+            "  def safe(map, raw), do: Map.has_key?(map, NeutralCrossScale.Step0.step_0(String.to_atom(raw)))",
+            "end",
+            "",
+          ].join("\n"),
+        );
+        for (let index = 0; index < count; index += 1) {
+          const file = `cross_scale_step_${index}.ex`;
+          const moduleName = `NeutralCrossScale.Step${index}`;
+          const nextModule = `NeutralCrossScale.Step${index + 1}`;
+          const functionName = `step_${index}`;
+          const nextFunction = `step_${index + 1}`;
+          modules.push(mod(moduleName, file));
+          functions.push({ ...fn(moduleName, functionName, 1, file), line: 2 });
+          writeFileSync(
+            join(root, file),
+            [
+              `defmodule ${moduleName} do`,
+              index + 1 === count
+                ? `  def ${functionName}(value), do: value`
+                : `  def ${functionName}(value), do: ${nextModule}.${nextFunction}(value)`,
+              "end",
+              "",
+            ].join("\n"),
+          );
+          if (index + 1 < count) {
+            events.push({
+              k: "event",
+              kind: "remote",
+              file,
+              line: 2,
+              from_mod: moduleName,
+              from_fun: `${functionName}/1`,
+              to_mod: nextModule,
+              name: nextFunction,
+              arity: 1,
+              dyn: false,
+              partition: "prod",
+            });
+          }
+        }
+        return extractElixirRuntimeConventions(
+          root,
+          withExactPrivateModuleScaffolding(root, {
+            appMod: null,
+            deps: [],
+            compileOk: true,
+            testPartition: "complete",
+            modules,
+            functions,
+            events,
+          }),
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    };
+
+    for (const count of [250, 500, 1_000]) {
+      const extraction = run(count);
+      expect(
+        extraction.dynamicDispatches.find((fact) => fact.factKind === "computed-atom"),
+      ).toMatchObject({ fromFun: "safe/2", flow: "data" });
+      expect(extraction.atomFlowStats).toMatchObject({
+        publicSummaryFunctions: count + 1,
+        publicSummaries: count + 2,
+        publicCallEdges: 0,
+        publicSummaryMatches: 0,
+        crossModuleSummaryFunctions: count + 1,
+        crossModuleCallEdges: count,
+        crossModuleSummaryMatches: 1,
+        crossModuleCanonicalIdentityRejections: 0,
+        crossModuleBoundaryEscapes: 0,
+        crossModuleOpaqueFunctions: 0,
+        joinedProducerOutcomes: 1,
+        dataSinks: 1,
+        escapes: 0,
+      });
+      expect(extraction.atomFlowStats.crossModuleSccIterations).toBeLessThanOrEqual(
+        (count + 1) * 4,
+      );
+      expect(extraction.atomFlowStats.crossModuleSummaryUpdates).toBeLessThanOrEqual(
+        (count + 2) * 3,
+      );
+      expect(extraction.atomFlowStats.roleEdges).toBeLessThanOrEqual(count * 10 + 20);
+      expect(extraction.atomFlowStats.queueVisits).toBeLessThanOrEqual(count * 25 + 30);
+    }
+  });
+
+  it("fails closed when a cross-module public summary exceeds the 64-callee bound", () => {
+    const root = mkdtempSync(join(tmpdir(), "unused-cross-module-atom-bound-"));
+    const entryFile = "cross_bound_entry.ex";
+    const hubFile = "cross_bound_hub.ex";
+    const entryModule = "NeutralCrossBound.Entry";
+    const hubModule = "NeutralCrossBound.Hub";
+    const leafCount = 65;
+    const modules: ModuleRecord[] = [mod(entryModule, entryFile), mod(hubModule, hubFile)];
+    const functions: FunctionRecord[] = [
+      { ...fn(entryModule, "run", 1, entryFile), line: 2 },
+      { ...fn(hubModule, "hub", 1, hubFile), line: 2 },
+    ];
+    const events: TraceEvent[] = [
+      {
+        k: "event",
+        kind: "remote",
+        file: entryFile,
+        line: 2,
+        from_mod: entryModule,
+        from_fun: "run/1",
+        to_mod: "String",
+        name: "to_atom",
+        arity: 1,
+        dyn: true,
+        partition: "prod",
+      },
+      {
+        k: "event",
+        kind: "remote",
+        file: entryFile,
+        line: 2,
+        from_mod: entryModule,
+        from_fun: "run/1",
+        to_mod: hubModule,
+        name: "hub",
+        arity: 1,
+        dyn: false,
+        partition: "prod",
+      },
+    ];
+    const leafCalls = Array.from(
+      { length: leafCount },
+      (_, index) => `NeutralCrossBound.Leaf${index}.leaf_${index}(value)`,
+    );
+    try {
+      writeFileSync(
+        join(root, entryFile),
+        [
+          `defmodule ${entryModule} do`,
+          `  def run(raw), do: ${hubModule}.hub(String.to_atom(raw))`,
+          "end",
+          "",
+        ].join("\n"),
+      );
+      writeFileSync(
+        join(root, hubFile),
+        [
+          `defmodule ${hubModule} do`,
+          `  def hub(value), do: {${leafCalls.join(", ")}}`,
+          "end",
+          "",
+        ].join("\n"),
+      );
+      for (let index = 0; index < leafCount; index += 1) {
+        const file = `cross_bound_leaf_${index}.ex`;
+        const moduleName = `NeutralCrossBound.Leaf${index}`;
+        const functionName = `leaf_${index}`;
+        modules.push(mod(moduleName, file));
+        functions.push({ ...fn(moduleName, functionName, 1, file), line: 2 });
+        writeFileSync(
+          join(root, file),
+          [
+            `defmodule ${moduleName} do`,
+            `  def ${functionName}(value), do: Atom.to_string(value)`,
+            "end",
+            "",
+          ].join("\n"),
+        );
+        events.push({
+          k: "event",
+          kind: "remote",
+          file: hubFile,
+          line: 2,
+          from_mod: hubModule,
+          from_fun: "hub/1",
+          to_mod: moduleName,
+          name: functionName,
+          arity: 1,
+          dyn: false,
+          partition: "prod",
+        });
+      }
+      const extraction = extractElixirRuntimeConventions(
+        root,
+        withExactPrivateModuleScaffolding(root, {
+          appMod: null,
+          deps: [],
+          compileOk: true,
+          testPartition: "complete",
+          modules,
+          functions,
+          events,
+        }),
+      );
+      expect(
+        extraction.dynamicDispatches.find((fact) => fact.factKind === "computed-atom"),
+      ).toMatchObject({
+        fromFun: "run/1",
+        flow: "escape",
+        escapeReason: "function-summary-bound",
+      });
+      expect(extraction.atomFlowStats).toMatchObject({
+        crossModuleSummaryFunctions: leafCount + 2,
+        crossModuleCallEdges: leafCount + 1,
+        crossModuleSummaryMatches: 1,
+        crossModuleOpaqueFunctions: 1,
+        dataSinks: 0,
+        escapes: 1,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["terminal-bearing", true, "data"],
+    ["terminal-free", false, "escape"],
+  ] as const)("solves a %s cross-module public cycle", (_label, terminal, expectedFlow) => {
+    const root = mkdtempSync(join(tmpdir(), "unused-cross-module-atom-cycle-"));
+    const entryFile = "cross_cycle_entry.ex";
+    const leftFile = "cross_cycle_left.ex";
+    const rightFile = "cross_cycle_right.ex";
+    const entryModule = "NeutralCrossCycle.Entry";
+    const leftModule = "NeutralCrossCycle.Left";
+    const rightModule = "NeutralCrossCycle.Right";
+    const trace: TraceResult = {
+      appMod: null,
+      deps: [],
+      compileOk: true,
+      testPartition: "complete",
+      modules: [
+        mod(entryModule, entryFile),
+        mod(leftModule, leftFile),
+        mod(rightModule, rightFile),
+      ],
+      functions: [
+        { ...fn(entryModule, "run", 2, entryFile), line: 2 },
+        { ...fn(leftModule, "left", 1, leftFile), line: 2 },
+        { ...fn(rightModule, "right", 1, rightFile), line: 2 },
+      ],
+      events: [
+        {
+          k: "event",
+          kind: "remote",
+          file: entryFile,
+          line: 2,
+          from_mod: entryModule,
+          from_fun: "run/2",
+          to_mod: "String",
+          name: "to_atom",
+          arity: 1,
+          dyn: true,
+          partition: "prod",
+        },
+        {
+          k: "event",
+          kind: "remote",
+          file: entryFile,
+          line: 2,
+          from_mod: entryModule,
+          from_fun: "run/2",
+          to_mod: leftModule,
+          name: "left",
+          arity: 1,
+          dyn: false,
+          partition: "prod",
+        },
+        {
+          k: "event",
+          kind: "remote",
+          file: entryFile,
+          line: 2,
+          from_mod: entryModule,
+          from_fun: "run/2",
+          to_mod: "Map",
+          name: "has_key?",
+          arity: 2,
+          dyn: false,
+          partition: "prod",
+        },
+        {
+          k: "event",
+          kind: "remote",
+          file: leftFile,
+          line: 2,
+          from_mod: leftModule,
+          from_fun: "left/1",
+          to_mod: rightModule,
+          name: "right",
+          arity: 1,
+          dyn: false,
+          partition: "prod",
+        },
+        {
+          k: "event",
+          kind: "remote",
+          file: rightFile,
+          line: 2,
+          from_mod: rightModule,
+          from_fun: "right/1",
+          to_mod: leftModule,
+          name: "left",
+          arity: 1,
+          dyn: false,
+          partition: "prod",
+        },
+        ...(terminal
+          ? [
+              {
+                k: "event" as const,
+                kind: "remote" as const,
+                file: rightFile,
+                line: 2,
+                from_mod: rightModule,
+                from_fun: "right/1",
+                to_mod: "Atom",
+                name: "to_string",
+                arity: 1,
+                dyn: false,
+                partition: "prod" as const,
+              },
+            ]
+          : []),
+      ],
+    };
+    try {
+      writeFileSync(
+        join(root, entryFile),
+        [
+          `defmodule ${entryModule} do`,
+          `  def run(map, raw), do: Map.has_key?(map, ${leftModule}.left(String.to_atom(raw)))`,
+          "end",
+          "",
+        ].join("\n"),
+      );
+      writeFileSync(
+        join(root, leftFile),
+        [
+          `defmodule ${leftModule} do`,
+          `  def left(value), do: ${rightModule}.right(value)`,
+          "end",
+          "",
+        ].join("\n"),
+      );
+      writeFileSync(
+        join(root, rightFile),
+        [
+          `defmodule ${rightModule} do`,
+          terminal
+            ? `  def right(value), do: {${leftModule}.left(value), Atom.to_string(value)}`
+            : `  def right(value), do: ${leftModule}.left(value)`,
+          "end",
+          "",
+        ].join("\n"),
+      );
+      const extraction = extractElixirRuntimeConventions(
+        root,
+        withExactPrivateModuleScaffolding(root, trace),
+      );
+      expect(
+        extraction.dynamicDispatches.find((fact) => fact.factKind === "computed-atom"),
+      ).toMatchObject({ fromFun: "run/2", flow: expectedFlow });
+      expect(extraction.atomFlowStats).toMatchObject({
+        crossModuleSummaryFunctions: 3,
+        crossModuleCallEdges: 3,
+        crossModuleSummaryMatches: 1,
+        crossModuleOpaqueFunctions: 0,
+        dataSinks: terminal ? 1 : 0,
+        escapes: terminal ? 0 : 1,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 

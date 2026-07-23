@@ -1,0 +1,44 @@
+case: atom-role-cross-module-unsafe
+description: >-
+  Cross-module public parameter flow preserves invocation and unknown-boundary
+  hazards, rejects a defaulted target, and never summarizes an atom created and
+  returned by a public callee. Active uncertainty does not contaminate an
+  unrelated dead export.
+subjects:
+  - kind: export
+    name: NeutralCrossUnsafe.Flow.invocation/1
+    file: lib/neutral_cross_unsafe/flow.ex
+    expected: alive
+    because: The application reaches a computed atom that selects a runtime function.
+  - kind: export
+    name: NeutralCrossUnsafe.Flow.unknown/1
+    file: lib/neutral_cross_unsafe/flow.ex
+    expected: alive
+    because: The application reaches an external boundary whose value role is unknown.
+  - kind: export
+    name: NeutralCrossUnsafe.Flow.produced/1
+    file: lib/neutral_cross_unsafe/flow.ex
+    expected: alive
+    because: The application reaches a public callee that creates and returns an atom.
+  - kind: export
+    name: NeutralCrossUnsafe.Flow.defaulted/1
+    file: lib/neutral_cross_unsafe/flow.ex
+    expected: alive
+    because: The application reaches a public target whose default argument excludes exact summaries.
+  - kind: export
+    name: NeutralCrossUnsafe.Target.dispatch/1
+    file: lib/neutral_cross_unsafe/target.ex
+    expected: alive
+    because: The exact remote call reaches this live runtime selector.
+  - kind: export
+    name: NeutralCrossUnsafe.Flow.genuinely_unused/0
+    file: lib/neutral_cross_unsafe/flow.ex
+    expected: dead
+    minConfidence: high
+    because: No runtime or static path reaches this unrelated export.
+  - kind: export
+    name: NeutralCrossUnsafe.Target.consume_defaulted/0
+    file: lib/neutral_cross_unsafe/target.ex
+    expected: dead
+    minConfidence: medium
+    because: The generated zero-arity default wrapper has no caller; the explicit one-arity call remains live.

@@ -1,7 +1,7 @@
 # 0014 — Typed Elixir computed-value flow and explicit hazard scope
 
 Date: 2026-07-22
-Status: Accepted (through phase 1B2A.3; later phases pending)
+Status: Accepted (through phase 1B2B; later phases pending)
 
 ## Context
 
@@ -496,6 +496,47 @@ escape fallback. Neutral real-compiler fixtures prove direct data consumption,
 caller-side pass-through consumption, invocation, public-origin return escape,
 multiple-clause ambiguity, accurate explanation, deletion refusal for active
 uncertainty, and supported deletion of an unrelated high-confidence export.
+
+### Phase 1B2B exact cross-module public parameter checkpoint
+
+Phase 1B2B extends only public parameter summaries across module files inside
+one complete compiler TraceResult for one Mix frontend boundary. Definition
+bodies retain their file-qualified identity `(module, file, partition, name,
+arity)`. A separate canonical target index removes the caller-file dimension:
+`(module, partition, name, arity)` resolves only when exactly one eligible,
+project-owned, reflected public definition remains, carrying its own exact
+source file and line. A missing, duplicate, conflicting, or wrong-world target
+does not produce an edge.
+
+Each admitted edge requires one source call with exact cardinality and one
+compiler `remote` or `imported` event. The event supplies the
+canonical `to_mod`, name, and arity, so source aliases and imports never become
+guessed identities. Caller and callee must share the production/test world,
+the production compile and test partition must both be complete, and both
+modules must belong to the current TraceResult. Dependency modules, sibling
+Mix boundaries, incomplete traces, unsupported no-parenthesis calls, and every
+source/module/reflection rejection from Phase 1B2A.3 remain escapes.
+
+The new edges enter the existing indexed function-summary graph. Tarjan SCCs,
+monotone parameter bitmasks, delta queues, and the 64-caller/callee bound are
+unchanged; there is no producer-specific graph traversal. Public result
+summaries are still never created or solved. A parameter-derived value may
+return through an exact public callee for a caller-side sink to consume, while
+an atom created inside any public callee and returned remains an escape.
+Private result summaries remain same-boundary and private-only.
+
+Dedicated counters expose canonical cross-module target identities, exact
+edges, producer matches, identity rejections, boundary escapes, SCC member
+evaluations, parameter-bit updates, and opaque participants. Generated
+250/500/1,000-file chains retain one definition and edge per step; two-module
+terminal-bearing and terminal-free cycles prove fixed-point outcomes; and a
+65-callee multi-file hub proves bounded escape. Neutral real Mix fixtures cover
+explicit remote and aliased calls, an imported call, caller-side pass-through,
+a same-module wrapper, invocation, an unknown dependency sink, public-origin
+return escape, rejected default arguments, accurate `why`, conservative
+deletion refusal, and supported deletion of an unrelated high-confidence
+export. No JSON schema, canonical stdout, dependency, sibling-boundary, or
+repository-merge contract changes.
 
 ## Acceptance
 

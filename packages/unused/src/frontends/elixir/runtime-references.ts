@@ -113,6 +113,22 @@ export interface ElixirAtomFlowStats {
   readonly publicSummaryUpdates: number;
   /** Public identities made opaque by the bounded call-degree contract. */
   readonly publicOpaqueFunctions: number;
+  /** Unique project-owned public identities eligible as exact cross-module targets. */
+  readonly crossModuleSummaryFunctions: number;
+  /** Exact compiler-confirmed remote/imported edges to canonical public targets. */
+  readonly crossModuleCallEdges: number;
+  /** Cross-module public summaries reached by a computed-atom producer flow. */
+  readonly crossModuleSummaryMatches: number;
+  /** Exact project-module calls rejected because canonical target identity was not unique. */
+  readonly crossModuleCanonicalIdentityRejections: number;
+  /** Exact calls from eligible summary carriers kept as outside-boundary escapes. */
+  readonly crossModuleBoundaryEscapes: number;
+  /** SCC member evaluations involving a function on an exact cross-module parameter edge. */
+  readonly crossModuleSccIterations: number;
+  /** Parameter outcome bits committed for functions on exact cross-module edges. */
+  readonly crossModuleSummaryUpdates: number;
+  /** Cross-module participants made opaque by the bounded call-degree contract. */
+  readonly crossModuleOpaqueFunctions: number;
   /** Compiler module-level events accepted as exact inert module scaffolding. */
   readonly privateModuleScaffoldingEvents: number;
   /** Compiler module-level events accepted as exact inert metadata attributes. */
@@ -317,6 +333,14 @@ export function extractElixirRuntimeConventions(
     publicSccIterations: 0,
     publicSummaryUpdates: 0,
     publicOpaqueFunctions: 0,
+    crossModuleSummaryFunctions: 0,
+    crossModuleCallEdges: 0,
+    crossModuleSummaryMatches: 0,
+    crossModuleCanonicalIdentityRejections: 0,
+    crossModuleBoundaryEscapes: 0,
+    crossModuleSccIterations: 0,
+    crossModuleSummaryUpdates: 0,
+    crossModuleOpaqueFunctions: 0,
     privateModuleScaffoldingEvents: 0,
     privateModuleMetadataEvents: 0,
     privateModuleTypespecEvents: 0,
@@ -1107,6 +1131,7 @@ interface FunctionSummaryCallSite {
   readonly call: IndexedRoleCall;
   readonly event: TraceEvent;
   readonly target: FunctionSummaryDefinition;
+  readonly crossModule: boolean;
   readonly callerFunction?: string;
   readonly callerPrivateFunction?: string;
 }
@@ -1119,6 +1144,7 @@ interface FunctionFlowIndex {
   readonly callByEvent: ReadonlyMap<string, FunctionSummaryCallSite>;
   readonly unsafeResultTargets: ReadonlySet<string>;
   readonly opaqueFunctions: ReadonlySet<string>;
+  readonly crossModuleParticipants: ReadonlySet<string>;
   readonly summaries: Map<string, number[]>;
   readonly resultSummaries: Map<string, number>;
 }
@@ -1466,8 +1492,9 @@ function expandAtomCallRole(
   }
   const summaryCall = resolveFunctionSummaryCall(call, node.context);
   if (summaryCall !== undefined) {
-    if (!summaryCall.target.range.private && node.context.summaryMode === "producer") {
-      graph.stats.publicSummaryMatches += 1;
+    if (node.context.summaryMode === "producer") {
+      if (summaryCall.crossModule) graph.stats.crossModuleSummaryMatches += 1;
+      else if (!summaryCall.target.range.private) graph.stats.publicSummaryMatches += 1;
     }
     const effect = node.context.functionFlow?.summaries.get(summaryCall.target.key)?.[argument];
     if (effect === undefined) {
@@ -1834,7 +1861,14 @@ function classifyAtomProducerEvents(
   const rolesByFile = new Map(
     [...sources].map(([file, source]) => [file, indexAtomRoles(source)] as const),
   );
-  const functionFlow = buildFunctionFlowIndex(traceResult, sources, rolesByFile, stats);
+  const functionFlow = buildFunctionFlowIndex(
+    traceResult,
+    sources,
+    rolesByFile,
+    summaryLookup,
+    projectModules,
+    stats,
+  );
   solveFunctionFlowSummaries(
     functionFlow,
     sources,
@@ -2031,6 +2065,15 @@ function functionSummaryKey(
   arity: number,
 ): string {
   return [module, file, partition, name, arity].join("\0");
+}
+
+function crossModulePublicTargetKey(
+  module: string,
+  partition: "prod" | "test",
+  name: string,
+  arity: number,
+): string {
+  return [module, partition, name, arity].join("\0");
 }
 
 function functionSummaryCallEventKey(event: TraceEvent): string {
@@ -2244,6 +2287,8 @@ function buildFunctionFlowIndex(
   traceResult: TraceResult,
   sources: ReadonlyMap<string, SourceIndex>,
   rolesByFile: ReadonlyMap<string, AtomRoleIndex>,
+  summaryLookup: ElixirAtomRoleSummaryLookup,
+  projectModules: ReadonlySet<string>,
   stats: MutableAtomFlowStats,
 ): FunctionFlowIndex {
   const candidates = new Map<string, FunctionSummaryDefinition>();
@@ -2272,6 +2317,12 @@ function buildFunctionFlowIndex(
     const owners = testOwnersByFile.get(event.file) ?? new Set<string>();
     owners.add(owner.mod);
     testOwnersByFile.set(event.file, owners);
+  }
+  const ownedModuleFileWorlds = new Set(
+    traceResult.modules.map((owner) => [owner.mod, owner.file, owner.partition].join("\0")),
+  );
+  for (const [file, owners] of testOwnersByFile) {
+    for (const module of owners) ownedModuleFileWorlds.add([module, file, "test"].join("\0"));
   }
   for (const [file, source] of sources) {
     const moduleRangesByIdentity = groupBy(
@@ -2386,11 +2437,27 @@ function buildFunctionFlowIndex(
   const publicDefinitions = [...definitions.values()].filter(
     (definition) => !definition.range.private,
   );
+  const completeCrossModuleBoundary =
+    traceResult.compileOk && traceResult.testPartition === "complete";
+  const crossModuleTargetGroups = groupBy(publicDefinitions, (definition) =>
+    crossModulePublicTargetKey(
+      definition.module,
+      definition.partition,
+      definition.range.name,
+      definition.range.arity,
+    ),
+  );
+  const crossModuleTargets = new Map(
+    [...crossModuleTargetGroups]
+      .filter(([, matches]) => matches.length === 1)
+      .flatMap(([key, matches]) => (matches[0] === undefined ? [] : [[key, matches[0]] as const])),
+  );
   const sourcePrivateStarts = new Set(
     privateDefinitions.map((definition) => `${definition.file}\0${definition.range.start}`),
   );
   stats.privateFunctions = sourcePrivateStarts.size;
   stats.publicSummaryFunctions = publicDefinitions.length;
+  stats.crossModuleSummaryFunctions = completeCrossModuleBoundary ? crossModuleTargets.size : 0;
 
   const callByEvent = new Map<string, FunctionSummaryCallSite>();
   const callsByTarget = new Map<string, FunctionSummaryCallSite[]>();
@@ -2398,6 +2465,7 @@ function buildFunctionFlowIndex(
   const unsafeResultTargets = new Set<string>();
   const targetEvents = new Map<string, TraceEvent[]>();
   const joinedEvents = new Set<TraceEvent>();
+  const crossModuleParticipants = new Set<string>();
   const eventsBySource = new Map<string, TraceEvent[]>();
   for (const event of traceResult.events) {
     if (event.name === undefined || event.arity === undefined || event.from_fun === undefined)
@@ -2424,22 +2492,64 @@ function buildFunctionFlowIndex(
       for (const worldEvents of groupBy(candidates, (event) => event.partition).values()) {
         if (worldEvents.length !== 1) continue;
         const event = worldEvents[0];
-        if (event === undefined || !isSameModuleLocalEvent(event) || event.from_mod === null) {
-          continue;
-        }
-        const target = targetByIdentity.get(
-          functionSummaryKey(
-            event.from_mod,
-            file,
-            event.partition,
-            event.name ?? "",
-            event.arity ?? -1,
-          ),
-        );
-        if (target === undefined) continue;
+        if (event === undefined || event.from_mod === null) continue;
         const callerDefinition = targetByIdentity.get(
           functionSummaryKey(event.from_mod, file, event.partition, caller.name, caller.arity),
         );
+        const sameModule = isSameModuleLocalEvent(event);
+        const crossModule = isCrossModulePublicEvent(event);
+        let target: FunctionSummaryDefinition | undefined;
+        if (sameModule) {
+          target = targetByIdentity.get(
+            functionSummaryKey(
+              event.from_mod,
+              file,
+              event.partition,
+              event.name ?? "",
+              event.arity ?? -1,
+            ),
+          );
+        } else if (crossModule && event.to_mod !== null) {
+          if (
+            !ownedModuleFileWorlds.has([event.from_mod, event.file, event.partition].join("\0"))
+          ) {
+            continue;
+          }
+          if (!completeCrossModuleBoundary) {
+            if (
+              callerDefinition !== undefined &&
+              (projectModules.has(event.to_mod) ||
+                (!event.dyn &&
+                  summaryLookup(event.to_mod, event.name ?? "", event.arity ?? -1) === undefined))
+            ) {
+              stats.crossModuleBoundaryEscapes += 1;
+            }
+            continue;
+          }
+          target = crossModuleTargets.get(
+            crossModulePublicTargetKey(
+              event.to_mod,
+              event.partition,
+              event.name ?? "",
+              event.arity ?? -1,
+            ),
+          );
+          if (target === undefined) {
+            if (projectModules.has(event.to_mod)) {
+              stats.crossModuleCanonicalIdentityRejections += 1;
+            } else if (
+              callerDefinition !== undefined &&
+              !event.dyn &&
+              summaryLookup(event.to_mod, event.name ?? "", event.arity ?? -1) === undefined
+            ) {
+              stats.crossModuleBoundaryEscapes += 1;
+            }
+            continue;
+          }
+        } else {
+          continue;
+        }
+        if (target === undefined) continue;
         const callerFunction = callerDefinition?.key;
         const callerPrivateFunction = callerDefinition?.range.private
           ? callerDefinition.key
@@ -2448,6 +2558,7 @@ function buildFunctionFlowIndex(
           call,
           event,
           target,
+          crossModule,
           ...(callerFunction === undefined ? {} : { callerFunction }),
           ...(callerPrivateFunction === undefined ? {} : { callerPrivateFunction }),
         };
@@ -2459,6 +2570,10 @@ function buildFunctionFlowIndex(
         callByEvent.set(eventKey, site);
         joinedEvents.add(event);
         append(callsByTarget, target.key, site);
+        if (crossModule) {
+          crossModuleParticipants.add(target.key);
+          if (callerFunction !== undefined) crossModuleParticipants.add(callerFunction);
+        }
         if (callerFunction !== undefined) {
           const dependencies = dependenciesByCaller.get(callerFunction) ?? new Set<string>();
           dependencies.add(target.key);
@@ -2474,8 +2589,9 @@ function buildFunctionFlowIndex(
     (site) => site.target.range.private,
   ).length;
   stats.publicCallEdges = [...callByEvent.values()].filter(
-    (site) => !site.target.range.private,
+    (site) => !site.crossModule && !site.target.range.private,
   ).length;
+  stats.crossModuleCallEdges = [...callByEvent.values()].filter((site) => site.crossModule).length;
   const opaqueFunctions = new Set<string>();
   for (const definition of definitions.values()) {
     if (
@@ -2491,6 +2607,9 @@ function buildFunctionFlowIndex(
   stats.privateOpaqueFunctions = [...opaqueFunctions].filter(
     (key) => definitions.get(key)?.range.private === true,
   ).length;
+  stats.crossModuleOpaqueFunctions = [...opaqueFunctions].filter((key) =>
+    crossModuleParticipants.has(key),
+  ).length;
   const summaries = new Map<string, number[]>();
   const resultSummaries = new Map<string, number>();
   for (const definition of definitions.values()) {
@@ -2499,6 +2618,9 @@ function buildFunctionFlowIndex(
         stats.privateSummaryUpdates += definition.range.parameters.length + 1;
       } else {
         stats.publicSummaryUpdates += definition.range.parameters.length;
+      }
+      if (crossModuleParticipants.has(definition.key)) {
+        stats.crossModuleSummaryUpdates += definition.range.parameters.length;
       }
     }
     summaries.set(
@@ -2530,6 +2652,7 @@ function buildFunctionFlowIndex(
     callByEvent,
     unsafeResultTargets,
     opaqueFunctions,
+    crossModuleParticipants,
     summaries,
     resultSummaries,
   };
@@ -2565,6 +2688,17 @@ function functionSummaryDefinitionForIdentity(
 
 function isSameModuleLocalEvent(event: TraceEvent): boolean {
   return event.kind === "local" && event.from_mod !== null && event.to_mod === event.from_mod;
+}
+
+function isCrossModulePublicEvent(event: TraceEvent): boolean {
+  return (
+    (event.kind === "remote" || event.kind === "imported") &&
+    event.from_mod !== null &&
+    event.to_mod !== null &&
+    event.to_mod !== event.from_mod &&
+    event.name !== undefined &&
+    event.arity !== undefined
+  );
 }
 
 function functionSummaryDependencies(index: FunctionFlowIndex, key: string): readonly string[] {
@@ -2758,6 +2892,9 @@ function solveFunctionFlowSummaries(
         if (definition === undefined) continue;
         if (definition.range.private) stats.privateSccIterations += 1;
         else stats.publicSccIterations += 1;
+        if (functionFlow.crossModuleParticipants.has(key)) {
+          stats.crossModuleSccIterations += 1;
+        }
         if (functionFlow.opaqueFunctions.has(key)) continue;
         const source = definition === undefined ? undefined : sources.get(definition.file);
         const roles = definition === undefined ? undefined : rolesByFile.get(definition.file);
@@ -2790,6 +2927,9 @@ function solveFunctionFlowSummaries(
           current[parameter.index] = next;
           if (definition.range.private) stats.privateSummaryUpdates += bitCount(next ^ prior);
           else stats.publicSummaryUpdates += bitCount(next ^ prior);
+          if (functionFlow.crossModuleParticipants.has(key)) {
+            stats.crossModuleSummaryUpdates += bitCount(next ^ prior);
+          }
           changed = true;
         }
         if (changed) enqueueCallers(key);
@@ -2807,6 +2947,9 @@ function solveFunctionFlowSummaries(
           current[index] = ATOM_FLOW_ESCAPE;
           if (definition?.range.private === false) stats.publicSummaryUpdates += 1;
           else stats.privateSummaryUpdates += 1;
+          if (functionFlow.crossModuleParticipants.has(key)) {
+            stats.crossModuleSummaryUpdates += 1;
+          }
           changed = true;
         }
       }

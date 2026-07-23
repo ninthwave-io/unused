@@ -1,0 +1,38 @@
+case: atom-role-cross-module-flow
+description: >-
+  Exact compiler-owned remote, aliased, imported, pass-through, and same-module
+  wrapper calls propagate only parameter-derived atoms across project modules.
+  Every live flow ends at a map-key data sink without contaminating an unrelated
+  dead export.
+subjects:
+  - kind: export
+    name: NeutralCrossFlow.Flow.direct?/2
+    file: lib/neutral_cross_flow/flow.ex
+    expected: alive
+    because: The application invokes the exact aliased cross-module data flow.
+  - kind: export
+    name: NeutralCrossFlow.Flow.pass?/2
+    file: lib/neutral_cross_flow/flow.ex
+    expected: alive
+    because: The application consumes the public callee's parameter-derived return as data.
+  - kind: export
+    name: NeutralCrossFlow.Flow.imported?/2
+    file: lib/neutral_cross_flow/flow.ex
+    expected: alive
+    because: The application reaches the compiler-canonical imported consumer.
+  - kind: export
+    name: NeutralCrossFlow.Flow.wrapped?/2
+    file: lib/neutral_cross_flow/flow.ex
+    expected: alive
+    because: The application reaches a same-module wrapper around the cross-module consumer.
+  - kind: export
+    name: NeutralCrossFlow.Consumer.consume?/2
+    file: lib/neutral_cross_flow/consumer.ex
+    expected: alive
+    because: Exact remote and imported compiler edges reach this data consumer.
+  - kind: export
+    name: NeutralCrossFlow.Flow.genuinely_unused/0
+    file: lib/neutral_cross_flow/flow.ex
+    expected: dead
+    minConfidence: high
+    because: The proven cross-module data paths do not reach this unrelated export.
